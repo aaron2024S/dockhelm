@@ -202,6 +202,11 @@ onMounted(() => void load())
           <div class="truncate font-mono text-[11.5px]" :title="String(runtime.dataDir ?? '')">
             {{ runtime.dataDir ?? '—' }}
           </div>
+          <div class="text-text-5">监听地址</div>
+          <div class="truncate font-mono text-[11.5px]">
+            {{ runtime.listen ?? '—' }}
+            <span v-if="runtime.listenSource" class="text-text-5">（来自 {{ runtime.listenSource }}）</span>
+          </div>
           <div class="text-text-5">Docker 地址</div>
           <div class="truncate font-mono text-[11.5px]">{{ runtime.dockerHost ?? '—' }}</div>
           <div class="text-text-5">Docker 版本</div>

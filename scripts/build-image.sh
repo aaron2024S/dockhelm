@@ -80,7 +80,7 @@ echo
 echo "完成：$TAG${LATEST_TAG:+  +  $LATEST_TAG}"
 echo "跑起来："
 echo "  docker run -d --name dockhelm --restart unless-stopped \\"
-echo "    -p 8080:8080 \\"
+echo "    -p 5923:5923 \\"
 echo "    -v ./data:/data \\"
 echo "    -v /var/run/docker.sock:/var/run/docker.sock \\"
 echo "    -v /volume1/docker:/host/docker \\"

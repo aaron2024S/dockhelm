@@ -145,3 +145,116 @@ func TestSummaryWithoutMappings(t *testing.T) {
 		t.Fatal("Summary 不该为空")
 	}
 }
+
+// ---- 监听地址 ----
+
+// 什么都不设时用默认端口，且不能说成是「环境变量来的」。
+func TestListenDefaults(t *testing.T) {
+	for _, k := range []string{"DOCKHELM_LISTEN", "DOCKHELM_PORT", "PORT"} {
+		t.Setenv(k, "")
+	}
+	cfg := Load()
+	if cfg.Listen != ":5923" {
+		t.Fatalf("默认监听地址 = %q，期望 \":5923\"", cfg.Listen)
+	}
+	if cfg.ListenSource != "默认值" {
+		t.Fatalf("来源 = %q，期望「默认值」", cfg.ListenSource)
+	}
+}
+
+// 三个环境变量的优先级：DOCKHELM_LISTEN > DOCKHELM_PORT > PORT。
+func TestListenPrecedence(t *testing.T) {
+	cases := []struct {
+		name  string
+		env   map[string]string
+		want  string
+		wantS string
+	}{
+		{
+			name:  "只有 PORT",
+			env:   map[string]string{"PORT": "9000"},
+			want:  ":9000",
+			wantS: "PORT",
+		},
+		{
+			name:  "只有 DOCKHELM_PORT",
+			env:   map[string]string{"DOCKHELM_PORT": "9001"},
+			want:  ":9001",
+			wantS: "DOCKHELM_PORT",
+		},
+		{
+			name:  "DOCKHELM_PORT 压过 PORT",
+			env:   map[string]string{"DOCKHELM_PORT": "9002", "PORT": "9003"},
+			want:  ":9002",
+			wantS: "DOCKHELM_PORT",
+		},
+		{
+			name:  "DOCKHELM_LISTEN 压过其余两个",
+			env:   map[string]string{"DOCKHELM_LISTEN": "127.0.0.1:9004", "DOCKHELM_PORT": "9005", "PORT": "9006"},
+			want:  "127.0.0.1:9004",
+			wantS: "DOCKHELM_LISTEN",
+		},
+		{
+			name:  "端口值可以带冒号",
+			env:   map[string]string{"PORT": ":9007"},
+			want:  ":9007",
+			wantS: "PORT",
+		},
+		{
+			name:  "端口值可以带网卡",
+			env:   map[string]string{"PORT": "0.0.0.0:9008"},
+			want:  "0.0.0.0:9008",
+			wantS: "PORT",
+		},
+		{
+			name:  "非法值回落默认，不能让服务起不来",
+			env:   map[string]string{"PORT": "not-a-port"},
+			want:  ":5923",
+			wantS: "默认值",
+		},
+		{
+			name:  "越界端口回落默认",
+			env:   map[string]string{"PORT": "70000"},
+			want:  ":5923",
+			wantS: "默认值",
+		},
+		{
+			name:  "PORT 非法时继续看 DOCKHELM_PORT",
+			env:   map[string]string{"PORT": "abc", "DOCKHELM_PORT": "9009"},
+			want:  ":9009",
+			wantS: "DOCKHELM_PORT",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range []string{"DOCKHELM_LISTEN", "DOCKHELM_PORT", "PORT"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			cfg := Load()
+			if cfg.Listen != c.want {
+				t.Fatalf("监听地址 = %q，期望 %q", cfg.Listen, c.want)
+			}
+			if cfg.ListenSource != c.wantS {
+				t.Fatalf("来源 = %q，期望 %q", cfg.ListenSource, c.wantS)
+			}
+		})
+	}
+}
+
+// 端口值必须真的能被 net.Listen 用 —— 挡住「:0」「:-1」「:  80」这类写法。
+func TestParsePortRejectsBadValues(t *testing.T) {
+	for _, bad := range []string{"", ":", "abc", "0", "-1", "65536", "80 80", "1.5"} {
+		if _, err := parsePort(bad); err == nil {
+			t.Fatalf("%q 不该被当成合法端口", bad)
+		}
+	}
+	for _, ok := range []string{"1", "80", "5923", "65535", ":8080", " :8080 "} {
+		if _, err := parsePort(ok); err != nil {
+			t.Fatalf("%q 应当合法，却报 %v", ok, err)
+		}
+	}
+}

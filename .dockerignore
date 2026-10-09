@@ -13,6 +13,10 @@ data
 *.exe
 *.log
 
+# 本地 compose 变量：可能含 DOCKHELM_PASSWORD 明文，别进构建上下文
+.env
+.env.*
+
 # 文档与本地脚本对镜像没意义
 README.md
 LICENSE

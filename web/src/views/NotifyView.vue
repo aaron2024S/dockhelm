@@ -356,7 +356,7 @@ onMounted(() => void load())
 
           <div>
             <label class="dh-label">面板地址（用于模板变量 <code>{{ tplVar('url') }}</code>）</label>
-            <input v-model="settings.panelURL" class="dh-input" placeholder="http://192.168.1.10:8080" />
+            <input v-model="settings.panelURL" class="dh-input" placeholder="http://192.168.1.10:5923" />
           </div>
 
           <label class="flex items-start gap-2.5">

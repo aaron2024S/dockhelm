@@ -202,7 +202,7 @@ func main() {
 	// —— 启动 HTTP ——
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("HTTP 服务监听 %s", cfg.Listen)
+		log.Printf("HTTP 服务监听 %s（来自 %s）", cfg.Listen, cfg.ListenSource)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

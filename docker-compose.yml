@@ -1,12 +1,16 @@
 # Dockhelm 部署模板
 #
 # 用法：
-#   1. 改端口 / 改镜像 tag（版本号可在「关于」页或 internal/version/version.go 里看到）
+#   1. 改镜像 tag（版本号可在「关于」页或 internal/version/version.go 里看到）
 #   2. 把下面那行 `/volume1/docker:/host/docker` 的左边改成你自己的 docker 目录
 #      ★ 右边不用动，叫什么名字都可以 —— Dockhelm 启动时会自动识别自己容器的挂载 ★
 #      （原因见 README「目录挂载」一节）
 #   3. docker compose up -d
-#   4. 打开 http://<你的NAS_IP>:8080 ，首次进入会让你设置访问密码
+#   4. 打开 http://<你的NAS_IP>:5923 ，首次进入会让你设置访问密码
+#
+# 端口：默认 5923（避开几乎人人都在用的 8080）。
+#   · 只想换个对外端口 → 改本文件 ports 的左边，例如 "8090:5923"
+#   · 想在 .env 里一次改完 → 写一行 DOCKHELM_PORT=8090，ports 与容器内监听会一起跟随
 #
 # 群晖 / 威联通的面板（Container Manager / Container Station）也能直接粘贴这个 compose。
 # 面板里同样不需要让「路径映射」两边写成一样，把宿主机那一侧指对就行。
@@ -22,10 +26,18 @@ services:
     container_name: dockhelm
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 左 = 宿主机端口（浏览器用这个访问），右 = 容器内端口。
+      #   只换个对外端口：改左边就够了，例如 "8090:5923"
+      #   想连容器内端口一起换：在 .env 里写一行 DOCKHELM_PORT=8090，这两处会一起跟随
+      - "${DOCKHELM_PORT:-5923}:${DOCKHELM_PORT:-5923}"
     environment:
       TZ: Asia/Shanghai
       DOCKHELM_DATA: /data
+      # 容器内监听端口。默认 5923，一般不用写 —— 上面的 ports 已经引用同一个变量。
+      # 优先级：DOCKHELM_LISTEN > DOCKHELM_PORT > PORT（通用约定，平台类环境会注入）
+      # ⚠ 若在面板 UI 里单独把这一条改成别的值，请同时把 ports 的右边也改成同一个端口，
+      #   否则容器监听的端口和映射出来的端口对不上，会直接连不上。
+      DOCKHELM_PORT: "${DOCKHELM_PORT:-5923}"
       # ── 忘记密码时的兜底：临时打开、重启容器即可强制改密，改完请删掉这行 ──
       # DOCKHELM_PASSWORD: "改成你的新密码"
       # ── 路径映射：默认自动识别，一般不用配。识别不出来时才手写「宿主机路径=容器内路径」──

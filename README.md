@@ -93,11 +93,11 @@ Dockhelm 的流程是：
 ```bash
 mkdir -p /volume1/docker/dockhelm && cd /volume1/docker/dockhelm
 curl -O https://raw.githubusercontent.com/aaron2024S/dockhelm/main/docker-compose.yml
-# 改一下端口、镜像 tag 和 docker 目录路径，然后：
+# 改一下镜像 tag 和 docker 目录路径（端口默认 5923，要换见下面的「端口」一节），然后：
 docker compose up -d
 ```
 
-打开 `http://<你的NAS_IP>:8080`，首次进入会让你设置访问密码。
+打开 `http://<你的NAS_IP>:5923`，首次进入会让你设置访问密码。
 
 镜像 tag 有两个，按需选一个：
 
@@ -125,6 +125,45 @@ cd web && npm install && npm run build && cd ..
 go build -o dockhelm .
 DOCKHELM_DATA=./data DOCKER_HOST=unix:///var/run/docker.sock ./dockhelm
 ```
+
+---
+
+## 端口
+
+默认监听 **`5923`**。
+
+没有用 8080，是因为它太容易撞车 —— 群晖 DSM 的登录反代、各种路由器管理页、
+以及一大半自托管应用都默认占着它。5923 在 IANA 注册表里没有常见占用，日常不会打架。
+
+三种改法，按省事程度排：
+
+| 想干什么 | 怎么做 |
+| --- | --- |
+| **只改对外端口**（推荐） | 改 `docker-compose.yml` 里 `ports` 的**左边**，例如 `"8090:5923"`。容器内还是 5923，别的都不用配 |
+| **用 `.env` 一次改完** | 把仓库里的 `.env.example` 复制成 `.env`，写一行 `DOCKHELM_PORT=8090`。模板里 `ports` 与容器内监听引用的就是同一个变量，会一起跟随 |
+| **纯 `docker run`** | 加 `-e PORT=8090 -p 8090:8090` 即可（三个变量任选一个） |
+
+优先级从高到低：
+
+```
+DOCKHELM_LISTEN   >   DOCKHELM_PORT   >   PORT   >   默认 5923
+```
+
+`DOCKHELM_LISTEN` 收**完整地址**（`:5923`、`0.0.0.0:5923`、`127.0.0.1:5923`），
+另两个只收**端口号**（`8090` 或 `:8090` 都行）。**值非法（不是 1–65535 的数字）会被忽略、
+回落到默认端口** —— 不会因为环境里躺着一个乱写的 `PORT` 就让面板起不来。
+
+启动日志会打出实际生效的地址和它的来源，不用猜：
+
+```
+HTTP 服务监听 :5923（来自 默认值）
+HTTP 服务监听 :8090（来自 DOCKHELM_PORT）
+```
+
+「关于」页的「运行环境」里也会显示当前监听地址与它来自哪个变量。
+
+⚠ 镜像里**故意没有**给 `DOCKHELM_LISTEN` 设 ENV 默认值。它优先级最高，一旦在镜像层写死，
+用户再加 `-e PORT=8080` 就永远不会生效 —— 这种坑排查起来很费时间。
 
 ---
 
@@ -169,7 +208,9 @@ environment:
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `DOCKHELM_DATA` | `/data` | 配置与备份的持久化目录 |
-| `DOCKHELM_LISTEN` | `:8080` | 监听地址 |
+| `DOCKHELM_LISTEN` | `:5923` | 完整监听地址（优先级最高）。详见上面的「[端口](#端口)」一节 |
+| `DOCKHELM_PORT` | 空 | 只写端口号；不填就用默认 `5923`。优先级高于通用的 `PORT` |
+| `PORT` | 空 | 只写端口号（通用约定，Railway / Zeabur / Render 这类平台会自动注入） |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker 守护进程地址（支持 `unix://` 与 `tcp://`） |
 | `DOCKHELM_PASSWORD` | 空 | 设置后每次启动都强制把密码重置为该值。**忘记密码的兜底手段，用完请删掉这行** |
 | `DOCKHELM_HOST_ROOTS` | 空 | 手动声明路径映射，写法 `宿主机路径=容器内路径`（逗号分隔可多组；只写一个路径表示两边一致）。默认自动识别，一般不用填 |
@@ -326,7 +367,7 @@ go build ./... && go vet ./... && go test ./...
 # 前端
 cd web
 npm install
-npm run dev          # 开发服务器，/api 代理到 127.0.0.1:8080
+npm run dev          # 开发服务器，/api 代理到 127.0.0.1:5923
 npm run type-check   # vue-tsc
 npm run build
 ```

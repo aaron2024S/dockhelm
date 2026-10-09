@@ -9,6 +9,10 @@ data/
 *.db
 *.db.tmp
 
+# ── 本地 compose 变量：可能含 DOCKHELM_PASSWORD 明文 ──
+.env
+!.env.example
+
 # ── 本机构建产物 ──
 /dockhelm
 /dockhelm.exe

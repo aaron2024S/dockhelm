@@ -53,15 +53,21 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 COPY --from=build /out/dockhelm /usr/local/bin/dockhelm
 
+# 注意：这里**故意不设** DOCKHELM_LISTEN。
+# 它的优先级最高，一旦在镜像里写死，用户再加 -e PORT=8081 / -e DOCKHELM_PORT=8081
+# 就永远不会生效（试半天找不出原因的那种坑）。默认端口由程序内部提供。
 ENV DOCKHELM_DATA=/data \
-    DOCKHELM_LISTEN=:8080 \
     TZ=Asia/Shanghai
 
 VOLUME ["/data"]
-EXPOSE 8080
+# 只是声明，方便 --publish-all 与面板自动提示；实际端口仍以 DOCKHELM_LISTEN /
+# DOCKHELM_PORT / PORT 为准。
+EXPOSE 5923
 
+# 健康检查的端口要和程序里的解析顺序保持一致：
+# DOCKHELM_LISTEN 的冒号后半段 → DOCKHELM_PORT → PORT → 5923
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/api/health || exit 1
+  CMD sh -c 'p="${DOCKHELM_LISTEN##*:}"; [ -n "$p" ] || p="${DOCKHELM_PORT:-${PORT:-5923}}"; wget -qO- "http://127.0.0.1:$p/api/health" || exit 1'
 
 # 需要读写 /var/run/docker.sock 与宿主机 docker 目录，所以以 root 运行。
 # 这不是懒 —— 是 Docker 套接字本身就等价于宿主机 root，换非 root 用户并不会更安全，

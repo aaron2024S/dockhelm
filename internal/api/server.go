@@ -391,6 +391,10 @@ func (s *Server) hAbout(w http.ResponseWriter, r *http.Request) {
 		"uptimeSeconds": int(time.Since(version.Runtime).Seconds()),
 		"dataDir":       s.cfg.DataDir,
 		"dockerHost":    s.dc.Host(),
+		// 端口可被环境变量覆盖，把「实际生效的值 + 它来自哪个变量」都露出来，
+		// 「关于」页直接展示，省得去翻启动日志。
+		"listen":       s.cfg.Listen,
+		"listenSource": s.cfg.ListenSource,
 	}
 	if v := s.dc.APIVersion(); v != "" {
 		extra["dockerApiVersion"] = v

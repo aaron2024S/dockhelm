@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,13 @@ import (
 	"strings"
 	"sync"
 )
+
+// DefaultPort 默认监听端口。
+//
+// 选 5923 而不是 8080，是因为 8080 太容易撞车 —— 群晖 DSM 的登录反代、
+// 各种路由器面板、以及几乎一半的自托管应用都默认占着它。5923 在
+// IANA 注册表里没有常见占用，落在动态端口区间之外，日常不会打架。
+const DefaultPort = 5923
 
 // mountPair 一条「宿主机路径 → 容器内路径」的映射。
 type mountPair struct {
@@ -31,8 +39,12 @@ type PathMapping struct {
 type Config struct {
 	// DataDir 持久化目录（数据库、备份、日志）。默认 /data。
 	DataDir string
-	// Listen 监听地址，默认 :8080。
+	// Listen 监听地址（形如 :5923 或 127.0.0.1:5923）。
+	// 优先级：DOCKHELM_LISTEN > DOCKHELM_PORT > PORT > 默认 :5923。
 	Listen string
+	// ListenSource 记录 Listen 是从哪个环境变量来的（排障用，启动日志会打）。
+	// 取值：DOCKHELM_LISTEN / DOCKHELM_PORT / PORT / 默认值
+	ListenSource string
 	// DockerHost Docker 守护进程地址，默认读 DOCKER_HOST，否则 unix:///var/run/docker.sock。
 	DockerHost string
 	// ForcePassword 若设置，则启动时把登录密码强制覆盖为该值（忘记密码的兜底手段）。
@@ -62,6 +74,65 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// resolveListen 解析监听地址，同时返回它的来源（写进启动日志，省得猜）。
+//
+// 优先级（从高到低）：
+//
+//	DOCKHELM_LISTEN   完整监听地址，如 :5923、0.0.0.0:5923、127.0.0.1:5923
+//	DOCKHELM_PORT     只写端口号（Dockhelm 专用，不和别人的 PORT 抢）
+//	PORT              只写端口号（通用约定，Railway / Zeabur / Render 这类平台会注入）
+//	—                 默认 :5923
+//
+// 注意镜像里**故意不设** DOCKHELM_LISTEN 的 ENV 默认值 —— 一旦设了，
+// 它的优先级最高，用户再加 -e PORT=8081 就永远不生效（这是个很容易踩的坑）。
+func resolveListen() (addr string, source string) {
+	if v := strings.TrimSpace(os.Getenv("DOCKHELM_LISTEN")); v != "" {
+		return v, "DOCKHELM_LISTEN"
+	}
+	for _, key := range []string{"DOCKHELM_PORT", "PORT"} {
+		v := strings.TrimSpace(os.Getenv(key))
+		if v == "" {
+			continue
+		}
+		if a, err := addrFromPort(v); err == nil {
+			return a, key
+		}
+		// 值非法就跳过，继续往下找，最后回落到默认端口。
+		// 不能因为环境里躺着一个乱写的 PORT 就让服务起不来。
+	}
+	return ":" + strconv.Itoa(DefaultPort), "默认值"
+}
+
+// addrFromPort 把「端口值」规范成监听地址。三种写法都收：
+//
+//	"5923"            → ":5923"
+//	":5923"           → ":5923"
+//	"0.0.0.0:5923"    → 原样返回（已经带上了监听网卡）
+func addrFromPort(v string) (string, error) {
+	if strings.Contains(v, ":") {
+		_, port, _ := strings.Cut(v, ":")
+		if _, err := parsePort(port); err != nil {
+			return "", err
+		}
+		return v, nil
+	}
+	n, err := parsePort(v)
+	if err != nil {
+		return "", err
+	}
+	return ":" + strconv.Itoa(n), nil
+}
+
+// parsePort 校验端口号范围（1–65535）。
+func parsePort(s string) (int, error) {
+	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), ":"))
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, fmt.Errorf("非法端口 %q", s)
+	}
+	return n, nil
 }
 
 // Load 读取环境变量并返回配置。
@@ -97,9 +168,12 @@ func Load() *Config {
 		manual = append(manual, mountPair{host: host, container: container})
 	}
 
+	listen, listenSrc := resolveListen()
+
 	return &Config{
 		DataDir:        dataDir,
-		Listen:         env("DOCKHELM_LISTEN", ":8080"),
+		Listen:         listen,
+		ListenSource:   listenSrc,
 		DockerHost:     env("DOCKER_HOST", "unix:///var/run/docker.sock"),
 		ForcePassword:  strings.TrimSpace(os.Getenv("DOCKHELM_PASSWORD")),
 		HostRoots:      roots,
