@@ -99,6 +99,8 @@ docker compose up -d
 
 打开 `http://<你的NAS_IP>:5923`，首次进入会让你设置访问密码。
 
+> **首次登录没有默认密码**，也不会有 `admin/admin` 这种出厂账号 —— 容器起来后打开面板，会直接进入「设置访问密码」引导页，密码由你自己设定（至少 6 位，只保存 bcrypt 哈希，明文不落盘）。想跳过这一步，可以在 compose 里加一行 `DOCKHELM_PASSWORD=你的密码`，容器启动时会直接设好。忘了密码：删掉 `data/auth.json` 后重启容器即可重设。
+
 镜像 tag 有两个，按需选一个：
 
 | tag | 含义 |
@@ -378,7 +380,7 @@ npm run build
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-推到 `main` 分支只会跑一次「构建但不推送」的校验，不会动 Docker Hub 上的 tag；手动 Run workflow 则会推送并移动 `latest`，所以别拿它做试探性构建。
+推 `main` 不会触发任何 CI —— 只有打 tag 或在 Actions 页面手动 Run workflow 才会构建并推送。手动 Run workflow 同样会移动 `latest`，所以别拿它做试探性构建。
 
 需要在仓库 Secrets 里配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`。
 
