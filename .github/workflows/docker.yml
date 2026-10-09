@@ -61,8 +61,13 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # 只打一个版本 tag，不附 :latest
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}
+          # 每个正式发版都推两个 tag：版本号 + latest
+          #   - <用户名>/dockhelm:0.1.0   ← 固定版本，部署时建议用这个
+          #   - <用户名>/dockhelm:latest  ← 总是指向最近一次发版，图省事的人用它
+          # 注意：手动 Run workflow 也会移动 latest，所以别拿这个 job 做试探性构建。
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:latest
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
@@ -75,7 +80,7 @@ jobs:
           {
             echo "### Dockhelm \`${{ steps.meta.outputs.version }}\` 已推送"
             echo ""
-            echo "- 镜像：\`${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}\`"
+            echo "- 镜像：\`${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}\`（同时更新 \`:latest\`）"
             echo "- 平台：linux/amd64, linux/arm64"
             echo "- 提交：\`${{ steps.meta.outputs.commit_short }}\`"
             echo "- 构建时间：${{ steps.meta.outputs.build_time }}"

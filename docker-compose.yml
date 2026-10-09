@@ -12,7 +12,8 @@
 
 services:
   dockhelm:
-    # 版本号只打一个 tag，不加 :latest
+    # 每个发版都推两个 tag：:0.1.0（固定版本，推荐）与 :latest（跟随最新发版）
+    # 想省事可以换成 aaron2024s/dockhelm:latest，代价是升级时机不再由你控制
     image: aaron2024s/dockhelm:0.1.0
     # 想本地自己构建就把上面那行注释掉，换成下面两行
     # build:

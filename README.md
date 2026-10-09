@@ -99,12 +99,20 @@ docker compose up -d
 
 打开 `http://<你的NAS_IP>:8080`，首次进入会让你设置访问密码。
 
+镜像 tag 有两个，按需选一个：
+
+| tag | 含义 |
+|---|---|
+| `aaron2024s/dockhelm:0.1.0` | 固定版本。**推荐**，升级由你决定，行为可复现 |
+| `aaron2024s/dockhelm:latest` | 总是指向最近一次正式发版。图省事用它，代价是每次 `docker compose pull` 都可能变版本 |
+
 ### 方式二：自己构建
 
 ```bash
 git clone https://github.com/aaron2024S/dockhelm.git
 cd dockhelm
-./scripts/build-image.sh --load          # 或 -p linux/amd64,linux/arm64 出多架构
+./scripts/build-image.sh --load          # 默认打 :<版本> 和 :latest
+                                         # 或 -p linux/amd64,linux/arm64 出多架构（--push 推到 Docker Hub）
 
 # 或者直接 compose 构建
 docker compose up -d --build
@@ -318,11 +326,13 @@ npm run type-check   # vue-tsc
 npm run build
 ```
 
-发新版本：改 `internal/version/version.go` 里的 `Version`，提交并打 tag，CI 就会构建多架构镜像：
+发新版本：改 `internal/version/version.go` 里的 `Version`，提交并打 tag，CI 就会构建 amd64 + arm64 并推送**两个** tag（`:<版本>` 与 `:latest`，latest 总是指向最近一次发版）：
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
+
+推到 `main` 分支只会跑一次「构建但不推送」的校验，不会动 Docker Hub 上的 tag；手动 Run workflow 则会推送并移动 `latest`，所以别拿它做试探性构建。
 
 需要在仓库 Secrets 里配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`。
 
