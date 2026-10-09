@@ -114,6 +114,12 @@ async function testAll() {
   }
 }
 
+/** 页头的「添加加速源」：把新增加速源的输入框滚进视野。 */
+function focusAdd() {
+  document.getElementById('mirror-add')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  document.getElementById('mirror-add')?.querySelector('input')?.focus()
+}
+
 async function copySnippet() {
   const text = data.value?.snippet ?? ''
   try {
@@ -139,6 +145,17 @@ onMounted(() => void load())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">镜像加速源</div>
+      <div class="dh-sub">按顺序优先使用，失败自动顺延下一个</div>
+      <div class="ml-auto flex gap-2">
+        <button class="dh-btn" :disabled="testing" @click="testAll">
+          <Gauge class="h-3.5 w-3.5" :class="testing ? 'dh-spin' : ''" />测试全部
+        </button>
+        <button class="dh-btn dh-btn-primary" @click="focusAdd">添加加速源</button>
+      </div>
+    </div>
+
     <!-- 现状：守护进程真正生效的加速源 -->
     <div class="dh-card">
       <div class="dh-card-head">
@@ -181,7 +198,7 @@ onMounted(() => void load())
           </div>
         </div>
 
-        <div class="flex flex-col gap-2 border-b border-line-1 p-3">
+        <div id="mirror-add" class="flex flex-col gap-2 border-b border-line-1 p-3">
           <div class="flex flex-wrap gap-2">
             <input v-model="newUrl" class="dh-input flex-1 !min-w-[180px]" placeholder="https://你的加速站地址" />
             <input v-model="newNote" class="dh-input !w-[110px]" placeholder="备注" />

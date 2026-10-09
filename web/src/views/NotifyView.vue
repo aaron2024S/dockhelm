@@ -256,6 +256,13 @@ onMounted(() => void load())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">通知</div>
+      <div class="dh-sub">
+        {{ channels.filter((c) => c.enabled).length }} 个渠道已启用 · 已订阅 {{ enabledCount }} 个事件
+      </div>
+    </div>
+
     <div class="flex flex-wrap items-center gap-2.5">
       <div class="dh-seg">
         <button :data-on="tab === 'channels'" @click="tab = 'channels'">

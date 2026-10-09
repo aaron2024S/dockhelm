@@ -64,19 +64,23 @@ export interface ContainerView {
 export interface OverviewResponse {
   version: { version: string; name: string; commit: string }
   containers: { total: number; running: number; stopped: number; paused: number; unhealthy: number }
-  images: { total: number; sizeBytes: number }
+  images: { total: number; sizeBytes: number; reclaimable: number }
   updates: {
     available: number
     unknown: number
     checkedAt: string
-    items: { container: string; image: string; reason: string }[]
+    items: { container: string; image: string; reason: string; localDigest: string; remoteDigest: string }[]
   }
+  /** 所有运行中容器的合计占用（容器数为 0 时后端不返回这个字段）。 */
+  usage?: { cpuPercent: number; memUsed: number; memTotal: number }
   disk: { free: number; total: number }
   notify: { sentToday: number }
   recent: RunLog[]
   excluded: string[]
   self: string
   docker?: {
+    /** 宿主机主机名，顶栏的「Docker 控制台 · xxx」用它。 */
+    name: string
     version: string
     os: string
     arch: string
@@ -322,4 +326,18 @@ export interface BusEvent {
   time: string
   data?: Record<string, unknown>
   status?: string
+}
+
+/** Docker 网络（GET /api/networks 原样透传，字段按需取用）。 */
+export interface DockerNetwork {
+  Id: string
+  Name: string
+  Driver: string
+  Scope: string
+  Internal: boolean
+  Attachable: boolean
+  Created?: string
+  IPAM?: { Config?: { Subnet?: string; Gateway?: string }[] }
+  Containers?: Record<string, { Name: string; IPv4Address?: string }>
+  Labels?: Record<string, string>
 }

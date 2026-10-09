@@ -1,18 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import {
-  CalendarClock,
-  CheckCircle2,
-  Loader2,
-  Play,
-  Plus,
-  RefreshCw,
-  Trash2,
-  XCircle,
-} from 'lucide-vue-next'
+import { Loader2, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
-import type { ContainerView, Schedule, ScheduleAction } from '@/api/types'
-import { explainCron, relativeTime } from '@/utils/format'
+import type { ContainerView, RunLog, Schedule, ScheduleAction, Settings } from '@/api/types'
+import { explainCron, formatDayTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
@@ -22,49 +13,138 @@ const toast = useToastStore()
 const schedules = ref<Schedule[]>([])
 const actions = ref<ScheduleAction[]>([])
 const containers = ref<ContainerView[]>([])
+const excluded = ref<string[]>([])
 const loading = ref(true)
 const running = ref<number | null>(null)
-const showEditor = ref(false)
 const removeTarget = ref<Schedule | null>(null)
 const saveError = ref('')
+const saving = ref(false)
 let closeStream: (() => void) | null = null
 
-const cronPresets = [
-  { label: '每天 03:00', cron: '0 3 * * *' },
-  { label: '每天 04:00', cron: '0 4 * * *' },
-  { label: '每小时', cron: '0 * * * *' },
-  { label: '每 6 小时', cron: '0 */6 * * *' },
-  { label: '每 30 分钟', cron: '*/30 * * * *' },
-  { label: '每周一 03:00', cron: '0 3 * * 1' },
-  { label: '每月 1 号 03:00', cron: '0 3 1 * *' },
+/** 表单当前是在「新建」还是「编辑」——两者共用同一张内联卡片。 */
+const editingId = ref(0)
+
+const form = ref({
+  name: '',
+  action: 'restart',
+  targets: [] as string[],
+  enabled: true,
+  /** 重复方式 + 时间的组合，最终换算成 cron；repeat='custom' 时直接用 customCron。 */
+  repeat: 'daily',
+  time: '03:00',
+  customCron: '0 3 * * *',
+})
+
+/** 空表单。 */
+function blankForm() {
+  return {
+    name: '',
+    action: 'restart',
+    targets: [] as string[],
+    enabled: true,
+    repeat: 'daily',
+    time: '03:00',
+    customCron: '0 3 * * *',
+  }
+}
+
+const repeatOptions = [
+  { key: 'daily', label: '每天' },
+  { key: 'hourly', label: '每小时' },
+  { key: 'weekdays', label: '工作日（周一至周五）' },
+  { key: 'weekly-1', label: '每周一' },
+  { key: 'weekly-2', label: '每周二' },
+  { key: 'weekly-3', label: '每周三' },
+  { key: 'weekly-4', label: '每周四' },
+  { key: 'weekly-5', label: '每周五' },
+  { key: 'weekly-6', label: '每周六' },
+  { key: 'weekly-0', label: '每周日' },
+  { key: 'monthly', label: '每月 1 日' },
+  { key: 'custom', label: '自定义 cron' },
 ]
 
-const form = ref<Schedule>({
-  id: 0,
-  name: '',
-  cron: '0 3 * * *',
-  action: 'restart',
-  targets: [],
-  enabled: true,
-  lastRun: '',
-  lastStatus: '',
-  lastMessage: '',
-  createdAt: '',
+/** 动作的短名（设计稿里的 chip 用短词）。 */
+const SHORT_ACTION: Record<string, string> = {
+  start: '启动',
+  stop: '停止',
+  restart: '重启',
+  update: '更新镜像',
+  backup: '备份快照',
+  prune_images: '清理旧镜像',
+}
+
+/** 动作徽标的配色（对齐设计稿：重启=青、更新=琥珀、停止=灰、启动=绿）。 */
+const ACTION_TONE: Record<string, string> = {
+  start: 'dh-badge-run',
+  stop: 'dh-badge-stop',
+  restart: 'dh-badge-accent',
+  update: 'dh-badge-warn',
+  backup: 'dh-badge-plain',
+  prune_images: 'dh-badge-plain',
+}
+
+function shortAction(key: string) {
+  return SHORT_ACTION[key] ?? actions.value.find((a) => a.key === key)?.label ?? key
+}
+
+function actionTone(key: string) {
+  return ACTION_TONE[key] ?? 'dh-badge-plain'
+}
+
+/** 由「重复 + 时间」拼出 cron（自定义时直接用输入的表达式）。 */
+const composedCron = computed(() => {
+  if (form.value.repeat === 'custom') return form.value.customCron.trim()
+  const [h = '0', m = '0'] = form.value.time.split(':')
+  const hh = String(Number(h))
+  const mm = String(Number(m))
+  switch (form.value.repeat) {
+    case 'daily':
+      return `${mm} ${hh} * * *`
+    case 'hourly':
+      return `${mm} * * * *`
+    case 'weekdays':
+      return `${mm} ${hh} * * 1-5`
+    case 'monthly':
+      return `${mm} ${hh} 1 * *`
+    default: {
+      const dow = form.value.repeat.split('-')[1] ?? '0'
+      return `${mm} ${hh} * * ${dow}`
+    }
+  }
 })
+
+/** cron → 表单（编辑已有任务时把表达式翻译回「重复 + 时间」）。 */
+function applyCron(cron: string) {
+  const t = cron.trim()
+  const hhmm = (h: string, m: string) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  let m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$/.exec(t)
+  if (m) return { repeat: 'daily', time: hhmm(m[2] as string, m[1] as string) }
+  m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+1-5$/.exec(t)
+  if (m) return { repeat: 'weekdays', time: hhmm(m[2] as string, m[1] as string) }
+  m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+([0-7])$/.exec(t)
+  if (m) return { repeat: `weekly-${m[3] === '7' ? '0' : (m[3] as string)}`, time: hhmm(m[2] as string, m[1] as string) }
+  m = /^(\d+)\s+(\d+)\s+1\s+\*\s+\*$/.exec(t)
+  if (m) return { repeat: 'monthly', time: hhmm(m[2] as string, m[1] as string) }
+  m = /^(\d+)\s+\*\s+\*\s+\*\s+\*$/.exec(t)
+  if (m) return { repeat: 'hourly', time: hhmm('0', m[1] as string) }
+  return { repeat: 'custom', time: '03:00' }
+}
 
 const actionMeta = computed(() => actions.value.find((a) => a.key === form.value.action))
 
 async function load() {
   loading.value = true
   try {
-    const [s, a, c] = await Promise.all([
+    const [s, a, c, st] = await Promise.all([
       api.get<{ schedules: Schedule[] }>('/api/schedules'),
       api.get<{ actions: ScheduleAction[] }>('/api/schedules/actions'),
       api.get<{ containers: ContainerView[] }>('/api/containers'),
+      api.get<Settings>('/api/settings').catch(() => null),
     ])
     schedules.value = s.schedules ?? []
     actions.value = a.actions ?? []
     containers.value = c.containers ?? []
+    excluded.value = st?.exclude ?? []
   } catch (e) {
     toast.error('读取计划任务失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -72,43 +152,70 @@ async function load() {
   }
 }
 
-function openCreate() {
+function resetForm() {
+  form.value = blankForm()
+  editingId.value = 0
+  saveError.value = ''
+}
+
+/** 「新建任务」按钮：清空表单并把内联卡片滚进视野。 */
+function focusForm() {
+  resetForm()
+  document.getElementById('schedule-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+function startEdit(s: Schedule) {
+  const mapped = applyCron(s.cron)
   form.value = {
-    id: 0,
-    name: '',
-    cron: '0 3 * * *',
-    action: 'restart',
-    targets: [],
-    enabled: true,
+    name: s.name,
+    action: s.action,
+    targets: [...(s.targets ?? [])],
+    enabled: s.enabled,
+    repeat: mapped.repeat,
+    time: mapped.time,
+    customCron: s.cron,
+  }
+  editingId.value = s.id
+  saveError.value = ''
+  document.getElementById('schedule-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function save() {
+  if (!form.value.name.trim()) {
+    saveError.value = '请填写任务名称'
+    return
+  }
+  if (actionMeta.value?.needsTargets === false) {
+    form.value.targets = []
+  }
+  saveError.value = ''
+  saving.value = true
+  const payload = {
+    id: editingId.value,
+    name: form.value.name.trim(),
+    cron: composedCron.value,
+    action: form.value.action,
+    targets: form.value.targets,
+    enabled: form.value.enabled,
     lastRun: '',
     lastStatus: '',
     lastMessage: '',
     createdAt: '',
   }
-  saveError.value = ''
-  showEditor.value = true
-}
-
-function openEdit(s: Schedule) {
-  form.value = { ...s, targets: [...(s.targets ?? [])] }
-  saveError.value = ''
-  showEditor.value = true
-}
-
-async function save() {
-  saveError.value = ''
   try {
-    if (form.value.id) {
-      await api.put(`/api/schedules/${form.value.id}`, form.value)
+    if (editingId.value) {
+      await api.put(`/api/schedules/${editingId.value}`, payload)
       toast.success('任务已更新')
     } else {
-      await api.post('/api/schedules', form.value)
+      await api.post('/api/schedules', payload)
       toast.success('任务已创建')
     }
-    showEditor.value = false
+    resetForm()
     await load()
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -141,6 +248,7 @@ async function confirmRemove() {
   try {
     await api.del(`/api/schedules/${s.id}`)
     toast.success('任务已删除')
+    if (editingId.value === s.id) resetForm()
     removeTarget.value = null
     await load()
   } catch (e) {
@@ -161,7 +269,58 @@ const statusBadge = (s: Schedule) => {
   return { text: s.lastStatus, cls: 'dh-badge-plain' }
 }
 
-const actionLabel = (key: string) => actions.value.find((a) => a.key === key)?.label ?? key
+/** 表头副标题：几个任务、几个今天还要跑。 */
+const summary = computed(() => {
+  const todayEnd = new Date()
+  todayEnd.setHours(23, 59, 59, 999)
+  const today = schedules.value.filter((s) => {
+    if (!s.enabled || !s.nextRun) return false
+    const t = Date.parse(s.nextRun)
+    return !Number.isNaN(t) && t <= todayEnd.getTime()
+  }).length
+  return `${schedules.value.length} 个任务 · ${today} 个今天待执行`
+})
+
+/** 未来 24 小时内的执行安排，按时间排序。 */
+const upcoming = computed(() => {
+  const now = Date.now()
+  return schedules.value
+    .filter((s) => s.enabled && s.nextRun)
+    .map((s) => ({ s, t: Date.parse(s.nextRun as string) }))
+    .filter((x) => !Number.isNaN(x.t) && x.t <= now + 24 * 3600 * 1000)
+    .sort((a, b) => a.t - b.t)
+    .slice(0, 6)
+})
+
+/** 目标列：全部容器时把全局排除列表也摊开说清。 */
+function targetsText(s: Schedule) {
+  if (!s.targets?.length) return ['全部容器']
+  return s.targets
+}
+
+// —— 执行历史 ——
+const historyOpen = ref(false)
+const historyLogs = ref<RunLog[]>([])
+const historyLoading = ref(false)
+
+async function openHistory() {
+  historyOpen.value = true
+  historyLoading.value = true
+  try {
+    const res = await api.get<{ logs: RunLog[] }>('/api/logs?limit=200')
+    historyLogs.value = (res.logs ?? []).filter((l) => l.kind === 'schedule').slice(0, 60)
+  } catch (e) {
+    toast.error('读取执行历史失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function historyStatus(l: RunLog) {
+  if (l.status === 'success') return { text: '成功', cls: 'dh-badge-run' }
+  if (l.status === 'failed') return { text: '失败', cls: 'dh-badge-err' }
+  return { text: l.status || '—', cls: 'dh-badge-plain' }
+}
 
 onMounted(() => {
   void load()
@@ -174,92 +333,88 @@ onUnmounted(() => closeStream?.())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
-    <div class="flex flex-wrap items-center gap-2.5">
-      <div class="text-[12.5px] text-text-4">
-        用标准 5 段 cron 表达式（分 时 日 月 周）定时执行容器的启动 / 停止 / 重启 / 更新 / 备份。
-      </div>
+    <!-- 页头 -->
+    <div class="dh-phead">
+      <div class="dh-h1">计划任务</div>
+      <div class="dh-sub">{{ summary }}</div>
       <div class="ml-auto flex gap-2">
+        <button class="dh-btn" @click="openHistory">执行历史</button>
         <button class="dh-btn" :disabled="loading" @click="load">
           <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
         </button>
-        <button class="dh-btn dh-btn-primary" @click="openCreate">
+        <button class="dh-btn dh-btn-primary" @click="focusForm">
           <Plus class="h-3.5 w-3.5" />新建任务
         </button>
       </div>
     </div>
 
+    <!-- 任务表 -->
     <div class="dh-card">
-      <div class="dh-card-head">
-        <CalendarClock class="h-3.5 w-3.5 text-text-4" />
-        <span>计划任务</span>
-        <span class="ml-auto text-[11.5px] font-normal text-text-5">{{ schedules.length }} 个</span>
-      </div>
-
       <EmptyState
         v-if="!schedules.length"
-        :icon="CalendarClock"
+        :icon="Plus"
         :title="loading ? '正在载入…' : '还没有计划任务'"
-        description="例如：每天凌晨 3 点自动检查并更新所有容器；或者每晚 23:30 停止某个占资源的容器。"
-        action-label="新建第一个任务"
-        @action="openCreate"
+        description="在下面的「新建任务」里挑几个容器、选个时间和动作，就能定时启停或更新它们。"
       />
-
       <div v-else class="overflow-x-auto">
         <table class="dh-table">
           <thead>
             <tr>
-              <th class="w-[60px]">启用</th>
-              <th>名称</th>
-              <th class="w-[150px]">计划</th>
-              <th class="w-[120px]">动作</th>
-              <th class="w-[140px]">目标</th>
+              <th>任务名称</th>
+              <th class="w-[150px]">目标</th>
+              <th class="w-[110px]">动作</th>
+              <th class="w-[170px]">计划</th>
               <th class="w-[150px]">上次执行</th>
-              <th class="w-[120px]">下次执行</th>
-              <th class="w-[130px]" />
+              <th class="w-[150px]">下次执行</th>
+              <th class="w-[90px] text-right">启用</th>
+              <th class="w-[140px]" />
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in schedules" :key="s.id">
+            <tr v-for="s in schedules" :key="s.id" :class="s.enabled ? '' : 'opacity-55'">
               <td>
-                <UiSwitch :model-value="s.enabled" :label="`启用 ${s.name}`" @update:model-value="toggleEnabled(s)" />
-              </td>
-              <td>
-                <div class="text-[12.5px] font-medium">{{ s.name }}</div>
-                <div v-if="s.lastMessage" class="mt-0.5 max-w-[280px] truncate text-[11px] text-text-5" :title="s.lastMessage">
+                <div class="text-[13px] font-semibold">{{ s.name }}</div>
+                <div v-if="s.lastMessage" class="mt-0.5 max-w-[280px] truncate text-[11.5px] text-text-5" :title="s.lastMessage">
                   {{ s.lastMessage }}
                 </div>
               </td>
-              <td>
-                <div class="font-mono text-[11.5px] text-text-2">{{ s.cron }}</div>
-                <div class="text-[11px] text-text-5">{{ explainCron(s.cron) }}</div>
-              </td>
-              <td><span class="dh-badge dh-badge-plain">{{ actionLabel(s.action) }}</span></td>
-              <td>
-                <span v-if="!s.targets.length" class="dh-badge dh-badge-accent">全部容器</span>
-                <span v-else class="dh-badge dh-badge-plain" :title="s.targets.join(', ')">
-                  {{ s.targets.length }} 个
-                </span>
-              </td>
-              <td>
-                <div class="flex items-center gap-1.5">
-                  <span class="dh-badge" :class="statusBadge(s).cls">
-                    <CheckCircle2 v-if="s.lastStatus === 'success'" class="h-3 w-3" />
-                    <XCircle v-else-if="s.lastStatus === 'failed'" class="h-3 w-3" />
-                    {{ statusBadge(s).text }}
-                  </span>
+              <td class="text-[11.5px] text-text-5">
+                <div class="line-clamp-2">{{ targetsText(s).join('、') }}</div>
+                <div v-if="!s.targets?.length && excluded.length" class="text-[11px] text-[#fca5a5]">
+                  − {{ excluded.join(', ') }}
                 </div>
-                <div class="mt-1 text-[11px] text-text-5">{{ s.lastRun ? relativeTime(s.lastRun) : '—' }}</div>
-              </td>
-              <td class="text-[11.5px] text-text-4">
-                {{ s.enabled ? (s.nextRun ? relativeTime(s.nextRun) : '—') : '已停用' }}
               </td>
               <td>
-                <div class="flex gap-1.5">
+                <span class="dh-badge" :class="actionTone(s.action)">{{ shortAction(s.action) }}</span>
+              </td>
+              <td class="text-[11.5px] text-text-5">
+                <div>{{ explainCron(s.cron) }}</div>
+                <div class="font-mono text-[11px]">{{ s.cron }}</div>
+              </td>
+              <td class="text-[11.5px] text-text-5">
+                <div>{{ s.lastRun ? formatDayTime(s.lastRun) : '—' }}</div>
+                <div v-if="s.lastStatus" :class="s.lastStatus === 'failed' ? 'text-[#fca5a5]' : 'text-[#4ade80]'">
+                  {{ statusBadge(s).text }}<template v-if="s.lastStatus === 'success' && s.targets?.length">
+                    {{ ' ' + s.targets.length }}</template>
+                </div>
+              </td>
+              <td class="text-[11.5px] text-text-5">
+                {{ s.enabled ? (s.nextRun ? formatDayTime(s.nextRun) : '—') : '已停用' }}
+              </td>
+              <td class="text-right">
+                <UiSwitch
+                  :model-value="s.enabled"
+                  :label="`启用 ${s.name}`"
+                  @update:model-value="toggleEnabled(s)"
+                />
+              </td>
+              <td>
+                <div class="flex justify-end gap-1.5">
                   <button class="dh-btn dh-btn-sm" :disabled="running === s.id" @click="runNow(s)">
                     <Loader2 v-if="running === s.id" class="h-3 w-3 dh-spin" />
                     <Play v-else class="h-3 w-3" />运行
                   </button>
-                  <button class="dh-btn dh-btn-sm" @click="openEdit(s)">编辑</button>
+                  <button class="dh-btn dh-btn-sm" @click="startEdit(s)">编辑</button>
                   <button class="dh-btn dh-btn-sm dh-btn-danger" @click="removeTarget = s">
                     <Trash2 class="h-3 w-3" />
                   </button>
@@ -271,114 +426,122 @@ onUnmounted(() => closeStream?.())
       </div>
     </div>
 
-    <!-- 编辑器 -->
-    <Modal
-      :open="showEditor"
-      :title="form.id ? '编辑计划任务' : '新建计划任务'"
-      width="600px"
-      @close="showEditor = false"
-    >
-      <div class="flex flex-col gap-3.5">
-        <div>
-          <label class="dh-label">任务名称</label>
-          <input v-model="form.name" class="dh-input" placeholder="例如：每天凌晨更新全部容器" />
+    <!-- 新建/编辑 + 时间轴 -->
+    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-[1fr_.72fr]">
+      <div id="schedule-form" class="dh-card">
+        <div class="dh-card-head">
+          <span>{{ editingId ? '编辑任务' : '新建任务' }}</span>
+          <button v-if="editingId" class="ml-auto text-[11.5px] font-normal text-text-5 hover:text-accent" @click="resetForm">
+            取消编辑
+          </button>
         </div>
-
-        <div>
-          <label class="dh-label">执行动作</label>
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <button
-              v-for="a in actions"
-              :key="a.key"
-              type="button"
-              class="rounded-[10px] border px-3 py-2 text-left transition-colors"
-              :class="
-                form.action === a.key
-                  ? 'border-[rgba(45,212,191,.5)] bg-[#12201f]'
-                  : 'border-line-1 bg-ink-800 hover:border-line-4'
-              "
-              @click="form.action = a.key"
-            >
-              <div class="text-[12.5px] font-medium" :class="form.action === a.key ? 'text-accent' : 'text-text-2'">
-                {{ a.label }}
-              </div>
-              <div class="mt-0.5 text-[11px] leading-relaxed text-text-5">{{ a.description }}</div>
-            </button>
+        <div class="dh-card-body flex flex-col gap-3.5">
+          <div>
+            <label class="dh-label">任务名称</label>
+            <input v-model="form.name" class="dh-input" placeholder="例如：夜间重启下载器" />
           </div>
-        </div>
 
-        <div>
-          <label class="dh-label">计划（cron 表达式）</label>
-          <input v-model="form.cron" class="dh-input font-mono" placeholder="0 3 * * *" />
-          <div class="mt-1.5 flex flex-wrap gap-1.5">
-            <button
-              v-for="p in cronPresets"
-              :key="p.cron"
-              type="button"
-              class="rounded-full border px-2.5 py-[3px] text-[11.5px] transition-colors"
-              :class="
-                form.cron === p.cron
-                  ? 'border-[rgba(45,212,191,.5)] bg-[#10231f] text-accent'
-                  : 'border-line-3 text-text-3 hover:border-line-4'
-              "
-              @click="form.cron = p.cron"
-            >
-              {{ p.label }}
-            </button>
-          </div>
-          <div class="mt-1.5 text-[11.5px] text-text-5">
-            解析结果：<b class="text-text-3">{{ explainCron(form.cron) || '无法解析' }}</b>
-          </div>
-        </div>
-
-        <div v-if="actionMeta?.needsTargets">
-          <label class="dh-label">
-            目标容器
-            <span class="text-text-6">（不选 = 全部容器，会自动排除 Dockhelm 自身与排除列表）</span>
-          </label>
-          <div class="dh-scroll max-h-[190px] overflow-auto rounded-[10px] border border-line-1 bg-ink-800 p-2">
-            <label
-              v-for="c in containers"
-              :key="c.id"
-              class="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-ink-750"
-            >
-              <input
-                type="checkbox"
-                class="h-[14px] w-[14px] accent-[#2dd4bf]"
-                :checked="form.targets.includes(c.name)"
-                @change="toggleTarget(c.name)"
-              />
-              <span class="min-w-0 flex-1 truncate text-[12px] text-text-2">{{ c.name }}</span>
-              <span v-if="c.self" class="dh-badge dh-badge-accent">自身</span>
-              <span v-else-if="c.excluded" class="dh-badge dh-badge-plain">已排除</span>
-              <span class="dh-badge" :class="c.state === 'running' ? 'dh-badge-run' : 'dh-badge-stop'">
-                {{ c.state === 'running' ? '运行' : '停止' }}
-              </span>
+          <div v-if="actionMeta?.needsTargets !== false">
+            <label class="dh-label">
+              选择容器
+              <span class="text-text-6">（不选 = 全部容器，自动排除 Dockhelm 自身与排除列表）</span>
             </label>
+            <div class="dh-scroll flex max-h-[132px] flex-wrap gap-1.5 overflow-auto rounded-[10px] border border-line-1 bg-ink-800 p-2">
+              <button
+                v-for="c in containers"
+                :key="c.id"
+                type="button"
+                class="dh-chip"
+                :data-on="form.targets.includes(c.name)"
+                @click="toggleTarget(c.name)"
+              >
+                {{ c.name }}
+                <span v-if="c.self" class="text-[10px] text-text-5">自身</span>
+              </button>
+              <div v-if="!containers.length" class="p-1 text-[11.5px] text-text-5">读不到容器列表</div>
+            </div>
+            <div class="mt-1 text-[11px] text-text-5">
+              已选 {{ form.targets.length }} 个{{ form.targets.length ? '' : '（等于全部容器）' }}
+            </div>
           </div>
-          <div class="mt-1 text-[11px] text-text-5">已选 {{ form.targets.length }} 个</div>
-        </div>
 
-        <label class="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-text-2">
-          <UiSwitch v-model="form.enabled" />
-          创建后立即启用
-        </label>
+          <div>
+            <label class="dh-label">执行动作</label>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="a in actions"
+                :key="a.key"
+                type="button"
+                class="dh-chip"
+                :data-on="form.action === a.key"
+                :title="a.description"
+                @click="form.action = a.key"
+              >
+                {{ shortAction(a.key) }}
+              </button>
+            </div>
+          </div>
 
-        <div
-          v-if="saveError"
-          class="rounded-[9px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.08)] px-3 py-2 text-[12px] text-[#fca5a5]"
-        >
-          {{ saveError }}
+          <div class="grid grid-cols-[1.4fr_1fr] gap-2.5">
+            <div>
+              <label class="dh-label">重复</label>
+              <select v-model="form.repeat" class="dh-select">
+                <option v-for="r in repeatOptions" :key="r.key" :value="r.key">{{ r.label }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="dh-label">{{ form.repeat === 'hourly' ? '每小时的第几分' : '时间' }}</label>
+              <input
+                v-if="form.repeat !== 'custom'"
+                v-model="form.time"
+                type="time"
+                class="dh-input font-mono"
+              />
+              <input v-else v-model="form.customCron" class="dh-input font-mono" placeholder="0 3 * * *" />
+            </div>
+          </div>
+
+          <div class="text-[11.5px] text-text-5">
+            解析结果：<b class="font-mono text-text-3">{{ composedCron }}</b>
+            <span v-if="explainCron(composedCron) && explainCron(composedCron) !== composedCron">
+              · {{ explainCron(composedCron) }}
+            </span>
+          </div>
+
+          <label class="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-text-2">
+            <UiSwitch v-model="form.enabled" />
+            创建后立即启用
+          </label>
+
+          <div v-if="saveError" class="dh-banner dh-banner-err py-2 text-[12px]">{{ saveError }}</div>
+
+          <button class="dh-btn dh-btn-primary" :disabled="saving" @click="save">
+            <Loader2 v-if="saving" class="h-3.5 w-3.5 dh-spin" />
+            {{ editingId ? '保存修改' : '创建任务' }}
+          </button>
         </div>
       </div>
-      <template #footer>
-        <button class="dh-btn" @click="showEditor = false">取消</button>
-        <button class="dh-btn dh-btn-primary" :disabled="!form.name.trim()" @click="save">
-          {{ form.id ? '保存修改' : '创建任务' }}
-        </button>
-      </template>
-    </Modal>
 
+      <div class="dh-card">
+        <div class="dh-card-head">时间轴 · 未来 24 小时</div>
+        <div v-if="!upcoming.length" class="dh-card-body text-[12px] text-text-5">
+          未来 24 小时内没有安排。
+        </div>
+        <div v-else class="dh-card-body flex flex-col gap-2.5">
+          <div v-for="u in upcoming" :key="u.s.id" class="flex items-center gap-2.5">
+            <span class="w-[74px] flex-none font-mono text-[11.5px] text-[#5eead4]">
+              {{ formatDayTime(u.t) }}
+            </span>
+            <span class="min-w-0 flex-1 truncate text-[12.5px]">{{ u.s.name }}</span>
+            <span class="dh-badge flex-none" :class="actionTone(u.s.action)">
+              {{ shortAction(u.s.action) }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除确认 -->
     <Modal
       :open="!!removeTarget"
       title="删除计划任务"
@@ -391,6 +554,36 @@ onUnmounted(() => closeStream?.())
         <button class="dh-btn" @click="removeTarget = null">取消</button>
         <button class="dh-btn dh-btn-danger" @click="confirmRemove">确认删除</button>
       </template>
+    </Modal>
+
+    <!-- 执行历史 -->
+    <Modal :open="historyOpen" title="执行历史" subtitle="仅计划任务" width="720px" @close="historyOpen = false">
+      <div v-if="historyLoading" class="grid h-24 place-items-center text-text-5">
+        <Loader2 class="h-4 w-4 dh-spin" />
+      </div>
+      <div v-else-if="!historyLogs.length" class="py-8 text-center text-[12.5px] text-text-5">
+        还没有计划任务的执行记录。
+      </div>
+      <div v-else class="overflow-x-auto">
+        <table class="dh-table">
+          <thead>
+            <tr>
+              <th class="w-[150px]">时间</th>
+              <th class="w-[180px]">任务</th>
+              <th>说明</th>
+              <th class="w-[90px]">结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="l in historyLogs" :key="l.id">
+              <td class="whitespace-nowrap text-[11.5px] text-text-5">{{ formatDayTime(l.ts) }}</td>
+              <td class="max-w-[180px] truncate text-[12px] text-text-2">{{ l.ref || '—' }}</td>
+              <td class="text-[12px] text-text-3">{{ l.message }}</td>
+              <td><span class="dh-badge" :class="historyStatus(l).cls">{{ historyStatus(l).text }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </Modal>
   </div>
 </template>

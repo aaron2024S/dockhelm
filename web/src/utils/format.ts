@@ -117,6 +117,37 @@ export function shortImage(image: string): string {
   return image.replace(/^docker\.io\/library\//, '').replace(/^library\//, '')
 }
 
+/**
+ * 带日期的短时间：今天 04:00 / 明天 04:00 / 周三 08:00 / 10 月 10 日 02:00。
+ * mode 为 'date' 时只出日期部分（10 月 3 日）。
+ */
+export function formatDayTime(
+  input: string | number | undefined | null,
+  mode: 'datetime' | 'date' = 'datetime',
+): string {
+  if (!input) return '—'
+  const t = typeof input === 'number' ? (input > 1e12 ? input : input * 1000) : Date.parse(input)
+  if (Number.isNaN(t)) return '—'
+  const d = new Date(t)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+
+  const day0 = new Date(t)
+  day0.setHours(0, 0, 0, 0)
+  const today0 = new Date()
+  today0.setHours(0, 0, 0, 0)
+  const diffDays = Math.round((day0.getTime() - today0.getTime()) / 86400000)
+
+  let day: string
+  if (diffDays === 0) day = '今天'
+  else if (diffDays === 1) day = '明天'
+  else if (diffDays === 2) day = '后天'
+  else if (diffDays > 2 && diffDays < 7) day = `周${'日一二三四五六'[d.getDay()]}`
+  else day = `${d.getMonth() + 1} 月 ${d.getDate()} 日`
+
+  return mode === 'date' ? day : `${day} ${hm}`
+}
+
 /** 把 cron 表达式翻译成中文说明（覆盖常见写法，认不出就原样返回）。 */
 export function explainCron(expr: string): string {
   const e = expr.trim()

@@ -351,6 +351,231 @@
     transition: width 0.3s;
   }
 
+  /* 顶栏图标按钮（设计稿 .iconbtn） */
+  .dh-iconbtn {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    flex: none;
+    border-radius: 9px;
+    border: 1px solid var(--color-line-3);
+    color: var(--color-text-4);
+    background: transparent;
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      color 0.15s;
+  }
+  .dh-iconbtn:hover:not(:disabled) {
+    border-color: var(--color-line-4);
+    color: var(--color-text-1);
+  }
+  .dh-iconbtn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* 头像圆点（设计稿 .avatar） */
+  .dh-avatar {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    border-radius: 50%;
+    background: #1f2b3a;
+    color: var(--color-text-4);
+    font-size: 11px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+  }
+  .dh-avatar:hover {
+    background: #26364a;
+    color: var(--color-text-1);
+  }
+
+  /* 筛选 chip（设计稿 .chip） */
+  .dh-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--color-line-3);
+    color: var(--color-text-3);
+    background: transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      border-color 0.15s,
+      color 0.15s,
+      background 0.15s;
+  }
+  .dh-chip:hover:not(:disabled) {
+    border-color: var(--color-line-4);
+    color: var(--color-text-1);
+  }
+  .dh-chip[data-on='true'] {
+    background: var(--color-accent-soft);
+    border-color: rgba(45, 212, 191, 0.5);
+    color: var(--color-accent);
+  }
+  .dh-chip:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* 分组标题（设计稿 .h6） */
+  .dh-nav-group {
+    padding: 12px 10px 5px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    color: var(--color-text-6);
+  }
+
+  /* 指标卡（设计稿 .metric） */
+  .dh-metric {
+    background: var(--color-ink-700);
+    border: 1px solid var(--color-line-1);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .dh-metric .k {
+    font-size: 12px;
+    color: var(--color-text-4);
+  }
+  .dh-metric .v {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+    line-height: 1.1;
+    margin-top: 6px;
+  }
+  .dh-metric .v small {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--color-text-5);
+    margin-left: 4px;
+  }
+  .dh-metric .s {
+    font-size: 12px;
+    color: var(--color-text-4);
+    margin-top: 4px;
+  }
+
+  /* 提示条（设计稿 .banner） */
+  .dh-banner {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 12px 15px;
+    border-radius: 14px;
+    font-size: 13px;
+  }
+  .dh-banner-info {
+    background: rgba(45, 212, 191, 0.07);
+    border: 1px solid rgba(45, 212, 191, 0.28);
+    color: #99f6e4;
+  }
+  .dh-banner-warn {
+    background: rgba(245, 165, 36, 0.07);
+    border: 1px solid rgba(245, 165, 36, 0.3);
+    color: #fcd34d;
+  }
+  .dh-banner-err {
+    background: rgba(248, 113, 113, 0.07);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    color: #fca5a5;
+  }
+
+  /* 页头（设计稿 .phead） */
+  .dh-phead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .dh-h1 {
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .dh-sub {
+    font-size: 12px;
+    color: var(--color-text-4);
+  }
+
+  /* 时间线行（设计稿 .tl） */
+  .dh-tl {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid #171f2a;
+  }
+  .dh-tl:last-child {
+    border-bottom: none;
+  }
+
+  /* 登录卡片（设计稿 .lglogo / .field / .eye） */
+  .dh-lglogo {
+    width: 42px;
+    height: 42px;
+    border-radius: 13px;
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    display: grid;
+    place-items: center;
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 auto;
+    flex: none;
+  }
+  .dh-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--color-line-3);
+    border-radius: 10px;
+    padding: 9px 11px;
+    background: var(--color-ink-800);
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s;
+  }
+  .dh-field:focus-within {
+    border-color: rgba(45, 212, 191, 0.55);
+    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.08);
+  }
+  .dh-field input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    outline: none;
+    color: var(--color-text-1);
+    font-size: 13px;
+    letter-spacing: 2px;
+  }
+  .dh-field input::placeholder {
+    color: var(--color-text-6);
+    letter-spacing: normal;
+  }
+  .dh-eye {
+    flex: none;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 11.5px;
+    color: var(--color-text-5);
+    transition: color 0.15s;
+  }
+  .dh-eye:hover {
+    color: var(--color-text-2);
+  }
+
   /* 分段控件 */
   .dh-seg {
     display: inline-flex;

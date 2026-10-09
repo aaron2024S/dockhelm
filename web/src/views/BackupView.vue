@@ -185,10 +185,18 @@ onMounted(async () => {
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">备份与恢复</div>
+      <div class="dh-sub">
+        快照 {{ stats?.snapshots ?? 0 }} 份 · 占用 {{ formatBytes(stats?.sizeBytes) }} · 覆盖
+        {{ stats?.containers ?? 0 }} 个容器
+      </div>
+    </div>
+
     <!-- 能力边界说明 -->
-    <div class="flex items-start gap-3 rounded-[14px] border border-[rgba(45,212,191,.28)] bg-[rgba(45,212,191,.07)] px-4 py-3 text-[12.5px] leading-relaxed text-[#99f6e4]">
+    <div class="dh-banner dh-banner-info items-start">
       <HardDrive class="mt-[2px] h-4 w-4 flex-none" />
-      <div class="min-w-0 flex-1">
+      <div class="min-w-0 flex-1 leading-relaxed">
         Dockhelm 备份的是<b>容器配置快照</b>（<code>docker inspect</code> 的结果），可以一键还原成同名容器。
         <b>绑定挂载的数据在宿主机目录上</b>，Dockhelm 容器默认看不见 —— 要备份那份数据，得把宿主目录也挂进来。
         compose 项目真正的来源是那份 <code>yaml</code>，用「compose 项目」标签页查看。

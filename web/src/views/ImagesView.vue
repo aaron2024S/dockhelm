@@ -28,6 +28,9 @@ const filtered = computed(() => {
 })
 
 const danglingCount = computed(() => images.value.filter((i) => i.dangling).length)
+const danglingSize = computed(() =>
+  images.value.filter((i) => i.dangling).reduce((sum, i) => sum + (i.size || 0), 0),
+)
 
 async function load() {
   loading.value = true
@@ -73,19 +76,24 @@ onMounted(() => void load())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
-    <div class="flex flex-wrap items-center gap-2.5">
-      <div class="dh-card flex items-center gap-4 px-3.5 py-2.5">
-        <div>
-          <div class="text-[11.5px] text-text-4">镜像数量</div>
-          <div class="text-[17px] font-semibold leading-tight">{{ images.length }}</div>
-        </div>
-        <div class="h-8 w-px bg-line-1" />
-        <div>
-          <div class="text-[11.5px] text-text-4">占用空间</div>
-          <div class="text-[17px] font-semibold leading-tight">{{ formatBytes(totalSize) }}</div>
-        </div>
+    <div class="dh-phead">
+      <div class="dh-h1">镜像</div>
+      <div class="dh-sub">
+        {{ images.length }} 个 · 占用 {{ formatBytes(totalSize) }} ·
+        悬空 {{ danglingCount }} 个（可回收 {{ formatBytes(danglingSize) }}）
       </div>
+      <div class="ml-auto flex gap-2">
+        <button class="dh-btn" :disabled="loading" @click="load">
+          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
+        </button>
+        <button class="dh-btn dh-btn-primary" :disabled="pruning || !danglingCount" @click="prune">
+          <Sparkles class="h-3.5 w-3.5" :class="pruning ? 'dh-spin' : ''" />
+          清理悬空镜像
+        </button>
+      </div>
+    </div>
 
+    <div class="flex flex-wrap items-center gap-2.5">
       <div class="relative min-w-[170px] flex-1 sm:max-w-[260px]">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-5" />
         <input v-model="keyword" class="dh-input !pl-8" placeholder="按标签或 ID 搜索" />
@@ -95,16 +103,6 @@ onMounted(() => void load())
         <input v-model="onlyDangling" type="checkbox" class="h-[14px] w-[14px] accent-[#2dd4bf]" />
         只看悬空镜像 ({{ danglingCount }})
       </label>
-
-      <div class="ml-auto flex gap-2">
-        <button class="dh-btn" :disabled="loading" @click="load">
-          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
-        </button>
-        <button class="dh-btn" :disabled="pruning || !danglingCount" @click="prune">
-          <Sparkles class="h-3.5 w-3.5" :class="pruning ? 'dh-spin' : ''" />
-          清理悬空镜像
-        </button>
-      </div>
     </div>
 
     <div class="dh-card">

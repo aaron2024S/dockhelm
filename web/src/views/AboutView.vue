@@ -10,6 +10,7 @@ import {
   Heart,
   Info,
   Layers,
+  RefreshCw,
   Rocket,
   Server,
   ShieldCheck,
@@ -79,6 +80,18 @@ onMounted(() => void load())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">关于</div>
+      <div class="dh-sub">
+        Dockhelm v{{ about?.version ?? '—' }} · 自托管 Docker 容器管理面板
+      </div>
+      <div class="ml-auto flex gap-2">
+        <button class="dh-btn" :disabled="loading" @click="load">
+          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
+        </button>
+      </div>
+    </div>
+
     <!-- 头部 -->
     <div class="dh-card overflow-hidden">
       <div

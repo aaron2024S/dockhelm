@@ -1,37 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
-import {
-  Activity,
-  AlertTriangle,
-  ArrowUpRight,
-  Box,
-  CircleDot,
-  Download,
-  HardDrive,
-  Layers,
-  Loader2,
-  RefreshCw,
-  Server,
-} from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
-import type { OverviewResponse, RunLog } from '@/api/types'
-import { formatBytes, relativeTime, shortImage } from '@/utils/format'
-import { useToastStore } from '@/stores/toast'
-import EmptyState from '@/components/EmptyState.vue'
+import type { OverviewResponse, RunLog, Schedule } from '@/api/types'
+import { formatBytes, formatDayTime, shortImage } from '@/utils/format'
 
-const toast = useToastStore()
+const router = useRouter()
 const data = ref<OverviewResponse | null>(null)
+const schedules = ref<Schedule[]>([])
 const loading = ref(true)
+const checking = ref(false)
 const errorMsg = ref('')
-const live = ref<{ text: string; status: string }[]>([])
 let closeStream: (() => void) | null = null
 
 async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    data.value = await api.get<OverviewResponse>('/api/overview')
+    const [ov, sch] = await Promise.all([
+      api.get<OverviewResponse>('/api/overview'),
+      api.get<{ schedules: Schedule[] }>('/api/schedules'),
+    ])
+    data.value = ov
+    schedules.value = sch.schedules ?? []
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -39,36 +31,156 @@ async function load() {
   }
 }
 
+/** 只读巡检，不会停任何容器。 */
 async function checkNow() {
+  if (checking.value) return
+  checking.value = true
+  errorMsg.value = ''
   try {
     await api.post('/api/updates/check', {})
-    toast.success('巡检已开始', '只读检查，不会停止任何容器')
     window.setTimeout(load, 2500)
   } catch (e) {
-    toast.error('巡检失败', e instanceof Error ? e.message : String(e))
+    errorMsg.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    checking.value = false
   }
 }
 
-const diskPercent = computed(() => {
-  const d = data.value?.disk
-  if (!d || !d.total) return 0
-  return ((d.total - d.free) / d.total) * 100
+/** 把 "68.4 GB" 拆成数值和单位，好让单位用小字号跟在后面（设计稿的 .v small）。 */
+function sizeParts(n: number | undefined | null) {
+  const [v = '0', u = 'B'] = formatBytes(n).split(' ')
+  return { v, u }
+}
+
+const donut = computed(() => {
+  const total = data.value?.containers.total ?? 0
+  const running = data.value?.containers.running ?? 0
+  const C = 2 * Math.PI * 46
+  const runArc = total ? (running / total) * C : 0
+  const stopArc = total ? ((total - running) / total) * C : 0
+  return { C, runArc, stopArc }
 })
 
-const statusOfLog = (l: RunLog) => {
-  if (l.status === 'success' || l.status === 'up_to_date') return 'accent'
-  if (l.status === 'failed') return 'err'
-  return 'plain'
+const memTotal = computed(
+  () => data.value?.usage?.memTotal || data.value?.docker?.memTotal || 0,
+)
+const memUsed = computed(() => data.value?.usage?.memUsed ?? 0)
+const diskUsed = computed(() => {
+  const d = data.value?.disk
+  if (!d?.total) return 0
+  return d.total - d.free
+})
+const pct = (used: number, total: number) =>
+  total > 0 ? Math.min((used / total) * 100, 100) : 0
+
+const cpuPercent = computed(() => Math.min(data.value?.usage?.cpuPercent ?? 0, 100))
+
+/** 待更新：按镜像归并，同一镜像影响几台容器就标几台（设计稿的「N 台」）。 */
+const updateGroups = computed(() => {
+  const map = new Map<
+    string,
+    { image: string; containers: string[]; localDigest: string; remoteDigest: string }
+  >()
+  for (const it of data.value?.updates.items ?? []) {
+    const entry = map.get(it.image)
+    if (entry) {
+      entry.containers.push(it.container)
+    } else {
+      map.set(it.image, {
+        image: it.image,
+        containers: [it.container],
+        localDigest: it.localDigest,
+        remoteDigest: it.remoteDigest,
+      })
+    }
+  }
+  return [...map.values()]
+})
+
+/** 计划任务里最近的一次「下次执行」。 */
+const nextRun = computed(() => {
+  const times = schedules.value
+    .filter((s) => s.enabled && s.nextRun)
+    .map((s) => Date.parse(s.nextRun as string))
+    .filter((t) => !Number.isNaN(t))
+    .sort((a, b) => a - b)
+  return times.length ? times[0] : 0
+})
+
+const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 8))
+
+/** 短摘要：image 只留名字首字母当作图标。 */
+function initial(image: string) {
+  const name = shortImage(image).split(/[/:]/).filter(Boolean)
+  const last = name.length >= 2 ? (name[name.length - 2] as string) : (name[0] ?? '?')
+  return (last[0] ?? '?').toUpperCase()
+}
+
+/** 待更新列表里的镜像名：只留最后一段仓库名、去掉 tag（设计稿写的就是 qbittorrent / jellyfin / nginx）。 */
+function imageShort(image: string) {
+  const noTag = (image.split('@')[0] ?? image).split('/').pop() ?? image
+  const colon = noTag.indexOf(':')
+  return colon > 0 ? noTag.slice(0, colon) : noTag
+}
+
+function digestShort(d: string) {
+  if (!d) return '—'
+  const hex = d.includes(':') ? (d.split(':')[1] ?? d) : d
+  return hex.slice(0, 7)
+}
+
+const KIND_LABEL: Record<string, string> = {
+  update: '更新',
+  container: '容器',
+  image: '镜像',
+  volume: '卷',
+  schedule: '计划任务',
+  backup: '备份',
+  restore: '还原',
+  system: '系统',
+  check: '检测',
+}
+
+function kindLabel(kind: string) {
+  return KIND_LABEL[kind] ?? kind
+}
+
+function kindClass(kind: string, status: string) {
+  if (status === 'failed') return 'dh-badge-err'
+  if (kind === 'schedule') return 'dh-badge-accent'
+  return 'dh-badge-plain'
+}
+
+function resultBadge(l: RunLog) {
+  if (l.status === 'success') return { text: '成功', cls: 'dh-badge-run' }
+  if (l.status === 'up_to_date') return { text: '跳过', cls: 'dh-badge-accent' }
+  if (l.status === 'failed') return { text: '失败', cls: 'dh-badge-err' }
+  if (l.status === 'done') return { text: '完成', cls: 'dh-badge-run' }
+  return { text: l.status || '—', cls: 'dh-badge-plain' }
+}
+
+/** 时间列：今天只出 HH:mm，昨天带前缀，更早出日期。 */
+function logTime(ts: string) {
+  const t = Date.parse(ts)
+  if (Number.isNaN(t)) return '—'
+  const d = new Date(t)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  const today0 = new Date()
+  today0.setHours(0, 0, 0, 0)
+  const day0 = new Date(t)
+  day0.setHours(0, 0, 0, 0)
+  const diff = Math.round((day0.getTime() - today0.getTime()) / 86400000)
+  if (diff === 0) return hm
+  if (diff === -1) return `昨天 ${hm}`
+  return formatDayTime(ts, 'date')
 }
 
 onMounted(() => {
   void load()
+  // 订阅事件只为「批次跑完 / 巡检结束」时自动刷新总览，界面本身不再展示活动流。
   closeStream = openStream('/api/events/stream', (topic, ev) => {
     if (topic !== 'update' && topic !== 'schedule') return
-    const message = typeof ev.data?.message === 'string' ? ev.data.message : ev.kind
-    live.value.unshift({ text: String(message), status: String(ev.status ?? 'info') })
-    if (live.value.length > 6) live.value.pop()
-    // 批次或巡检结束时刷新总览
     if (ev.kind === 'batch_done' || ev.kind === 'check_done') {
       window.setTimeout(load, 800)
     }
@@ -80,252 +192,201 @@ onUnmounted(() => closeStream?.())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
-    <!-- 顶部提示条 -->
-    <div
-      v-if="data?.updates.available"
-      class="flex items-center gap-3 rounded-[14px] border border-[rgba(245,165,36,.3)] bg-[rgba(245,165,36,.07)] px-4 py-3 text-[13px] text-[#fcd34d]"
-    >
-      <AlertTriangle class="h-4 w-4 flex-none" />
-      <div class="min-w-0 flex-1">
-        有 <b>{{ data.updates.available }}</b> 个容器存在可用更新。Dockhelm 只会更新镜像真正变化的容器，
-        拉取后若镜像 ID 未变会直接跳过，不会把它们停掉。
-      </div>
-      <RouterLink to="/updates" class="dh-btn dh-btn-sm flex-none !border-[rgba(245,165,36,.45)] !text-[#fcd34d]">
-        去更新中心
-        <ArrowUpRight class="h-3 w-3" />
-      </RouterLink>
-    </div>
-
-    <div
-      v-if="errorMsg"
-      class="flex items-center gap-3 rounded-[14px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-4 py-3 text-[13px] text-[#fca5a5]"
-    >
+    <div v-if="errorMsg" class="dh-banner dh-banner-err">
       <AlertTriangle class="h-4 w-4 flex-none" />
       <span class="min-w-0 flex-1">{{ errorMsg }}</span>
       <button class="dh-btn dh-btn-sm" @click="load">重试</button>
     </div>
 
-    <div
-      v-if="data?.dockerError"
-      class="flex items-center gap-3 rounded-[14px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-4 py-3 text-[13px] text-[#fca5a5]"
-    >
+    <div v-if="data?.dockerError" class="dh-banner dh-banner-err">
       <AlertTriangle class="h-4 w-4 flex-none" />
       <span class="min-w-0 flex-1">无法连接 Docker 守护进程：{{ data.dockerError }}</span>
     </div>
 
-    <!-- 指标卡 -->
+    <!-- 四个指标 -->
     <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <div class="dh-card p-3.5">
-        <div class="flex items-center gap-2 text-[12px] text-text-4">
-          <Box class="h-3.5 w-3.5" />容器
+      <div class="dh-metric">
+        <div class="k">容器</div>
+        <div class="v">
+          {{ data?.containers.total ?? '—' }} <small>台</small>
         </div>
-        <div class="mt-1.5 flex items-baseline gap-1.5">
-          <span class="text-[22px] font-semibold leading-none tracking-[-0.3px]">
-            {{ data?.containers.running ?? '—' }}
-          </span>
-          <span class="text-[12px] text-text-5">/ {{ data?.containers.total ?? '—' }} 运行中</span>
-        </div>
-        <div class="mt-2 flex flex-wrap gap-1.5">
-          <span class="dh-badge dh-badge-run"><span class="h-[7px] w-[7px] rounded-full bg-run" />运行 {{ data?.containers.running ?? 0 }}</span>
-          <span class="dh-badge dh-badge-stop">停止 {{ data?.containers.stopped ?? 0 }}</span>
-          <span v-if="data?.containers.unhealthy" class="dh-badge dh-badge-err">异常 {{ data.containers.unhealthy }}</span>
+        <div class="s">
+          运行 {{ data?.containers.running ?? 0 }} · 停止 {{ data?.containers.stopped ?? 0 }}
+          <template v-if="data?.containers.unhealthy"> · 异常 {{ data.containers.unhealthy }}</template>
         </div>
       </div>
 
-      <div class="dh-card p-3.5">
-        <div class="flex items-center gap-2 text-[12px] text-text-4">
-          <Download class="h-3.5 w-3.5" />可用更新
+      <div class="dh-metric">
+        <div class="k">待更新镜像</div>
+        <div class="v" :class="updateGroups.length ? 'text-[#fbbf24]' : ''">
+          {{ updateGroups.length }} <small>个</small>
         </div>
-        <div class="mt-1.5 flex items-baseline gap-1.5">
-          <span
-            class="text-[22px] font-semibold leading-none tracking-[-0.3px]"
-            :class="data?.updates.available ? 'text-[#fbbf24]' : ''"
-          >
-            {{ data?.updates.available ?? 0 }}
-          </span>
-          <span class="text-[12px] text-text-5">
-            {{ data?.updates.checkedAt ? relativeTime(data.updates.checkedAt) + '检查' : '尚未检查' }}
-          </span>
-        </div>
-        <div class="mt-2 flex items-center gap-2">
-          <button class="dh-btn dh-btn-sm" :disabled="loading" @click="checkNow">
-            <RefreshCw class="h-3 w-3" />立即巡检
-          </button>
-          <span v-if="data?.updates.unknown" class="dh-badge dh-badge-plain">
-            {{ data.updates.unknown }} 个无法判定
-          </span>
+        <div class="s">
+          {{ data?.updates.checkedAt ? `影响 ${data.updates.items.length} 台容器` : '还没做过巡检' }}
         </div>
       </div>
 
-      <div class="dh-card p-3.5">
-        <div class="flex items-center gap-2 text-[12px] text-text-4">
-          <Layers class="h-3.5 w-3.5" />镜像
+      <div class="dh-metric">
+        <div class="k">计划任务</div>
+        <div class="v">
+          {{ schedules.length }} <small>个</small>
         </div>
-        <div class="mt-1.5 flex items-baseline gap-1.5">
-          <span class="text-[22px] font-semibold leading-none tracking-[-0.3px]">{{ data?.images.total ?? '—' }}</span>
-          <span class="text-[12px] text-text-5">共 {{ formatBytes(data?.images.sizeBytes) }}</span>
-        </div>
-        <div class="mt-2">
-          <RouterLink to="/images" class="dh-btn dh-btn-sm">
-            管理镜像
-            <ArrowUpRight class="h-3 w-3" />
-          </RouterLink>
-        </div>
+        <div class="s">下次 {{ nextRun ? formatDayTime(nextRun) : '暂无启用中的任务' }}</div>
       </div>
 
-      <div class="dh-card p-3.5">
-        <div class="flex items-center gap-2 text-[12px] text-text-4">
-          <HardDrive class="h-3.5 w-3.5" />数据盘
+      <div class="dh-metric">
+        <div class="k">镜像占用</div>
+        <div class="v">
+          {{ sizeParts(data?.images.sizeBytes).v }} <small>{{ sizeParts(data?.images.sizeBytes).u }}</small>
         </div>
-        <div class="mt-1.5 flex items-baseline gap-1.5">
-          <span class="text-[22px] font-semibold leading-none tracking-[-0.3px]">
-            {{ data?.disk.total ? formatBytes(data.disk.free) : '—' }}
-          </span>
-          <span class="text-[12px] text-text-5">可用</span>
-        </div>
-        <div class="mt-2">
-          <div class="dh-bar"><i :style="{ width: `${Math.min(diskPercent, 100)}%` }" /></div>
-          <div class="mt-1 text-[11px] text-text-5">
-            共 {{ data?.disk.total ? formatBytes(data.disk.total) : '—' }}
-          </div>
-        </div>
+        <div class="s">可回收 {{ formatBytes(data?.images.reclaimable) }}</div>
       </div>
     </div>
 
+    <!-- 容器状态 + 待更新镜像 -->
     <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-[1.35fr_1fr]">
-      <!-- 有更新的容器 -->
       <div class="dh-card">
         <div class="dh-card-head">
-          <Download class="h-3.5 w-3.5 text-text-4" />
-          <span>待更新容器</span>
-          <span class="ml-auto text-[11.5px] font-normal text-text-5">
-            {{ data?.updates.items.length ?? 0 }} 个
-          </span>
+          <span>容器状态</span>
+          <span class="ml-auto dh-badge dh-badge-plain">实时</span>
         </div>
-        <div v-if="!data?.updates.checkedAt" class="dh-card-body text-[12.5px] text-text-4">
-          还没有做过巡检。点上面的「立即巡检」可以只读地检查一遍所有容器。
-        </div>
-        <EmptyState
-          v-else-if="!data.updates.items.length"
-          :icon="CircleDot"
-          title="没有待更新的容器"
-          description="所有可比对的容器都与仓库摘要一致。"
-        />
-        <div v-else class="divide-y divide-line-1">
-          <RouterLink
-            v-for="item in data.updates.items"
-            :key="item.container"
-            :to="`/containers/${encodeURIComponent(item.container)}`"
-            class="flex items-center gap-3 px-3.5 py-2.5 transition-colors hover:bg-ink-750"
-          >
-            <div class="grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-line-2 text-[11px] font-semibold text-[#5eead4]">
-              {{ item.container.slice(0, 2).toUpperCase() }}
+        <div class="dh-card-body flex items-center gap-[22px]">
+          <svg viewBox="0 0 120 120" class="h-[118px] w-[118px] flex-none">
+            <circle cx="60" cy="60" r="46" fill="none" stroke="#1e2836" stroke-width="13" />
+            <circle
+              cx="60"
+              cy="60"
+              r="46"
+              fill="none"
+              stroke="#34d399"
+              stroke-width="13"
+              stroke-linecap="round"
+              :stroke-dasharray="`${donut.runArc} ${donut.C}`"
+              transform="rotate(-90 60 60)"
+            />
+            <circle
+              v-if="donut.stopArc > 0"
+              cx="60"
+              cy="60"
+              r="46"
+              fill="none"
+              stroke="#64748b"
+              stroke-width="13"
+              :stroke-dasharray="`${donut.stopArc} ${donut.C}`"
+              :stroke-dashoffset="-donut.runArc"
+              transform="rotate(-90 60 60)"
+            />
+            <text x="60" y="56" text-anchor="middle" fill="#e6edf5" font-size="21" font-weight="600">
+              {{ data?.containers.running ?? 0 }}
+            </text>
+            <text x="60" y="74" text-anchor="middle" fill="#8a97a8" font-size="11">运行中</text>
+          </svg>
+
+          <div class="flex min-w-0 flex-1 flex-col gap-[11px]">
+            <div class="flex gap-4 text-[12px] text-text-4">
+              <span class="flex items-center gap-1.5">
+                <i class="h-[7px] w-[7px] rounded-full bg-run" />运行中 {{ data?.containers.running ?? 0 }}
+              </span>
+              <span class="flex items-center gap-1.5">
+                <i class="h-[7px] w-[7px] rounded-full bg-stop" />已停止 {{ data?.containers.stopped ?? 0 }}
+              </span>
             </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-[12.5px] font-medium">{{ item.container }}</div>
-              <div class="truncate font-mono text-[11px] text-text-5">{{ shortImage(item.image) }}</div>
+
+            <div class="flex flex-col gap-1.5">
+              <div class="flex justify-between text-[11.5px] text-text-4">
+                <span>CPU 总占用</span><span>{{ cpuPercent.toFixed(0) }}%</span>
+              </div>
+              <div class="dh-bar"><i :style="{ width: `${cpuPercent}%` }" /></div>
             </div>
-            <span class="dh-badge dh-badge-warn flex-none">有新版本</span>
-          </RouterLink>
+
+            <div class="flex flex-col gap-1.5">
+              <div class="flex justify-between text-[11.5px] text-text-4">
+                <span>内存 {{ formatBytes(memUsed) }} / {{ formatBytes(memTotal) }}</span>
+                <span>{{ pct(memUsed, memTotal).toFixed(0) }}%</span>
+              </div>
+              <div class="dh-bar">
+                <i :style="{ width: `${pct(memUsed, memTotal)}%`, background: '#5eead4' }" />
+              </div>
+            </div>
+
+            <!-- 磁盘：拿不到宿主机文件系统信息时（例如后端跑在 Windows 上）整行隐藏 -->
+            <div v-if="data?.disk?.total" class="flex flex-col gap-1.5">
+              <div class="flex justify-between text-[11.5px] text-text-4">
+                <span>磁盘 {{ formatBytes(diskUsed) }} / {{ formatBytes(data?.disk.total) }}</span>
+                <span>{{ pct(diskUsed, data?.disk.total ?? 0).toFixed(0) }}%</span>
+              </div>
+              <div class="dh-bar">
+                <i :style="{ width: `${pct(diskUsed, data?.disk.total ?? 0)}%`, background: '#818cf8' }" />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- 环境 + 实时活动 -->
-      <div class="flex flex-col gap-3.5">
-        <div class="dh-card">
-          <div class="dh-card-head">
-            <Server class="h-3.5 w-3.5 text-text-4" />
-            <span>Docker 环境</span>
-          </div>
-          <div class="dh-card-body grid grid-cols-2 gap-x-4 gap-y-2 text-[12px]">
-            <template v-if="data?.docker">
-              <div class="text-text-5">引擎版本</div>
-              <div class="truncate text-text-2">{{ data.docker.version }}</div>
-              <div class="text-text-5">系统</div>
-              <div class="truncate text-text-2">{{ data.docker.os }}</div>
-              <div class="text-text-5">架构</div>
-              <div class="truncate text-text-2">{{ data.docker.arch }}</div>
-              <div class="text-text-5">内核</div>
-              <div class="truncate text-text-2">{{ data.docker.kernel }}</div>
-              <div class="text-text-5">CPU / 内存</div>
-              <div class="truncate text-text-2">
-                {{ data.docker.cpus }} 核 / {{ formatBytes(data.docker.memTotal) }}
-              </div>
-              <div class="text-text-5">数据根目录</div>
-              <div class="col-span-1 truncate font-mono text-[11px] text-text-2">{{ data.docker.rootDir }}</div>
-              <div class="text-text-5">加速源</div>
-              <div class="truncate text-text-2">
-                <template v-if="data.docker.mirrors.length">
-                  {{ data.docker.mirrors.length }} 个（守护进程配置）
-                </template>
-                <template v-else>
-                  <span class="text-text-5">未配置</span>
-                </template>
-              </div>
-            </template>
-            <template v-else>
-              <div class="col-span-2 text-text-5">无法读取 Docker 信息</div>
-            </template>
-          </div>
+      <div class="dh-card flex flex-col">
+        <div class="dh-card-head">
+          <span>待更新镜像</span>
+          <span class="ml-auto dh-badge" :class="updateGroups.length ? 'dh-badge-warn' : 'dh-badge-plain'">
+            {{ updateGroups.length }} 个
+          </span>
         </div>
 
-        <div class="dh-card min-h-[160px]">
-          <div class="dh-card-head">
-            <Activity class="h-3.5 w-3.5 text-text-4" />
-            <span>实时活动</span>
-            <Loader2 v-if="loading" class="ml-auto h-3 w-3 dh-spin text-text-5" />
+        <div v-if="!updateGroups.length" class="dh-card-body flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
+          <div class="text-[12.5px] text-text-3">
+            {{ data?.updates.checkedAt ? '所有镜像都是最新的' : '还没有做过巡检' }}
           </div>
-          <div v-if="!live.length" class="dh-card-body text-[12.5px] text-text-4">
-            正在监听更新与计划任务的进度，触发后这里会实时出现。
+          <div class="text-[11.5px] leading-relaxed text-text-5">
+            {{
+              data?.updates.checkedAt
+                ? '没有任何容器需要更新。'
+                : '点顶栏的刷新按钮可以只读地检查一遍所有容器。'
+            }}
           </div>
-          <div v-else class="flex flex-col">
+          <button v-if="!data?.updates.checkedAt" class="dh-btn dh-btn-sm mt-1" :disabled="checking" @click="checkNow">
+            <Loader2 v-if="checking" class="h-3 w-3 dh-spin" />
+            立即巡检
+          </button>
+        </div>
+        <div v-else class="dh-card-body flex flex-col gap-[11px]">
+          <div v-for="g in updateGroups.slice(0, 4)" :key="g.image" class="flex items-center gap-2.5">
             <div
-              v-for="(item, i) in live"
-              :key="i"
-              class="flex items-center gap-2 border-b border-[#171f2a] px-3.5 py-2 text-[12px] last:border-b-0"
+              class="grid h-[28px] w-[28px] flex-none place-items-center rounded-[9px] bg-line-2 text-[11px] font-semibold text-[#5eead4]"
             >
-              <span
-                class="h-[6px] w-[6px] flex-none rounded-full"
-                :class="item.status === 'failed' ? 'bg-err' : item.status === 'success' ? 'bg-run' : 'bg-accent'"
-              />
-              <span class="min-w-0 flex-1 truncate text-text-3">{{ item.text }}</span>
+              {{ initial(g.image) }}
             </div>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-[12.5px] font-semibold" :title="g.image">{{ imageShort(g.image) }}</div>
+              <div class="truncate font-mono text-[11.5px] text-text-5">
+                {{ digestShort(g.localDigest) }} → {{ digestShort(g.remoteDigest) }}
+              </div>
+            </div>
+            <span class="dh-badge dh-badge-warn flex-none">{{ g.containers.length }} 台</span>
           </div>
+
+          <button class="dh-btn dh-btn-primary mt-0.5" @click="router.push('/updates')">
+            前往更新中心
+            <ArrowRight class="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- 最近操作 -->
+    <!-- 最近执行记录 -->
     <div class="dh-card">
       <div class="dh-card-head">
-        <Activity class="h-3.5 w-3.5 text-text-4" />
-        <span>最近操作记录</span>
-        <RouterLink to="/settings" class="ml-auto text-[11.5px] font-normal text-text-5 hover:text-accent">
-          查看全部
-        </RouterLink>
+        <span>最近执行记录</span>
+        <span class="ml-auto text-[12px] font-normal text-text-4">近 24 小时</span>
       </div>
-      <div v-if="!data?.recent?.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
-      <div v-else class="overflow-x-auto">
-        <table class="dh-table">
-          <thead>
-            <tr>
-              <th class="w-[140px]">时间</th>
-              <th class="w-[80px]">类型</th>
-              <th class="w-[160px]">对象</th>
-              <th>说明</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="l in data.recent" :key="l.id">
-              <td class="whitespace-nowrap text-[11.5px] text-text-5">{{ relativeTime(l.ts) }}</td>
-              <td>
-                <span class="dh-badge" :class="`dh-badge-${statusOfLog(l)}`">{{ l.kind }}</span>
-              </td>
-              <td class="max-w-[160px] truncate font-mono text-[11.5px] text-text-3">{{ l.ref || '—' }}</td>
-              <td class="text-[12px] text-text-2">{{ l.message }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="!recentRows.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
+      <div v-else class="dh-card-body flex flex-col py-1">
+        <div v-for="l in recentRows" :key="l.id" class="dh-tl">
+          <div class="w-[86px] flex-none text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
+          <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ kindLabel(l.kind) }}</span>
+          <span class="min-w-0 flex-1 truncate text-[12.5px] text-text-2" :title="l.message">
+            {{ l.message }}
+          </span>
+          <span class="dh-badge flex-none" :class="resultBadge(l).cls">{{ resultBadge(l).text }}</span>
+        </div>
       </div>
     </div>
   </div>

@@ -19,6 +19,7 @@ import type { ContainerView, RunLog, Settings } from '@/api/types'
 import { formatDateTime, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
+import { version } from '@/config'
 
 const toast = useToastStore()
 const app = useAppStore()
@@ -41,6 +42,8 @@ const newExclude = ref('')
 const oldPw = ref('')
 const newPw = ref('')
 const confirmPw = ref('')
+const showOld = ref(false)
+const showNew = ref(false)
 const changing = ref(false)
 
 /** 模板里安全渲染「双花括号」变量写法（直接写字面量会被 Vue 的插值分隔符截断）。 */
@@ -146,6 +149,11 @@ onMounted(() => void load())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">设置</div>
+      <div class="dh-sub">更新行为、计划任务与账户安全</div>
+    </div>
+
     <!-- 更新行为 -->
     <div class="dh-card">
       <div class="dh-card-head">
@@ -247,10 +255,8 @@ onMounted(() => void load())
       <div class="dh-card">
         <div class="dh-card-head">
           <User class="h-3.5 w-3.5 text-text-4" />
-          <span>账户与安全</span>
-          <RouterLink to="/about" class="ml-auto text-[11.5px] font-normal text-text-5 hover:text-accent">
-            关于 Dockhelm
-          </RouterLink>
+          <span>账户</span>
+          <span class="ml-auto text-[11.5px] font-mono font-normal text-text-5">右上角头像 → 账户</span>
         </div>
         <div class="flex flex-col gap-3.5 p-3.5">
           <div class="grid grid-cols-2 gap-3 text-[12px]">
@@ -272,22 +278,63 @@ onMounted(() => void load())
             <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-medium">
               <KeyRound class="h-3.5 w-3.5 text-text-4" />修改登录密码
             </div>
-            <div class="flex flex-col gap-2.5">
-              <input v-model="oldPw" type="password" class="dh-input" placeholder="当前密码" autocomplete="current-password" />
-              <input v-model="newPw" type="password" class="dh-input" placeholder="新密码" autocomplete="new-password" />
-              <input v-model="confirmPw" type="password" class="dh-input" placeholder="再输一次新密码" autocomplete="new-password" />
+            <div class="flex flex-col gap-[11px]">
+              <div>
+                <label class="mb-[5px] block text-[12px] text-text-4">当前密码</label>
+                <div class="dh-field">
+                  <input
+                    v-model="oldPw"
+                    :type="showOld ? 'text' : 'password'"
+                    placeholder="当前使用的密码"
+                    autocomplete="current-password"
+                  />
+                  <button type="button" class="dh-eye" @click="showOld = !showOld">
+                    {{ showOld ? '隐藏' : '显示' }}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label class="mb-[5px] block text-[12px] text-text-4">新密码</label>
+                <div class="dh-field">
+                  <input
+                    v-model="newPw"
+                    :type="showNew ? 'text' : 'password'"
+                    :placeholder="`至少 ${app.minPasswordLength} 位`"
+                    autocomplete="new-password"
+                  />
+                  <button type="button" class="dh-eye" @click="showNew = !showNew">
+                    {{ showNew ? '隐藏' : '显示' }}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label class="mb-[5px] block text-[12px] text-text-4">确认新密码</label>
+                <div class="dh-field">
+                  <input
+                    v-model="confirmPw"
+                    :type="showNew ? 'text' : 'password'"
+                    placeholder="再输一次新密码"
+                    autocomplete="new-password"
+                  />
+                </div>
+              </div>
               <div v-if="pwError" class="text-[11.5px] text-[#fca5a5]">{{ pwError }}</div>
-              <button
-                class="dh-btn dh-btn-primary"
-                :disabled="changing || !oldPw || !!pwError || !newPw"
-                @click="changePassword"
-              >
-                <Loader2 v-if="changing" class="h-3.5 w-3.5 dh-spin" />
-                <KeyRound v-else class="h-3.5 w-3.5" />
-                修改密码
-              </button>
+              <div class="dh-banner dh-banner-info !gap-2.5 !py-[9px] !pl-3 !pr-3 !text-[12px]">
+                <span class="h-[13px] w-[13px] flex-none rounded-[4px] bg-current opacity-50" />
+                改密成功后其他设备上的登录会立即失效，需重新登录。
+              </div>
+              <div class="flex justify-end">
+                <button
+                  class="dh-btn dh-btn-primary"
+                  :disabled="changing || !oldPw || !!pwError || !newPw"
+                  @click="changePassword"
+                >
+                  <Loader2 v-if="changing" class="h-3.5 w-3.5 dh-spin" />
+                  <KeyRound v-else class="h-3.5 w-3.5" />
+                  保存新密码
+                </button>
+              </div>
               <div class="text-[11px] leading-relaxed text-text-5">
-                修改后所有设备上的会话立即失效，需要重新登录。
                 忘记密码时：在 NAS 面板里删除 <code class="text-text-3">data/auth.json</code> 后重启容器，
                 或在 compose 里临时加 <code class="text-text-3">DOCKHELM_PASSWORD=新密码</code>。
               </div>
@@ -364,6 +411,13 @@ onMounted(() => void load())
           </table>
         </div>
       </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-1 text-[11.5px] text-text-6">
+      <span>Dockhelm v{{ version }}</span>
+      <RouterLink to="/about" class="hover:text-accent">关于 Dockhelm</RouterLink>
+      <RouterLink to="/notify" class="hover:text-accent">通知设置</RouterLink>
+      <span class="ml-auto">配置都在数据目录的 JSON 里，随时可以直接拷贝。</span>
     </div>
   </div>
 </template>

@@ -141,22 +141,36 @@ onUnmounted(() => closeStream?.())
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
+    <div class="dh-phead">
+      <div class="dh-h1">更新中心</div>
+      <div class="dh-sub">
+        {{ checkedAt ? `上次检测 ${relativeTime(checkedAt)} · 共比对 ${results.length} 个容器` : '还没有检测过' }}
+      </div>
+      <div class="ml-auto flex gap-2">
+        <button class="dh-btn" :disabled="loading || deepLoading" @click="check(true)">
+          <Zap class="h-3.5 w-3.5" :class="deepLoading ? 'dh-spin' : ''" />深度检测
+        </button>
+        <button class="dh-btn" :disabled="loading || deepLoading" @click="check(false)">
+          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />重新检测
+        </button>
+        <button
+          class="dh-btn dh-btn-primary"
+          :disabled="!available.length || applying"
+          @click="showConfirm = true"
+        >
+          <Download class="h-3.5 w-3.5" />更新 {{ available.length }} 个镜像
+        </button>
+      </div>
+    </div>
+
     <!-- 说明条：把「为什么不会误停容器」讲清楚 -->
-    <div class="flex items-start gap-3 rounded-[14px] border border-[rgba(45,212,191,.28)] bg-[rgba(45,212,191,.07)] px-4 py-3 text-[12.5px] leading-relaxed text-[#99f6e4]">
+    <div class="dh-banner dh-banner-info items-start">
       <Info class="mt-[2px] h-4 w-4 flex-none" />
-      <div class="min-w-0 flex-1">
+      <div class="min-w-0 flex-1 leading-relaxed">
         更新流程是「<b>先拉取、再比对镜像 ID</b>」：镜像一个字节没变就直接结束，
         <b>容器不会被停止、不会被重建</b>。检测也走 Docker 守护进程自己解析的仓库端点，
         因此「检测到的新版本」与「真正拉到的镜像」永远同源。
         <button class="ml-1 underline decoration-dotted" @click="showInfo = true">了解详情</button>
-      </div>
-      <div class="flex flex-none gap-2">
-        <button class="dh-btn dh-btn-sm" :disabled="loading || deepLoading" @click="check(false)">
-          <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />巡检
-        </button>
-        <button class="dh-btn dh-btn-sm" :disabled="loading || deepLoading" @click="check(true)">
-          <Zap class="h-3 w-3" :class="deepLoading ? 'dh-spin' : ''" />深度检测
-        </button>
       </div>
     </div>
 

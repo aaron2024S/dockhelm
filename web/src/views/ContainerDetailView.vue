@@ -19,12 +19,10 @@ import {
 import { api, openStream } from '@/api/client'
 import { relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
-import { useAppStore } from '@/stores/app'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToastStore()
-const app = useAppStore()
 
 const name = computed(() => decodeURIComponent(String(route.params.name ?? '')))
 const detail = ref<Record<string, any> | null>(null)
@@ -144,18 +142,16 @@ const running = computed(() => container.value.health !== undefined && (detail.v
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]">
-    <div class="flex flex-wrap items-center gap-2.5">
-      <button class="dh-btn dh-btn-sm" @click="router.back()">
-        <ArrowLeft class="h-3.5 w-3.5" />返回
+    <div class="dh-phead">
+      <button class="dh-iconbtn" title="返回列表" @click="router.back()">
+        <ArrowLeft class="h-4 w-4" />
       </button>
-      <div class="flex items-center gap-2">
-        <div class="grid h-[30px] w-[30px] place-items-center rounded-[9px] bg-line-2 text-[12px] font-semibold text-[#5eead4]">
-          {{ name.slice(0, 2).toUpperCase() }}
-        </div>
-        <div>
-          <div class="text-[14px] font-semibold">{{ name }}</div>
-          <div class="font-mono text-[11px] text-text-5">{{ container.id }}</div>
-        </div>
+      <div class="grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-line-2 text-[12px] font-semibold text-[#5eead4]">
+        {{ name.slice(0, 2).toUpperCase() }}
+      </div>
+      <div class="min-w-0">
+        <div class="dh-h1 truncate">{{ name }}</div>
+        <div class="dh-sub truncate font-mono">{{ container.id }}</div>
       </div>
 
       <div class="ml-auto flex flex-wrap items-center gap-2">
@@ -165,8 +161,8 @@ const running = computed(() => container.value.health !== undefined && (detail.v
         <button v-else class="dh-btn dh-btn-sm" :disabled="busy" @click="act('start')">
           <Play class="h-3 w-3" />启动
         </button>
-        <button class="dh-btn dh-btn-sm" :disabled="busy || app.settings === null && false" @click="act('restart')">
-          <RotateCw class="h-3 w-3" />重启
+        <button class="dh-btn dh-btn-sm" :disabled="busy" @click="act('restart')">
+          <RotateCw class="h-3 w-3" :class="busy ? 'dh-spin' : ''" />重启
         </button>
         <button class="dh-btn dh-btn-sm" @click="updateNow">
           <Download class="h-3 w-3" />检查并更新

@@ -32,6 +32,8 @@ const removeTarget = ref<ContainerView | null>(null)
 const removeVolumes = ref(false)
 const removing = ref(false)
 const selected = ref<Set<string>>(new Set())
+const checking = ref(false)
+const bulkBusy = ref(false)
 
 const filtered = computed(() => {
   let list = containers.value
@@ -116,6 +118,52 @@ async function updateSelected() {
   }
 }
 
+async function checkAll() {
+  checking.value = true
+  try {
+    const res = await api.post<{ results?: { status: string }[] }>('/api/updates/check', { deep: false })
+    const n = (res.results ?? []).filter((r) => r.status === 'update_available').length
+    toast.success('巡检完成', n ? `发现 ${n} 个有可用更新` : '所有容器都是最新的')
+    await load(true)
+  } catch (e) {
+    toast.error('巡检失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    checking.value = false
+  }
+}
+
+async function updateAll() {
+  const names = containers.value.filter((c) => c.hasUpdate && !c.self && !c.excluded).map((c) => c.name)
+  if (!names.length) return
+  try {
+    await api.post('/api/updates/apply', { names })
+    toast.info(`已提交 ${names.length} 个容器的更新`, '镜像未变化的容器会被自动跳过')
+  } catch (e) {
+    toast.error('提交失败', e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function bulkAct(action: 'start' | 'stop' | 'restart') {
+  const names = containers.value
+    .filter((c) => selected.value.has(c.name) && !c.self)
+    .map((c) => c.name)
+  if (!names.length) return
+  bulkBusy.value = true
+  let ok = 0
+  for (const name of names) {
+    try {
+      await api.post(`/api/containers/${encodeURIComponent(name)}/action`, { action })
+      ok += 1
+    } catch {
+      // 单个失败不中断整批
+    }
+  }
+  bulkBusy.value = false
+  selected.value = new Set()
+  toast.success(`已${labelOf(action)} ${ok}/${names.length} 台`, ok < names.length ? '部分容器操作失败，详见日志' : undefined)
+  await load(true)
+}
+
 async function confirmRemove() {
   const c = removeTarget.value
   if (!c) return
@@ -182,32 +230,56 @@ function closeMenu() {
 
 <template>
   <div class="flex flex-col gap-3.5 p-[18px]" @click="closeMenu">
-    <!-- 筛选条 -->
-    <div class="flex flex-wrap items-center gap-2.5">
-      <div class="dh-seg">
-        <button :data-on="filter === 'all'" @click="filter = 'all'">全部 {{ counts.all }}</button>
-        <button :data-on="filter === 'running'" @click="filter = 'running'">运行中 {{ counts.running }}</button>
-        <button :data-on="filter === 'stopped'" @click="filter = 'stopped'">已停止 {{ counts.stopped }}</button>
-        <button :data-on="filter === 'update'" @click="filter = 'update'">待更新 {{ counts.update }}</button>
+    <!-- 页头：标题 + 状态筛选 + 主操作 -->
+    <div class="dh-phead">
+      <div class="dh-h1">容器</div>
+      <div class="flex flex-wrap gap-1.5">
+        <button class="dh-chip" :data-on="filter === 'all'" @click="filter = 'all'">
+          全部 {{ counts.all }}
+        </button>
+        <button class="dh-chip" :data-on="filter === 'running'" @click="filter = 'running'">
+          运行中 {{ counts.running }}
+        </button>
+        <button class="dh-chip" :data-on="filter === 'stopped'" @click="filter = 'stopped'">
+          已停止 {{ counts.stopped }}
+        </button>
+        <button class="dh-chip" :data-on="filter === 'update'" @click="filter = 'update'">
+          有更新 {{ counts.update }}
+        </button>
       </div>
 
+      <div class="ml-auto flex flex-wrap gap-2">
+        <button class="dh-btn" :disabled="loading" @click="load()">
+          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
+        </button>
+        <button class="dh-btn" :disabled="checking" @click="checkAll">
+          <Download class="h-3.5 w-3.5" :class="checking ? 'dh-spin' : ''" />检测更新
+        </button>
+        <button class="dh-btn dh-btn-primary" :disabled="!counts.update" @click="updateAll">
+          更新 {{ counts.update }} 台有更新的容器
+        </button>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2.5">
       <div class="relative min-w-[180px] flex-1 sm:max-w-[280px]">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-5" />
         <input v-model="keyword" class="dh-input !pl-8" placeholder="按名称 / 镜像 / 项目筛选" />
       </div>
 
-      <button class="dh-btn" :disabled="loading" @click="load()">
-        <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
-      </button>
+      <div v-if="selected.size" class="ml-auto flex flex-wrap items-center gap-2">
+        <span class="text-[12px] text-text-4">已选 {{ selected.size }} 台</span>
+        <button class="dh-btn dh-btn-sm" @click="toggleAll">全选本页</button>
+        <button class="dh-btn dh-btn-sm" :disabled="bulkBusy" @click="bulkAct('restart')">重启</button>
+        <button class="dh-btn dh-btn-sm" :disabled="bulkBusy" @click="bulkAct('stop')">停止</button>
+        <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="!updatableSelected.length" @click="updateSelected">
+          更新选中
+        </button>
+      </div>
+    </div>
 
-      <template v-if="selected.size">
-        <div class="ml-auto flex items-center gap-2">
-          <span class="text-[12px] text-text-4">已选 {{ selected.size }} 个</span>
-          <button class="dh-btn dh-btn-primary" :disabled="!updatableSelected.length" @click="updateSelected">
-            <Download class="h-3.5 w-3.5" />更新选中的 {{ updatableSelected.length }} 个
-          </button>
-        </div>
-      </template>
+    <div class="dh-banner dh-banner-warn">
+      批量更新前会先核对镜像摘要：<b>只有镜像真的变了才会重启容器</b>，未变化的容器会原样跳过。
     </div>
 
     <div v-if="loading && !containers.length" class="dh-card grid h-[240px] place-items-center">
@@ -345,16 +417,16 @@ function closeMenu() {
       </div>
     </div>
 
-    <!-- 批量选择条 -->
-    <div v-if="filtered.length" class="flex items-center gap-2 text-[12px] text-text-5">
+    <!-- 批量选择条已并入页头，这里只保留一个「全选」快捷入口 -->
+    <div v-if="filtered.length && !selected.size" class="flex items-center gap-2 text-[12px] text-text-5">
       <label class="flex cursor-pointer items-center gap-2">
         <input
           type="checkbox"
           class="h-[14px] w-[14px] accent-[#2dd4bf]"
-          :checked="selected.size === filtered.length && filtered.length > 0"
+          :checked="false"
           @change="toggleAll"
         />
-        全选当前列表
+        全选当前列表（{{ filtered.length }} 台）
       </label>
     </div>
 
