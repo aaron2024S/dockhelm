@@ -13,6 +13,19 @@ import (
 	"github.com/aaron2024s/dockhelm/internal/updater"
 )
 
+// PortView 一条端口映射的结构化表示。
+//
+// 之所以不只用 "8080→80/tcp" 这种字符串：前端需要区分「真的发布到宿主机」
+// 与「只暴露在容器网络里」——这两者对用户的含义完全不同，
+// 用字符串就得在前端再解析一遍，迟早解析错。
+type PortView struct {
+	HostIP    string `json:"hostIp"`
+	HostPort  int    `json:"hostPort"`
+	InnerPort int    `json:"innerPort"`
+	Proto     string `json:"proto"`
+	Published bool   `json:"published"`
+}
+
 // ContainerView 是给前端的容器视图模型。
 type ContainerView struct {
 	Name        string            `json:"name"`
@@ -24,6 +37,7 @@ type ContainerView struct {
 	Status      string            `json:"status"`
 	Created     int64             `json:"created"`
 	Ports       []string          `json:"ports"`
+	PortList    []PortView        `json:"portList"`
 	Project     string            `json:"project"`
 	Labels      map[string]string `json:"labels"`
 	HasUpdate   bool              `json:"hasUpdate"`
@@ -60,7 +74,7 @@ func (s *Server) hListContainers(w http.ResponseWriter, r *http.Request) {
 			Image: c.Image, ImageID: shortID(c.ImageID),
 			State: c.State, Status: c.Status, Created: c.Created,
 			Project: c.ComposeProject(), Labels: c.Labels,
-			Ports: formatPorts(c.Ports),
+			Ports: formatPorts(c.Ports), PortList: portViews(c.Ports),
 		}
 		v.Self = s.up.IsSelf(name)
 		v.Excluded = ex[name]
@@ -182,6 +196,72 @@ func summarizeInspect(insp map[string]any) map[string]any {
 	}
 	sort.Slice(nets, func(i, j int) bool { return str(nets[i]["name"]) < str(nets[j]["name"]) })
 	out["networks"] = nets
+
+	// 端口：用 NetworkSettings.Ports 而不是 HostConfig.PortBindings ——
+	// 前者是「实际生效」的映射，后者只是「当初请求的」。
+	out["ports"] = portViewsFromInspect(ns)
+
+	return out
+}
+
+// portViewsFromInspect 从 inspect 的 NetworkSettings.Ports 抽出端口映射。
+//
+// 形如 {"80/tcp": [{"HostIp":"0.0.0.0","HostPort":"8080"}], "443/tcp": null}：
+// 值为 null（或空数组）表示这个端口只在容器网络内可见、没发布到宿主机。
+func portViewsFromInspect(ns map[string]any) []PortView {
+	if ns == nil {
+		return []PortView{}
+	}
+	raw, ok := ns["Ports"].(map[string]any)
+	if !ok {
+		return []PortView{}
+	}
+	out := []PortView{}
+	for spec, v := range raw {
+		inner, proto, _ := strings.Cut(spec, "/")
+		if proto == "" {
+			proto = "tcp"
+		}
+		innerPort, _ := strconv.Atoi(inner)
+		binds, _ := v.([]any)
+		published := false
+		for _, b := range binds {
+			m, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			hp := 0
+			switch t := m["HostPort"].(type) {
+			case string:
+				hp, _ = strconv.Atoi(t)
+			case float64:
+				hp = int(t)
+			}
+			if hp == 0 {
+				continue
+			}
+			published = true
+			ip := str(m["HostIp"])
+			if ip == "0.0.0.0" || ip == "::" {
+				ip = ""
+			}
+			out = append(out, PortView{
+				HostIP: ip, HostPort: hp, InnerPort: innerPort, Proto: proto, Published: true,
+			})
+		}
+		if !published {
+			out = append(out, PortView{InnerPort: innerPort, Proto: proto, Published: false})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Published != out[j].Published {
+			return out[i].Published
+		}
+		if out[i].HostPort != out[j].HostPort {
+			return out[i].HostPort < out[j].HostPort
+		}
+		return out[i].InnerPort < out[j].InnerPort
+	})
 	return out
 }
 
@@ -580,6 +660,53 @@ func formatPorts(ports []struct {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// portViews 把守护进程的端口数组转成结构化视图。
+//
+// 同一对内/外端口去重（IPv4 与 IPv6 各报一条是 Docker 的常态，
+// 不去重就会出现「8080→80/tcp」重复两遍）。
+func portViews(ports []struct {
+	IP          string `json:"IP"`
+	PrivatePort uint16 `json:"PrivatePort"`
+	PublicPort  uint16 `json:"PublicPort"`
+	Type        string `json:"Type"`
+}) []PortView {
+	seen := map[string]bool{}
+	out := []PortView{}
+	for _, p := range ports {
+		v := PortView{
+			InnerPort: int(p.PrivatePort),
+			Proto:     p.Type,
+			Published: p.PublicPort > 0,
+		}
+		if v.Proto == "" {
+			v.Proto = "tcp"
+		}
+		if p.PublicPort > 0 {
+			v.HostPort = int(p.PublicPort)
+			if p.IP != "" && p.IP != "0.0.0.0" && p.IP != "::" {
+				v.HostIP = p.IP
+			}
+		}
+		key := fmt.Sprintf("%s:%d>%d/%s", v.HostIP, v.HostPort, v.InnerPort, v.Proto)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, v)
+	}
+	// 发布到宿主机的排前面，其次按宿主端口号
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Published != out[j].Published {
+			return out[i].Published
+		}
+		if out[i].HostPort != out[j].HostPort {
+			return out[i].HostPort < out[j].HostPort
+		}
+		return out[i].InnerPort < out[j].InnerPort
+	})
 	return out
 }
 

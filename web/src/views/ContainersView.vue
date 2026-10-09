@@ -18,6 +18,7 @@ import { containerStateLabel, relativeTime, shortImage } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
+import PortChips from '@/components/PortChips.vue'
 
 const toast = useToastStore()
 const route = useRoute()
@@ -376,16 +377,9 @@ function closeMenu() {
           </span>
         </div>
 
-        <div v-if="c.ports.length" class="flex flex-wrap gap-1">
-          <span
-            v-for="p in c.ports.slice(0, 4)"
-            :key="p"
-            class="rounded-md bg-ink-800 px-1.5 py-[2px] font-mono text-[10.5px] text-text-4"
-          >
-            {{ p }}
-          </span>
-          <span v-if="c.ports.length > 4" class="px-1 text-[10.5px] text-text-5">+{{ c.ports.length - 4 }}</span>
-        </div>
+        <!-- 端口：发布到宿主机的用实底、加粗宿主端口；只在容器网络里的用虚线框区分。
+             超过 3 条收成 +N，鼠标悬停看全部 —— 卡片本身不该被端口撑变形。 -->
+        <PortChips :ports="c.portList ?? []" :max="3" />
 
         <div class="mt-auto flex gap-1.5 border-t border-line-2 pt-2.5">
           <button

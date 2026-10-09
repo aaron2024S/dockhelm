@@ -61,12 +61,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '备份与恢复', icon: 'archive' },
   },
   {
-    path: '/networks',
-    name: 'networks',
-    component: () => import('@/views/NetworksView.vue'),
-    meta: { title: '网络与端口', icon: 'network' },
-  },
-  {
     path: '/notify',
     name: 'notify',
     component: () => import('@/views/NotifyView.vue'),

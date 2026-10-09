@@ -51,6 +51,13 @@ type Server struct {
 	checkMu    sync.RWMutex
 	checkCache []updater.CheckResult
 	checkAt    time.Time
+
+	// 后台「周期检测 + 自动更新」循环的状态
+	autoWake      chan struct{}
+	autoMu        sync.Mutex
+	autoBusy      bool
+	autoLast      *AutoRunSummary
+	autoLastCheck time.Time
 }
 
 // Deps 构造参数。
@@ -73,7 +80,11 @@ func New(d Deps) *Server {
 		cfg: d.Cfg, st: d.Store, dc: d.Docker, auth: d.Auth,
 		up: d.Update, sch: d.Sched, bk: d.Backup, nt: d.Notify, bus: d.Bus,
 		mux: http.NewServeMux(), static: d.Static,
+		autoWake: make(chan struct{}, 1),
 	}
+	// 设置是常驻状态的真相，进程一起来就先把它推给更新引擎，
+	// 免得「重启之后策略回到默认值、直到用户手动存一次设置才生效」。
+	s.applyPolicy(s.readSettings())
 	s.routes()
 	return s
 }
@@ -128,6 +139,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/updates/deep-check", a(s.hDeepCheck))
 	m.HandleFunc("POST /api/updates/apply", a(s.hApplyUpdates))
 	m.HandleFunc("GET /api/updates/stream", a(s.hUpdateStream))
+	m.HandleFunc("GET /api/updates/auto", a(s.hGetAutoUpdate))
+	m.HandleFunc("POST /api/updates/auto-run", a(s.hRunAutoUpdate))
 
 	m.HandleFunc("GET /api/schedules", a(s.hListSchedules))
 	m.HandleFunc("POST /api/schedules", a(s.hCreateSchedule))
@@ -147,6 +160,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/backups/diff", a(s.hBackupDiff))
 	m.HandleFunc("POST /api/backups/restore", a(s.hRestore))
 	m.HandleFunc("POST /api/backups/prune", a(s.hPruneBackups))
+	m.HandleFunc("POST /api/backups/import", a(s.hImportBackup))
 	m.HandleFunc("DELETE /api/backups/{container}/{ts}", a(s.hDeleteBackup))
 	m.HandleFunc("GET /api/backups/projects", a(s.hListProjects))
 	m.HandleFunc("GET /api/backups/file", a(s.hReadProjectFile))
@@ -429,6 +443,9 @@ func (s *Server) hHealth(w http.ResponseWriter, r *http.Request) {
 // ---------- 设置 ----------
 
 // Settings 通用设置。
+//
+// 这里的字段名就是「设置页上看得见的那几个旋钮」—— 不搞一套抽象的配置模型，
+// 因为一个自托管的单用户面板最终只需要「这些开关各自是什么值」这一个真相。
 type Settings struct {
 	Exclude       []string `json:"exclude"`
 	PanelURL      string   `json:"panelURL"`
@@ -436,26 +453,80 @@ type Settings struct {
 	DeepCheckCron string   `json:"deepCheckCron"`
 	LogRetention  int      `json:"logRetention"`
 	CheckOnStart  bool     `json:"checkOnStart"`
+
+	// —— 检测 ——
+	// CheckIntervalHours 周期性自动巡检的间隔（小时），0 表示不自动巡检。
+	CheckIntervalHours int `json:"checkIntervalHours"`
+	// NotifyOnCheck 巡检发现新版本时推一条通知。
+	NotifyOnCheck bool `json:"notifyOnCheck"`
+
+	// —— 更新策略 ——
+	// AutoApply 自动更新总开关。关闭时定时任务只检测、绝不动容器。
+	AutoApply bool `json:"autoApply"`
+	// PullOnce 同一轮批量更新里，同一个镜像只下载一次。
+	PullOnce bool `json:"pullOnce"`
+	// BackupBefore 重建容器前先写一份配置快照。
+	BackupBefore bool `json:"backupBefore"`
+	// CleanupAfter 更新成功后清理没有任何容器引用的旧镜像。
+	CleanupAfter bool `json:"cleanupAfter"`
+	// DirectFirst 显式写了域名的镜像（ghcr.io 等）直连，不套加速源。
+	DirectFirst bool `json:"directFirst"`
+
+	// —— 备份保留策略 ——
+	BackupKeepPerContainer int  `json:"backupKeepPerContainer"`
+	BackupMaxAgeDays       int  `json:"backupMaxAgeDays"`
+	BackupMaxTotalMB       int  `json:"backupMaxTotalMB"`
+	BackupKeepPreUpdate    bool `json:"backupKeepPreUpdate"`
 }
+
+// 检测间隔的可选值（小时）。前端下拉框与后端校验共用这一份，避免两边说法不一致。
+var checkIntervalChoices = []int{0, 1, 3, 6, 12, 24}
 
 func (s *Server) readSettings() Settings {
 	var out Settings
 	out.Concurrency = 2
 	out.LogRetention = 500
 	out.CheckOnStart = true
-	if v := s.st.GetSetting("update.concurrency", ""); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			out.Concurrency = n
+	out.CheckIntervalHours = 6
+	out.NotifyOnCheck = false
+	out.AutoApply = false
+	out.PullOnce = true
+	out.BackupBefore = true
+	out.CleanupAfter = true
+	out.DirectFirst = true
+	out.BackupKeepPerContainer = 10
+	out.BackupMaxAgeDays = 30
+	out.BackupMaxTotalMB = 2048
+	out.BackupKeepPreUpdate = true
+
+	readInt := func(key string, dst *int) {
+		if v := s.st.GetSetting(key, ""); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				*dst = n
+			}
 		}
 	}
-	if v := s.st.GetSetting("update.checkOnStart", ""); v != "" {
-		out.CheckOnStart = v == "1"
-	}
-	if v := s.st.GetSetting("log.retention", ""); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			out.LogRetention = n
+	readBool := func(key string, dst *bool) {
+		if v := s.st.GetSetting(key, ""); v != "" {
+			*dst = v == "1"
 		}
 	}
+
+	readInt("update.concurrency", &out.Concurrency)
+	readBool("update.checkOnStart", &out.CheckOnStart)
+	readInt("log.retention", &out.LogRetention)
+	readInt("update.checkInterval", &out.CheckIntervalHours)
+	readBool("update.notifyOnCheck", &out.NotifyOnCheck)
+	readBool("update.autoApply", &out.AutoApply)
+	readBool("update.pullOnce", &out.PullOnce)
+	readBool("update.backupBefore", &out.BackupBefore)
+	readBool("update.cleanupAfter", &out.CleanupAfter)
+	readBool("update.directFirst", &out.DirectFirst)
+	readInt("backup.keepPerContainer", &out.BackupKeepPerContainer)
+	readInt("backup.maxAgeDays", &out.BackupMaxAgeDays)
+	readInt("backup.maxTotalMB", &out.BackupMaxTotalMB)
+	readBool("backup.keepPreUpdate", &out.BackupKeepPreUpdate)
+
 	out.DeepCheckCron = s.st.GetSetting("update.deepCheckCron", "")
 	out.PanelURL = s.st.GetSetting(notify.KeyPanelURL, "")
 	s.st.GetJSON("exclude.containers", &out.Exclude)
@@ -463,6 +534,21 @@ func (s *Server) readSettings() Settings {
 		out.Exclude = []string{}
 	}
 	return out
+}
+
+// applyPolicy 把设置里的更新策略推给更新引擎。
+// 引擎是常驻对象，设置改了必须立刻生效，否则「改了并发度要重启才生效」这种事
+// 一定会被当成 bug 报上来。
+func (s *Server) applyPolicy(in Settings) {
+	opt := s.up.Options()
+	opt.Apply(updater.Policy{
+		Concurrency:  in.Concurrency,
+		PullOnce:     in.PullOnce,
+		BackupBefore: in.BackupBefore,
+		CleanupAfter: in.CleanupAfter,
+		DirectFirst:  in.DirectFirst,
+	})
+	s.up.SetOptions(opt)
 }
 
 func (s *Server) hGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -478,13 +564,56 @@ func (s *Server) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if in.Concurrency < 1 || in.Concurrency > 8 {
 		in.Concurrency = 2
 	}
+	in.CheckIntervalHours = normalizeInterval(in.CheckIntervalHours)
+	if in.BackupKeepPerContainer < 0 {
+		in.BackupKeepPerContainer = 10
+	}
+	if in.BackupMaxAgeDays < 0 {
+		in.BackupMaxAgeDays = 30
+	}
+	if in.BackupMaxTotalMB < 0 {
+		in.BackupMaxTotalMB = 2048
+	}
+
 	_ = s.st.SetSetting("update.concurrency", strconv.Itoa(in.Concurrency))
 	_ = s.st.SetSetting("update.checkOnStart", boolStr(in.CheckOnStart))
 	_ = s.st.SetSetting("log.retention", strconv.Itoa(in.LogRetention))
 	_ = s.st.SetSetting("update.deepCheckCron", in.DeepCheckCron)
 	_ = s.st.SetSetting(notify.KeyPanelURL, in.PanelURL)
+	_ = s.st.SetSetting("update.checkInterval", strconv.Itoa(in.CheckIntervalHours))
+	_ = s.st.SetSetting("update.notifyOnCheck", boolStr(in.NotifyOnCheck))
+	_ = s.st.SetSetting("update.autoApply", boolStr(in.AutoApply))
+	_ = s.st.SetSetting("update.pullOnce", boolStr(in.PullOnce))
+	_ = s.st.SetSetting("update.backupBefore", boolStr(in.BackupBefore))
+	_ = s.st.SetSetting("update.cleanupAfter", boolStr(in.CleanupAfter))
+	_ = s.st.SetSetting("update.directFirst", boolStr(in.DirectFirst))
+	_ = s.st.SetSetting("backup.keepPerContainer", strconv.Itoa(in.BackupKeepPerContainer))
+	_ = s.st.SetSetting("backup.maxAgeDays", strconv.Itoa(in.BackupMaxAgeDays))
+	_ = s.st.SetSetting("backup.maxTotalMB", strconv.Itoa(in.BackupMaxTotalMB))
+	_ = s.st.SetSetting("backup.keepPreUpdate", boolStr(in.BackupKeepPreUpdate))
 	_ = s.st.SetJSON("exclude.containers", in.Exclude)
+
+	s.applyPolicy(in)
+	// 检测频率可能刚被改过，唤醒后台循环按新间隔重新计时。
+	s.wakeAutoLoop()
 	writeOK(w, s.readSettings())
+}
+
+// normalizeInterval 把检测间隔收敛到允许的取值上，防止存进一个
+// 「每 0.3 小时跑一次」这种会把镜像仓库打限流的值。
+func normalizeInterval(h int) int {
+	for _, c := range checkIntervalChoices {
+		if c == h {
+			return h
+		}
+	}
+	if h <= 0 {
+		return 0
+	}
+	if h > 24 {
+		return 24
+	}
+	return 6
 }
 
 func boolStr(b bool) string {

@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/bus"
@@ -49,6 +50,18 @@ type Options struct {
 	KeepBackups int
 	// BackupDir 配置快照目录。
 	BackupDir string
+
+	// PullOnce 同一轮批量更新里，同一个镜像只真正拉取一次（默认开）。
+	// 4 台共用 nginx:alpine 时下载 1 次、重建 4 台 —— 镜像 ID 是内容寻址的，
+	// 复用第一次的结果完全安全。
+	PullOnce bool
+	// BackupBefore 重建前先写一份配置快照（默认开）。这是失败回滚与人肉排查的底牌。
+	BackupBefore bool
+	// CleanupAfter 更新成功后，确认没有任何容器再引用旧镜像时把它删掉（默认开）。
+	CleanupAfter bool
+	// DirectFirst 显式域名（ghcr.io、私有仓库等）不套用加速源（默认开）。
+	// 关掉它意味着「所有镜像都先走加速站」，只有把加速站当成通用代理时才该这么做。
+	DirectFirst bool
 }
 
 // DefaultOptions 返回默认参数。
@@ -59,7 +72,34 @@ func DefaultOptions(backupDir string) Options {
 		StableSeconds: 6,
 		KeepBackups:   0,
 		BackupDir:     backupDir,
+		PullOnce:      true,
+		BackupBefore:  true,
+		CleanupAfter:  true,
+		DirectFirst:   true,
 	}
+}
+
+// Policy 设置页里那一组更新开关。零值（false）是有意义的取值，
+// 所以调用方要显式传全部字段。
+type Policy struct {
+	Concurrency  int
+	PullOnce     bool
+	BackupBefore bool
+	CleanupAfter bool
+	DirectFirst  bool
+}
+
+// Apply 把设置页的策略应用到引擎参数上。并发度越界时退回 2（与设置页校验一致）。
+func (o *Options) Apply(p Policy) {
+	if p.Concurrency >= 1 && p.Concurrency <= 8 {
+		o.Concurrency = p.Concurrency
+	} else {
+		o.Concurrency = 2
+	}
+	o.PullOnce = p.PullOnce
+	o.BackupBefore = p.BackupBefore
+	o.CleanupAfter = p.CleanupAfter
+	o.DirectFirst = p.DirectFirst
 }
 
 // Updater 更新引擎。
@@ -67,9 +107,12 @@ type Updater struct {
 	dc       *dockerx.Client
 	bus      *bus.Bus
 	notify   Notifier
-	opts     Options
 	selfName string
 	selfID   string
+
+	// opts 用原子指针存：设置页随时可以改（并发度、那几个策略开关），
+	// 而更新流程有多条 goroutine 在读它 —— 普通字段会构成数据竞争。
+	opts atomic.Pointer[Options]
 
 	mu     sync.Mutex
 	locks  map[string]*sync.Mutex // 逐容器串行锁
@@ -77,18 +120,33 @@ type Updater struct {
 	nowStr func() string
 	// mirrorFn 返回用户配置的「拉取加速源」；空字符串表示完全交给守护进程。
 	mirrorFn func() string
+
+	// batchMu/batchPull 是「同一轮批量更新里同一镜像只拉一次」的缓存。
+	// 只在 UpdateMany 的范围内有效，批量结束就清空 —— 不能让上一次的结论
+	// 漏到下一次，那会让「刚推了新版本却检测不到」变成偶发问题。
+	batchMu   sync.Mutex
+	batchPull map[string]*dockerx.PullResult
 }
 
 // New 创建更新引擎。
 func New(dc *dockerx.Client, b *bus.Bus, opts Options) *Updater {
-	return &Updater{
+	u := &Updater{
 		dc:     dc,
 		bus:    b,
 		notify: noopNotifier{},
-		opts:   opts,
 		locks:  map[string]*sync.Mutex{},
 		nowStr: func() string { return time.Now().Format("2006-01-02 15:04:05") },
 	}
+	u.opts.Store(&opts)
+	return u
+}
+
+// opt 取当前参数的一份快照。Options 是小结构体，复制比加锁便宜也更不容易出错。
+func (u *Updater) opt() Options {
+	if p := u.opts.Load(); p != nil {
+		return *p
+	}
+	return Options{}
 }
 
 // SetNotifier 注入通知器。
@@ -110,6 +168,15 @@ func (u *Updater) SetSelf(name, id string) {
 	u.selfID = id
 }
 
+// Options 返回当前参数的一份快照。
+func (u *Updater) Options() Options { return u.opt() }
+
+// SetOptions 换一组新参数。设置页改完开关立刻生效，不必重启进程。
+//
+// Concurrency 会被正在跑的 UpdateMany 在启动时读走，所以改并发度只影响
+// 「下一次批量更新」—— 这也是设置页里文案的原话。
+func (u *Updater) SetOptions(opt Options) { u.opts.Store(&opt) }
+
 // SetMirror 注入「拉取加速源」解析函数。
 func (u *Updater) SetMirror(fn func() string) { u.mirrorFn = fn }
 
@@ -128,7 +195,9 @@ func (u *Updater) pullImage(ctx context.Context, imageRef string, onEvent func(d
 		mirror = strings.TrimSpace(u.mirrorFn())
 	}
 	ref := dockerx.ParseRef(imageRef)
-	if mirror == "" || ref.Registry != "docker.io" || ref.Digest != "" {
+	// DirectFirst：显式写了域名的镜像（ghcr.io、私有仓库…）直连，不套加速。
+	// 关掉这个开关等于把加速站当成通用代理，对非 Docker Hub 的镜像也去试一把。
+	if mirror == "" || (u.opt().DirectFirst && ref.Registry != "docker.io") || ref.Digest != "" {
 		return u.dc.Pull(ctx, imageRef, onEvent)
 	}
 	host := mirrorHost(mirror)
@@ -155,6 +224,48 @@ func mirrorHost(mirror string) string {
 	m = strings.TrimPrefix(m, "https://")
 	m = strings.TrimPrefix(m, "http://")
 	return m
+}
+
+// pullForBatch 在一轮批量更新内对同一个镜像只真正拉取一次。
+//
+// 返回的 fromCache 表示这次是复用了别的容器拉到的结果 —— 那种情况下
+// **不能**采信 pr.UpToDate：那是「第一次拉取时镜像是否已经最新」的结论，
+// 对另一台还跑着旧镜像的容器并不成立，采信它就会漏掉一次本该做的重建。
+func (u *Updater) pullForBatch(
+	ctx context.Context,
+	image string,
+	onEvent func(dockerx.PullEvent),
+) (pr *dockerx.PullResult, fromCache bool, err error) {
+	if !u.opt().PullOnce {
+		pr, err = u.pullImage(ctx, image, onEvent)
+		return pr, false, err
+	}
+
+	u.batchMu.Lock()
+	cached, hit := u.batchPull[image]
+	u.batchMu.Unlock()
+	if hit {
+		return cached, true, nil
+	}
+
+	pr, err = u.pullImage(ctx, image, onEvent)
+	if err != nil {
+		return nil, false, err
+	}
+	u.batchMu.Lock()
+	if u.batchPull == nil {
+		u.batchPull = map[string]*dockerx.PullResult{}
+	}
+	u.batchPull[image] = pr
+	u.batchMu.Unlock()
+	return pr, false, nil
+}
+
+// resetBatchPull 清空批量拉取缓存。批量开始与结束都要调。
+func (u *Updater) resetBatchPull() {
+	u.batchMu.Lock()
+	u.batchPull = nil
+	u.batchMu.Unlock()
 }
 
 // SelfName 返回自身容器名。
@@ -356,7 +467,7 @@ func (u *Updater) CheckAll(ctx context.Context, exclude map[string]bool, deep bo
 		jobs = append(jobs, job{c.ID, n})
 	}
 
-	sem := make(chan struct{}, max(1, u.opts.Concurrency*2))
+	sem := make(chan struct{}, max(1, u.opt().Concurrency*2))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	out := []CheckResult{}
@@ -425,6 +536,10 @@ type Result struct {
 	RolledBack bool         `json:"rolledBack"`
 	Duration   int64        `json:"durationMs"`
 	Steps      []string     `json:"steps"`
+	// PullReused 本次拉取是复用了同一轮里别的容器拉到的结果（跳过下载）。
+	PullReused bool `json:"pullReused"`
+	// ReclaimedBytes 更新成功后清理旧镜像回收到的字节数（0 表示没删）。
+	ReclaimedBytes int64 `json:"reclaimedBytes"`
 }
 
 func (u *Updater) step(res *Result, format string, a ...any) {
@@ -486,7 +601,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 
 	// ---- 1. 拉取（走守护进程，registry-mirrors 自动生效）----
 	u.status(res, ResultPulling, "正在拉取镜像…")
-	pr, err := u.pullImage(ctx, res.Image, func(ev dockerx.PullEvent) {
+	pr, fromCache, err := u.pullForBatch(ctx, res.Image, func(ev dockerx.PullEvent) {
 		if ev.Status != "" {
 			u.bus.Publish("update", "pull_progress", "running", map[string]any{
 				"container": name,
@@ -505,7 +620,12 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 		return res
 	}
 	res.NewImageID = pr.ImageID
-	u.step(res, "拉取完成，新 ID %s（digest %s）", dockerx.ShortID(pr.ImageID), shortDigest(pr.Digest))
+	res.PullReused = fromCache
+	if fromCache {
+		u.step(res, "本轮已拉取过 %s，直接复用（新 ID %s）", res.Image, dockerx.ShortID(pr.ImageID))
+	} else {
+		u.step(res, "拉取完成，新 ID %s（digest %s）", dockerx.ShortID(pr.ImageID), shortDigest(pr.Digest))
+	}
 
 	// ---- 2. 核心判定：镜像没变 ⇒ 到此为止 ----
 	if res.NewImageID != "" && res.NewImageID == res.OldImageID && !force {
@@ -521,7 +641,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
-	if pr.UpToDate && !force {
+	if pr.UpToDate && !force && !fromCache {
 		u.status(res, ResultUpToDate, "守护进程报告镜像已是最新，容器保持原样")
 		u.log("update", name, "up_to_date", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
@@ -529,12 +649,16 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	}
 	u.step(res, "检测到镜像变化，开始重建容器")
 
-	// ---- 3. 写配置快照（回滚与还原的依据）----
-	snapPath, snapErr := u.saveSnapshot(name, insp)
-	if snapErr != nil {
-		u.step(res, "⚠ 配置快照写入失败：%v（继续，但不写快照不影响回滚）", snapErr)
+	// ---- 3. 写配置快照（回滚与还原的依据，可用设置关掉）----
+	if u.opt().BackupBefore {
+		snapPath, snapErr := u.saveSnapshot(name, insp)
+		if snapErr != nil {
+			u.step(res, "⚠ 配置快照写入失败：%v（继续，但不写快照不影响回滚）", snapErr)
+		} else {
+			u.step(res, "已写入配置快照 %s", filepath.Base(snapPath))
+		}
 	} else {
-		u.step(res, "已写入配置快照 %s", filepath.Base(snapPath))
+		u.step(res, "已在设置里关闭「更新前自动备份配置」，跳过写快照")
 	}
 
 	// ---- 4~8. 停止 / 改名 / 重建 / 启动 / 自检 ----
@@ -558,12 +682,74 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	res.NewImageID = newID
 	u.status(res, ResultUpdated, "更新成功"+map[bool]string{true: "", false: "（原容器为停止状态，保持停止）"}[wasRunning])
 	u.log("update", name, "success", "已更新到 "+dockerx.ShortID(newID), strings.Join(res.Steps, "\n"))
+
+	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
+	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)
+
 	u.notify.Emit("update_success", map[string]string{
 		"container": name, "image": res.Image,
 		"result": "更新成功", "message": "新镜像 " + dockerx.ShortID(newID),
 	})
 	res.Duration = time.Since(started).Milliseconds()
 	return res
+}
+
+// cleanupOldImage 更新成功后，把已经被取代的旧镜像删掉，回收磁盘。
+//
+// 三条硬约束：
+//  1. 关闭开关时直接返回（返回 0 表示没有回收）。
+//  2. 新旧 ID 相同（强制重建场景）绝对不删 —— 那正是当前正在跑的那一份。
+//  3. 先自己数一遍还有没有容器引用它。只依赖 Docker 的 409 也能防住，
+//     但那样「为什么没删」就只有一个冷冰冰的报错，不如自己判一次说明白。
+func (u *Updater) cleanupOldImage(ctx context.Context, oldID, newID string, res *Result) int64 {
+	if !u.opt().CleanupAfter {
+		return 0
+	}
+	if oldID == "" || oldID == newID {
+		return 0
+	}
+	list, err := u.dc.ListContainers(ctx)
+	if err != nil {
+		u.step(res, "跳过旧镜像清理：读不到容器列表（%v）", err)
+		return 0
+	}
+	for _, c := range list {
+		if c.ImageID != "" && c.ImageID == oldID {
+			u.step(res, "旧镜像 %s 仍被容器 %s 引用，保留不删", dockerx.ShortID(oldID), c.Name())
+			return 0
+		}
+	}
+
+	// 先量一下体积，删完再问就来不及了
+	var size int64
+	if imgs, err := u.dc.ListImages(ctx, false); err == nil {
+		for _, im := range imgs {
+			if im.ID == oldID {
+				size = im.Size
+				break
+			}
+		}
+	}
+	if err := u.dc.RemoveImage(ctx, oldID, false, false); err != nil {
+		u.step(res, "旧镜像 %s 未能删除（可能仍被引用）：%v", dockerx.ShortID(oldID), err)
+		return 0
+	}
+	u.step(res, "已清理旧镜像 %s，回收 %s", dockerx.ShortID(oldID), humanBytes(size))
+	return size
+}
+
+// humanBytes 把字节数说成人话（只用于步骤日志）。
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 // recreate 执行「停旧 → 改名保留 → 建新 → 启动 → 自检」，失败自动回滚。
@@ -634,7 +820,7 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	}
 
 	// 10. 清理备份容器（保留策略由 KeepBackups 决定）
-	if u.opts.KeepBackups <= 0 {
+	if u.opt().KeepBackups <= 0 {
 		if err := u.dc.RemoveContainer(ctx, oldID, false, false); err != nil {
 			u.step(res, "⚠ 备份容器 %s 删除失败（可稍后手动清理）：%v", bakName, err)
 		} else {
@@ -671,11 +857,11 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 			hasHealth = true
 		}
 	}
-	deadline := time.Now().Add(u.opts.HealthTimeout)
+	deadline := time.Now().Add(u.opt().HealthTimeout)
 	stableSince := time.Time{}
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("超时（%s）", u.opts.HealthTimeout)
+			return fmt.Errorf("超时（%s）", u.opt().HealthTimeout)
 		}
 		insp, err := u.dc.Inspect(ctx, id)
 		if err != nil {
@@ -704,7 +890,7 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 		} else {
 			if stableSince.IsZero() {
 				stableSince = time.Now()
-			} else if time.Since(stableSince) >= time.Duration(u.opts.StableSeconds)*time.Second {
+			} else if time.Since(stableSince) >= time.Duration(u.opt().StableSeconds)*time.Second {
 				return nil
 			}
 		}
@@ -721,11 +907,16 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	if len(names) == 0 {
 		return nil
 	}
-	conc := max(1, u.opts.Concurrency)
+	conc := max(1, u.opt().Concurrency)
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	out := []Result{}
+
+	// 同一轮里同一镜像只拉一次。缓存的生命周期就是这一批，结束必须清掉 ——
+	// 留着会让「刚推的新版本」在下一轮里被上一次的旧结论吃掉。
+	u.resetBatchPull()
+	defer u.resetBatchPull()
 
 	batch := u.bus.Publish("update", "batch_start", "running", map[string]any{
 		"total": len(names),
@@ -747,7 +938,13 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	wg.Wait()
 
 	updated, skipped, failed := 0, 0, 0
+	var reclaimed int64
+	reused := 0
 	for _, r := range out {
+		reclaimed += r.ReclaimedBytes
+		if r.PullReused {
+			reused++
+		}
 		switch r.Status {
 		case ResultUpdated:
 			updated++
@@ -759,32 +956,59 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	}
 	u.bus.Publish("update", "batch_done", "success", map[string]any{
 		"total": len(names), "updated": updated, "skipped": skipped, "failed": failed,
+		"reclaimedBytes": reclaimed, "pullReused": reused,
 	})
-	u.log("update", "batch", "done",
-		fmt.Sprintf("共 %d 个容器：更新 %d、已是最新/跳过 %d、失败 %d", len(names), updated, skipped, failed), "")
+	summary := fmt.Sprintf("共 %d 个容器：更新 %d、已是最新/跳过 %d、失败 %d", len(names), updated, skipped, failed)
+	if reclaimed > 0 {
+		summary += "，清理旧镜像回收 " + humanBytes(reclaimed)
+	}
+	if reused > 0 {
+		summary += fmt.Sprintf("，%d 台复用了同轮已拉取的镜像", reused)
+	}
+	u.log("update", "batch", "done", summary, "")
 	// 批量更新合并成一条汇总，而不是每台一条
 	u.notify.Emit("batch_update_done", map[string]string{
 		"container": fmt.Sprintf("%d 个容器", len(names)),
 		"result":    "批量更新完成",
-		"message":   fmt.Sprintf("更新 %d 个，已是最新 %d 个，失败 %d 个", updated, skipped, failed),
+		"message":   summary,
 	})
 	return out
 }
 
-// saveSnapshot 把容器配置快照写到 /data/backups/containers/<name>/<ts>.json。
+// saveSnapshot 把容器配置快照写到 <BackupDir>/<name>/<ts>.json。
+//
+// 文件格式必须与 backup.Service.Snapshot 写出来的完全一致（外层包一层 _dockhelm
+// 元信息、inspect 放里面），否则这些「更新前快照」在备份页里既看不到镜像与状态，
+// 也**还原不了** —— 而「更新失败还能退回去」正是写它的唯一理由。
 func (u *Updater) saveSnapshot(name string, insp map[string]any) (string, error) {
-	if u.opts.BackupDir == "" {
+	if u.opt().BackupDir == "" {
 		return "", fmt.Errorf("未配置备份目录")
 	}
-	dir := filepath.Join(u.opts.BackupDir, name)
+	dir := filepath.Join(u.opt().BackupDir, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	b, err := json.MarshalIndent(insp, "", "  ")
+	ts := time.Now().Format("20060102-150405")
+	doc := map[string]any{
+		"_dockhelm": map[string]any{
+			"snapshotAt": time.Now().UTC().Format(time.RFC3339),
+			"reason":     "pre_update",
+			"version":    1,
+		},
+		"inspect": insp,
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, time.Now().Format("20060102-150405")+".json")
+	p := filepath.Join(dir, ts+".json")
+	// 同一秒内重复写时加后缀，别互相覆盖
+	for i := 1; ; i++ {
+		if _, statErr := os.Stat(p); os.IsNotExist(statErr) {
+			break
+		}
+		p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", ts, i))
+	}
 	// 0600：配置里可能含密码（Env）
 	if err := os.WriteFile(p, b, 0o600); err != nil {
 		return "", err

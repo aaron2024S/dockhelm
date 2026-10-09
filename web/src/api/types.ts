@@ -43,6 +43,15 @@ export interface SessionInfo {
   sessionCount: number
 }
 
+/** 一条端口映射。published=false 表示只在容器网络内可见，没发布到宿主机。 */
+export interface PortView {
+  hostIp: string
+  hostPort: number
+  innerPort: number
+  proto: string
+  published: boolean
+}
+
 export interface ContainerView {
   name: string
   id: string
@@ -53,6 +62,7 @@ export interface ContainerView {
   status: string
   created: number
   ports: string[]
+  portList: PortView[]
   project: string
   labels: Record<string, string>
   hasUpdate: boolean
@@ -177,6 +187,10 @@ export interface SnapshotItem {
   image: string
   running: boolean
   created: string
+  /** 快照来源：manual / pre_update / scheduled / imported。 */
+  reason: string
+  /** 这份快照里是否真的打包了卷数据。 */
+  withData: boolean
 }
 
 export interface DiffEntry {
@@ -306,6 +320,89 @@ export interface Settings {
   deepCheckCron: string
   logRetention: number
   checkOnStart: boolean
+
+  // —— 检测 ——
+  /** 周期性自动巡检间隔（小时），0 = 关闭。 */
+  checkIntervalHours: number
+  /** 巡检发现新版本时推一条通知。 */
+  notifyOnCheck: boolean
+
+  // —— 更新策略 ——
+  /** 自动更新总开关。关闭时定时任务只检测、绝不动容器。 */
+  autoApply: boolean
+  /** 同一轮批量更新里，同一个镜像只下载一次。 */
+  pullOnce: boolean
+  /** 重建容器前先写一份配置快照。 */
+  backupBefore: boolean
+  /** 更新成功后清理没有任何容器引用的旧镜像。 */
+  cleanupAfter: boolean
+  /** 显式写了域名的镜像（ghcr.io 等）直连，不套加速源。 */
+  directFirst: boolean
+
+  // —— 备份保留策略 ——
+  backupKeepPerContainer: number
+  backupMaxAgeDays: number
+  backupMaxTotalMB: number
+  /** 更新前快照永不自动清理。 */
+  backupKeepPreUpdate: boolean
+}
+
+/** 自动更新：单台容器在本轮里的去向。 */
+export interface AutoRunItem {
+  name: string
+  image: string
+  status: 'updated' | 'up_to_date' | 'failed' | 'skipped' | 'pending'
+  reason: string
+}
+
+/** 自动更新：一轮「巡检 + 可选执行」的结果。 */
+export interface AutoRunSummary {
+  startedAt: string
+  finishedAt: string
+  trigger: string
+  dryRun: boolean
+  checked: number
+  available: number
+  updated: number
+  failed: number
+  reclaimedMB: number
+  durationMs: number
+  containers: AutoRunItem[]
+  error?: string
+}
+
+/** 自动更新：候选筛选结论（会被更新 / 被跳过 / 为什么）。 */
+export interface AutoCandidate {
+  name: string
+  image: string
+  running: boolean
+  hasUpdate: boolean
+  willUpdate: boolean
+  protected: boolean
+  excluded: boolean
+  reason: string
+}
+
+export interface AutoUpdateInfo {
+  enabled: boolean
+  checkIntervalHours: number
+  notifyOnCheck: boolean
+  intervalChoices: number[]
+  policy: {
+    concurrency: number
+    pullOnce: boolean
+    backupBefore: boolean
+    cleanupAfter: boolean
+    directFirst: boolean
+  }
+  running: boolean
+  nextCheckAt: string
+  lastCheckAt: string
+  candidates: AutoCandidate[]
+  willUpdate: number
+  exclude: string[]
+  selfName: string
+  lastRun: AutoRunSummary | null
 }
 
 export interface ImageView {

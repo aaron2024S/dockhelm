@@ -17,8 +17,10 @@ import {
   Terminal,
 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
+import type { PortView } from '@/api/types'
 import { relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
+import PortChips from '@/components/PortChips.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,7 +31,7 @@ const detail = ref<Record<string, any> | null>(null)
 const summary = ref<Record<string, any> | null>(null)
 const stats = ref<Record<string, number> | null>(null)
 const logs = ref('')
-const tab = ref<'logs' | 'config' | 'mounts' | 'networks'>('logs')
+const tab = ref<'logs' | 'config' | 'ports' | 'mounts' | 'networks'>('logs')
 const loading = ref(true)
 const busy = ref(false)
 const showSensitive = ref(false)
@@ -45,6 +47,8 @@ const envList = computed<{ key: string; value: string; sensitive?: string }[]>((
 
 const mounts = computed<Record<string, any>[]>(() => (summary.value?.mounts as Record<string, any>[]) ?? [])
 const networks = computed<Record<string, any>[]>(() => (summary.value?.networks as Record<string, any>[]) ?? [])
+const portList = computed<PortView[]>(() => (summary.value?.ports as PortView[]) ?? [])
+const publishedCount = computed(() => portList.value.filter((p) => p.published).length)
 
 async function load() {
   loading.value = true
@@ -173,6 +177,15 @@ const running = computed(() => container.value.health !== undefined && (detail.v
       </div>
     </div>
 
+    <!-- 端口速览：进详情页第一眼就能看到「这台怎么访问」，不必切标签 -->
+    <div v-if="portList.length" class="dh-card flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5">
+      <span class="text-[12px] text-text-4">端口</span>
+      <PortChips :ports="portList" :max="0" />
+      <span class="ml-auto text-[11.5px] text-text-6">
+        {{ publishedCount }} 个已发布到宿主机 · {{ portList.length - publishedCount }} 个仅容器内
+      </span>
+    </div>
+
     <!-- 概览条 -->
     <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <div class="dh-card p-3.5">
@@ -224,6 +237,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
         <div class="dh-seg">
           <button :data-on="tab === 'logs'" @click="tab = 'logs'">日志</button>
           <button :data-on="tab === 'config'" @click="tab = 'config'">配置</button>
+          <button :data-on="tab === 'ports'" @click="tab = 'ports'">端口 {{ portList.length }}</button>
           <button :data-on="tab === 'mounts'" @click="tab = 'mounts'">挂载 {{ mounts.length }}</button>
           <button :data-on="tab === 'networks'" @click="tab = 'networks'">网络 {{ networks.length }}</button>
         </div>
@@ -297,6 +311,56 @@ const running = computed(() => container.value.health !== undefined && (detail.v
                       <span class="text-text-6">••••••••</span>
                     </template>
                     <template v-else>{{ e.value }}</template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 端口 -->
+      <div v-else-if="tab === 'ports'" class="p-3.5">
+        <div v-if="!portList.length" class="text-[12.5px] text-text-4">
+          这个容器没有声明任何端口。如果它只需要被同一网络里的其他容器访问，这是正常的。
+        </div>
+        <div v-else class="flex flex-col gap-2.5">
+          <div
+            class="flex items-start gap-2 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2 text-[11.5px] leading-relaxed text-text-4"
+          >
+            <Network class="mt-[1px] h-3.5 w-3.5 flex-none" />
+            <span>
+              共 <b class="text-text-2">{{ portList.length }}</b> 个端口，其中
+              <b class="text-text-2">{{ publishedCount }}</b> 个已发布到宿主机。
+              实底徽标表示<b>可从宿主机访问</b>（左边是宿主端口）；虚线徽标表示<b>只在容器网络内可见</b>，
+              外部连不上。
+            </span>
+          </div>
+          <div class="overflow-hidden rounded-[10px] border border-line-1">
+            <table class="w-full text-[12px]">
+              <thead>
+                <tr class="border-b border-line-1 bg-ink-800 text-[11px] text-text-5">
+                  <th class="px-3 py-2 text-left font-medium">宿主地址</th>
+                  <th class="px-3 py-2 text-left font-medium">宿主端口</th>
+                  <th class="px-3 py-2 text-left font-medium">容器端口</th>
+                  <th class="px-3 py-2 text-left font-medium">协议</th>
+                  <th class="px-3 py-2 text-left font-medium">可见性</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="p in portList" :key="`${p.hostIp}:${p.hostPort}>${p.innerPort}/${p.proto}`" class="border-b border-[#171f2a] last:border-b-0">
+                  <td class="px-3 py-2 font-mono text-[11.5px] text-text-3">
+                    {{ p.published ? p.hostIp || '0.0.0.0' : '—' }}
+                  </td>
+                  <td class="px-3 py-2 font-mono text-[11.5px]" :class="p.published ? 'font-semibold text-text-1' : 'text-text-5'">
+                    {{ p.published ? p.hostPort : '—' }}
+                  </td>
+                  <td class="px-3 py-2 font-mono text-[11.5px] text-text-2">{{ p.innerPort }}</td>
+                  <td class="px-3 py-2 font-mono text-[11.5px] text-text-4">{{ p.proto }}</td>
+                  <td class="px-3 py-2">
+                    <span class="dh-badge" :class="p.published ? 'dh-badge-run' : 'dh-badge-plain'">
+                      {{ p.published ? '对宿主机发布' : '仅容器内' }}
+                    </span>
                   </td>
                 </tr>
               </tbody>

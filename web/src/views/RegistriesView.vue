@@ -6,16 +6,21 @@ import {
   Copy,
   Gauge,
   Info,
+  Loader2,
   Plus,
+  RefreshCw,
   Rocket,
+  Save,
   Trash2,
   XCircle,
   Zap,
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
-import type { MirrorConfig, RegistriesResponse } from '@/api/types'
+import type { MirrorConfig, RegistriesResponse, Settings } from '@/api/types'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
+import SettingRow from '@/components/SettingRow.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
 const toast = useToastStore()
 const data = ref<RegistriesResponse | null>(null)
@@ -140,7 +145,35 @@ const latencyTone = (m: MirrorConfig) => {
   return 'dh-badge-plain'
 }
 
-onMounted(() => void load())
+/** 拉取与检测策略：与设置页写的是同一份数据，两处都能改。 */
+const policy = ref<Settings | null>(null)
+const savingPolicy = ref(false)
+
+async function loadPolicy() {
+  try {
+    policy.value = await api.get<Settings>('/api/settings')
+  } catch {
+    policy.value = null
+  }
+}
+
+async function savePolicy() {
+  if (!policy.value) return
+  savingPolicy.value = true
+  try {
+    policy.value = await api.put<Settings>('/api/settings', policy.value)
+    toast.success('已保存', '拉取与检测设置立即生效')
+  } catch (e) {
+    toast.error('保存失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    savingPolicy.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadPolicy()
+})
 </script>
 
 <template>
@@ -323,6 +356,66 @@ onMounted(() => void load())
           <button class="dh-btn dh-btn-sm" @click="addSuggestion(s)">
             <Plus class="h-3 w-3" />添加
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 拉取与更新 ／ 检测 -->
+    <div v-if="policy" class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+      <div class="dh-card">
+        <div class="dh-card-head">
+          <Gauge class="h-3.5 w-3.5 text-text-4" />
+          <span>拉取与更新</span>
+          <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="savingPolicy" @click="savePolicy">
+            <Loader2 v-if="savingPolicy" class="h-3 w-3 dh-spin" />
+            <Save v-else class="h-3 w-3" />保存
+          </button>
+        </div>
+        <div class="flex flex-col gap-3 p-3.5">
+          <SettingRow title="显式域名优先，不套用加速" sub="ghcr.io、私有仓库等直连 —— 加速站通常只镜像 Docker Hub">
+            <ToggleSwitch v-model="policy.directFirst" label="显式域名优先" />
+          </SettingRow>
+          <SettingRow title="并发更新" sub="串行最稳，可调 1–8（越高越容易触发仓库限流）">
+            <select v-model.number="policy.concurrency" class="dh-select !w-[130px] !py-[5px] !text-[11.5px]">
+              <option :value="1">1（串行）</option>
+              <option :value="2">2（推荐）</option>
+              <option :value="3">3</option>
+              <option :value="4">4</option>
+              <option :value="6">6</option>
+              <option :value="8">8</option>
+            </select>
+          </SettingRow>
+          <SettingRow title="更新前保留原容器" sub="重建期间旧容器改名保留，失败时以原名与状态复活">
+            <span class="dh-badge dh-badge-plain">始终开启</span>
+          </SettingRow>
+        </div>
+      </div>
+
+      <div class="dh-card">
+        <div class="dh-card-head">
+          <RefreshCw class="h-3.5 w-3.5 text-text-4" />
+          <span>检测</span>
+        </div>
+        <div class="flex flex-col gap-3 p-3.5">
+          <SettingRow
+            title="检测频率"
+            :sub="policy.checkIntervalHours > 0 ? `每 ${policy.checkIntervalHours} 小时自动扫描一次` : '关闭后只在手动点「重新检测」时才检查'"
+          >
+            <select v-model.number="policy.checkIntervalHours" class="dh-select !w-[130px] !py-[5px] !text-[11.5px]">
+              <option :value="0">关闭</option>
+              <option :value="1">每 1 小时</option>
+              <option :value="3">每 3 小时</option>
+              <option :value="6">每 6 小时</option>
+              <option :value="12">每 12 小时</option>
+              <option :value="24">每 24 小时</option>
+            </select>
+          </SettingRow>
+          <SettingRow title="摘要来源" sub="由本机 Docker 守护进程解析，与 docker pull 同源">
+            <span class="dh-badge dh-badge-plain">推荐</span>
+          </SettingRow>
+          <SettingRow title="检测完成后通知" sub="支持企微 / Telegram / Bark / Webhook 等已配置渠道">
+            <ToggleSwitch v-model="policy.notifyOnCheck" label="检测完成后通知" />
+          </SettingRow>
         </div>
       </div>
     </div>

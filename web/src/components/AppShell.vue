@@ -12,7 +12,6 @@ import {
   Layers,
   LogOut,
   Menu,
-  Network,
   RefreshCw,
   Rocket,
   Search,
@@ -41,11 +40,14 @@ interface NavItem {
 }
 
 /**
- * 导航顺序、分组与数量角标照设计稿来（设计稿侧栏只有这 9 项）：
- * 五个常用页在最上面，其次「资源」，最后「系统」。
+ * 导航顺序、分组与数量角标照设计稿来。
+ *
+ * 与设计稿唯一的一处刻意差别：**没有「网络与端口」这一项**。
+ * 设计稿里它只是一个侧栏条目、没有对应屏；而端口信息本身在容器页
+ * 逐台展示更有用（每个容器的端口就摆在它自己卡片上，不用跨页对照）。
+ * 因此这一项并进了容器页，侧栏保持 8 项。
  * 「通知」是「设置」的子页 —— 进入后标签变成「设置 · 通知」，
- * 因此这里不要把通知单列成一项。「关于」不在设计稿侧栏里，
- * 入口放在设置页底部。
+ * 所以也不单列。「关于」入口放在设置页底部。
  */
 const nav: NavItem[] = [
   { name: 'overview', label: '总览', icon: Gauge },
@@ -54,7 +56,6 @@ const nav: NavItem[] = [
   { name: 'updates', label: '更新中心', icon: Download, count: 'updates' },
   { name: 'schedules', label: '计划任务', icon: CalendarClock, count: 'schedules' },
   { name: 'backup', label: '备份与恢复', icon: Archive, count: 'snapshots', group: '资源' },
-  { name: 'networks', label: '网络与端口', icon: Network },
   { name: 'registries', label: '镜像加速源', icon: Rocket, group: '系统' },
   { name: 'settings', label: '设置', icon: SettingsIcon },
 ]

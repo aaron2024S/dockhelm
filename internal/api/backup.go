@@ -26,6 +26,8 @@ func (s *Server) hBackupStats(w http.ResponseWriter, r *http.Request) {
 type snapshotReq struct {
 	Container string `json:"container"`
 	Reason    string `json:"reason"`
+	// WithVolumes 连 named volume 的数据一起打包。
+	WithVolumes bool `json:"withVolumes"`
 }
 
 func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -40,12 +42,36 @@ func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "manual"
 	}
-	item, err := s.bk.Snapshot(ctx, in.Container, reason)
+	item, err := s.bk.SnapshotWith(ctx, in.Container, backup.SnapshotOptions{
+		Reason:      reason,
+		WithVolumes: in.WithVolumes,
+	})
 	if err != nil {
 		s.nt.Emit("backup_failed", map[string]string{
 			"container": in.Container, "result": "备份失败", "message": err.Error(),
 		})
 		writeErr(w, http.StatusBadGateway, "备份失败："+err.Error())
+		return
+	}
+	writeOK(w, item)
+}
+
+type importBackupReq struct {
+	Container string `json:"container"`
+	TS        string `json:"ts"`
+	Content   string `json:"content"`
+}
+
+// hImportBackup 导入一份外部快照 json（「导入备份包」）。
+func (s *Server) hImportBackup(w http.ResponseWriter, r *http.Request) {
+	var in importBackupReq
+	if err := decodeBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误")
+		return
+	}
+	item, err := s.bk.Import(in.Container, in.TS, in.Content)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeOK(w, item)
@@ -65,7 +91,9 @@ func (s *Server) hBackupDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeOK(w, map[string]any{"diff": diff, "count": len(diff)})
+	// 卷数据的情况一并带上：前端要据此决定「含卷数据」这个勾选框给不给
+	vol := s.bk.LoadVolumes(container, ts)
+	writeOK(w, map[string]any{"diff": diff, "count": len(diff), "volumes": vol})
 }
 
 type restoreReq struct {
@@ -73,6 +101,7 @@ type restoreReq struct {
 	TS                  string `json:"ts"`
 	KeepBackupContainer *bool  `json:"keepBackupContainer"`
 	PreSnapshot         *bool  `json:"preSnapshot"`
+	WithVolumes         bool   `json:"withVolumes"`
 }
 
 // hRestore 用快照还原容器配置。高风险动作，前端会被要求二次确认。
@@ -93,6 +122,7 @@ func (s *Server) hRestore(w http.ResponseWriter, r *http.Request) {
 	if in.PreSnapshot != nil {
 		opt.PreSnapshot = *in.PreSnapshot
 	}
+	opt.WithVolumes = in.WithVolumes
 	ctx, cancel := s.ctx(r)
 	defer cancel()
 	res := s.bk.Restore(ctx, in.Container, in.TS, opt)
@@ -104,19 +134,38 @@ func (s *Server) hRestore(w http.ResponseWriter, r *http.Request) {
 }
 
 type pruneBackupsReq struct {
-	KeepPerContainer int `json:"keepPerContainer"`
-	MaxAgeDays       int `json:"maxAgeDays"`
-	MaxTotalMB       int `json:"maxTotalMB"`
+	KeepPerContainer *int  `json:"keepPerContainer"`
+	MaxAgeDays       *int  `json:"maxAgeDays"`
+	MaxTotalMB       *int  `json:"maxTotalMB"`
+	KeepPreUpdate    *bool `json:"keepPreUpdate"`
 }
 
+// hPruneBackups 手动触发一次清理。不带参数时用设置页里的保留策略，
+// 这样「点一下立即清理」与「每天自动清理」的行为完全一致。
 func (s *Server) hPruneBackups(w http.ResponseWriter, r *http.Request) {
-	in := pruneBackupsReq{KeepPerContainer: 10, MaxAgeDays: 30, MaxTotalMB: 2048}
+	cfg := s.readSettings()
+	in := pruneBackupsReq{}
 	_ = decodeBody(r, &in)
-	if in.KeepPerContainer < 0 {
-		in.KeepPerContainer = 10
+
+	opt := backup.PruneOptions{
+		KeepPerContainer: cfg.BackupKeepPerContainer,
+		MaxAgeDays:       cfg.BackupMaxAgeDays,
+		MaxTotalMB:       cfg.BackupMaxTotalMB,
+		KeepPreUpdate:    cfg.BackupKeepPreUpdate,
 	}
-	res := s.bk.Prune(in.KeepPerContainer, in.MaxAgeDays, in.MaxTotalMB)
-	writeOK(w, res)
+	if in.KeepPerContainer != nil {
+		opt.KeepPerContainer = *in.KeepPerContainer
+	}
+	if in.MaxAgeDays != nil {
+		opt.MaxAgeDays = *in.MaxAgeDays
+	}
+	if in.MaxTotalMB != nil {
+		opt.MaxTotalMB = *in.MaxTotalMB
+	}
+	if in.KeepPreUpdate != nil {
+		opt.KeepPreUpdate = *in.KeepPreUpdate
+	}
+	writeOK(w, s.bk.Prune(opt))
 }
 
 func (s *Server) hDeleteBackup(w http.ResponseWriter, r *http.Request) {

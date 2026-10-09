@@ -8,16 +8,39 @@ import {
   FileCode2,
   FolderTree,
   HardDrive,
+  Loader2,
   RefreshCw,
   RotateCcw,
+  Save,
   Trash2,
+  Upload,
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
-import type { BackupStats, ContainerView, DiffEntry, ProjectInfo, RestoreResult, SnapshotItem } from '@/api/types'
+import type { BackupStats, ContainerView, DiffEntry, ProjectInfo, RestoreResult, Settings, SnapshotItem } from '@/api/types'
 import { formatBytes, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
+import SettingRow from '@/components/SettingRow.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
+
+/** 快照里的单个挂载点记录（与后端 backup.VolumeEntry 一致）。 */
+interface VolumeEntry {
+  name: string
+  type: string
+  source: string
+  destination: string
+  packed: boolean
+  bytes: number
+  note: string
+}
+
+/** 快照的卷数据概况（与后端 backup.VolumesMeta 一致）。 */
+interface VolumesMeta {
+  included: boolean
+  items: VolumeEntry[]
+  warning?: string
+}
 
 const toast = useToastStore()
 const tab = ref<'snapshots' | 'projects'>('snapshots')
@@ -30,6 +53,7 @@ const projects = ref<ProjectInfo[]>([])
 const loading = ref(true)
 const busy = ref('')
 const snapshotTarget = ref('')
+const snapshotWithVolumes = ref(false)
 const removeTarget = ref<SnapshotItem | null>(null)
 
 const restoreTarget = ref<SnapshotItem | null>(null)
@@ -38,11 +62,16 @@ const diffLoading = ref(false)
 const restoreResult = ref<RestoreResult | null>(null)
 const restoring = ref(false)
 const showRestore = ref(false)
+const volMeta = ref<VolumesMeta | null>(null)
+const withVolumes = ref(false)
 
 const showFile = ref<{ path: string; content: string } | null>(null)
 const pruneKeep = ref(10)
 const pruneDays = ref(30)
-const pruneDaysArr = [7, 30, 90, 365]
+
+/** 保留策略：这些值会持久化到设置里，「每天自动清理」与手动清理用同一套。 */
+const policy = ref<Settings | null>(null)
+const savingPolicy = ref(false)
 
 const grouped = computed(() => {
   const map = new Map<string, SnapshotItem[]>()
@@ -87,8 +116,17 @@ async function doSnapshot() {
   if (!name) return
   busy.value = 'snapshot'
   try {
-    await api.post('/api/backups/snapshot', { container: name, reason: 'manual' })
-    toast.success(`已备份 ${name} 的配置快照`)
+    const item = await api.post<SnapshotItem>('/api/backups/snapshot', {
+      container: name,
+      reason: 'manual',
+      withVolumes: snapshotWithVolumes.value,
+    })
+    toast.success(
+      `已备份 ${name}`,
+      snapshotWithVolumes.value
+        ? `快照 ${item.ts} · ${formatBytes(item.size)}${item.withData ? '（含卷数据）' : '（卷数据未打包，见快照说明）'}`
+        : `快照 ${item.ts} · ${formatBytes(item.size)}`,
+    )
     await load()
   } catch (e) {
     toast.error('备份失败', e instanceof Error ? e.message : String(e))
@@ -103,18 +141,26 @@ async function openRestore(item: SnapshotItem) {
   showRestore.value = true
   diffLoading.value = true
   diff.value = []
+  volMeta.value = null
+  withVolumes.value = false
   try {
-    const res = await api.get<{ diff: DiffEntry[] }>('/api/backups/diff', {
+    const res = await api.get<{ diff: DiffEntry[]; volumes?: VolumesMeta }>('/api/backups/diff', {
       container: item.container,
       ts: item.ts,
     })
     diff.value = res.diff ?? []
+    volMeta.value = res.volumes ?? null
   } catch (e) {
     toast.error('无法比对差异', e instanceof Error ? e.message : String(e))
   } finally {
     diffLoading.value = false
   }
 }
+
+/** 这份快照里真的被打包了的卷。 */
+const packedVolumes = computed(() => (volMeta.value?.items ?? []).filter((v) => v.packed))
+/** 知道路径、但没被打包进去的（bind 挂载 / 看不见的卷）——必须显式告诉用户。 */
+const unpackedVolumes = computed(() => (volMeta.value?.items ?? []).filter((v) => !v.packed))
 
 async function doRestore() {
   const item = restoreTarget.value
@@ -126,6 +172,7 @@ async function doRestore() {
       ts: item.ts,
       preSnapshot: true,
       keepBackupContainer: true,
+      withVolumes: withVolumes.value,
     })
     restoreResult.value = res
     if (res.ok) toast.success('还原完成')
@@ -135,6 +182,55 @@ async function doRestore() {
     toast.error('还原失败', e instanceof Error ? e.message : String(e))
   } finally {
     restoring.value = false
+  }
+}
+
+// ---------- 导入备份包 ----------
+
+const showImport = ref(false)
+const importContainer = ref('')
+const importTS = ref('')
+const importText = ref('')
+const importing = ref(false)
+
+/** 打开导入框时给一个合理的默认值：当前时间戳。 */
+function openImport() {
+  importContainer.value = ''
+  importTS.value = new Date()
+    .toLocaleString('sv-SE')
+    .replace(/[-: ]/g, '')
+    .slice(0, 15)
+  importText.value = ''
+  showImport.value = true
+}
+
+/** 从粘贴的 JSON 里猜出容器名，省得用户手打。 */
+function guessContainer() {
+  try {
+    const doc = JSON.parse(importText.value)
+    const name = String(doc?.inspect?.Name ?? '').replace(/^\//, '')
+    if (name && !importContainer.value) importContainer.value = name
+  } catch {
+    /* 解析不了就让用户自己填 */
+  }
+}
+
+async function doImport() {
+  if (!importContainer.value.trim() || !importTS.value.trim() || !importText.value.trim()) return
+  importing.value = true
+  try {
+    const item = await api.post<SnapshotItem>('/api/backups/import', {
+      container: importContainer.value.trim(),
+      ts: importTS.value.trim(),
+      content: importText.value,
+    })
+    toast.success('快照已导入', `${item.container} · ${item.ts}`)
+    showImport.value = false
+    await load()
+  } catch (e) {
+    toast.error('导入失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    importing.value = false
   }
 }
 
@@ -154,17 +250,41 @@ async function confirmRemove() {
 async function doPrune() {
   busy.value = 'prune'
   try {
-    const res = await api.post<{ removed: number; freedBytes: number }>('/api/backups/prune', {
-      keepPerContainer: pruneKeep.value,
-      maxAgeDays: pruneDays.value,
-      maxTotalMB: 2048,
-    })
+    // 不带参数 ⇒ 后端用设置页里的保留策略，与每天自动清理完全一致
+    const res = await api.post<{ removed: number; freedBytes: number }>('/api/backups/prune', {})
     toast.success(`清理了 ${res.removed} 份快照`, `释放 ${formatBytes(res.freedBytes)}`)
     await load()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))
   } finally {
     busy.value = ''
+  }
+}
+
+async function loadPolicy() {
+  try {
+    policy.value = await api.get<Settings>('/api/settings')
+    if (policy.value) {
+      pruneKeep.value = policy.value.backupKeepPerContainer
+      pruneDays.value = policy.value.backupMaxAgeDays
+    }
+  } catch {
+    policy.value = null
+  }
+}
+
+async function savePolicy() {
+  if (!policy.value) return
+  savingPolicy.value = true
+  try {
+    policy.value = await api.put<Settings>('/api/settings', policy.value)
+    pruneKeep.value = policy.value.backupKeepPerContainer
+    pruneDays.value = policy.value.backupMaxAgeDays
+    toast.success('保留策略已保存', '每天自动清理与「清理过期」都会按它执行')
+  } catch (e) {
+    toast.error('保存失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    savingPolicy.value = false
   }
 }
 
@@ -177,9 +297,35 @@ async function openFile(f: { hostPath: string }) {
   }
 }
 
+/** 快照来源的中文名与配色。 */
+function reasonLabel(reason: string) {
+  switch (reason) {
+    case 'pre_update':
+      return '更新前'
+    case 'scheduled':
+      return '定时'
+    case 'manual':
+      return '手动'
+    default:
+      return '未知来源'
+  }
+}
+
+function reasonTone(reason: string) {
+  switch (reason) {
+    case 'pre_update':
+      return 'dh-badge-warn'
+    case 'scheduled':
+      return 'dh-badge-plain'
+    default:
+      return 'dh-badge-plain'
+  }
+}
+
 onMounted(async () => {
   await load()
   await loadProjects()
+  await loadPolicy()
 })
 </script>
 
@@ -214,22 +360,27 @@ onMounted(async () => {
           <option value="">选择要备份的容器…</option>
           <option v-for="c in containers" :key="c.id" :value="c.name">{{ c.name }}</option>
         </select>
+        <label
+          class="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-text-4"
+          :title="
+            stats?.volumeRootMounted
+              ? '连 named volume 的数据一起打包（体积可能很大）'
+              : '宿主机的 /var/lib/docker/volumes 没有映射进来，卷数据打不了包'
+          "
+        >
+          <input v-model="snapshotWithVolumes" type="checkbox" class="h-[13px] w-[13px] accent-[#f5a524]" />
+          含卷数据
+        </label>
         <button class="dh-btn dh-btn-primary" :disabled="!snapshotTarget || busy === 'snapshot'" @click="doSnapshot">
           <Archive class="h-3.5 w-3.5" />立即备份
         </button>
       </template>
 
       <div class="ml-auto flex flex-wrap items-center gap-2">
-        <select v-model.number="pruneKeep" class="dh-select !w-auto !py-[6px] !text-[11.5px]">
-          <option :value="5">每容器保留 5 份</option>
-          <option :value="10">每容器保留 10 份</option>
-          <option :value="20">每容器保留 20 份</option>
-          <option :value="50">每容器保留 50 份</option>
-        </select>
-        <select v-model.number="pruneDays" class="dh-select !w-auto !py-[6px] !text-[11.5px]">
-          <option v-for="d in pruneDaysArr" :key="d" :value="d">保留 {{ d }} 天</option>
-        </select>
-        <button class="dh-btn dh-btn-sm" :disabled="busy === 'prune'" @click="doPrune">
+        <button class="dh-btn dh-btn-sm" @click="openImport">
+          <Upload class="h-3 w-3" />导入备份包
+        </button>
+        <button v-if="tab === 'snapshots'" class="dh-btn dh-btn-sm" :disabled="busy === 'prune'" @click="doPrune">
           <Trash2 class="h-3 w-3" />清理过期
         </button>
         <button class="dh-btn dh-btn-sm" :disabled="loading" @click="load">
@@ -307,6 +458,96 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- 保留策略 -->
+    <div v-if="tab === 'snapshots' && policy" class="dh-card">
+      <div class="dh-card-head">
+        <Trash2 class="h-3.5 w-3.5 text-text-4" />
+        <span>保留策略</span>
+        <span class="ml-2 text-[11.5px] font-normal text-text-5">
+          定时清理每天跑一次 · 也可随时点「清理过期」立即执行
+        </span>
+        <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="savingPolicy" @click="savePolicy">
+          <Loader2 v-if="savingPolicy" class="h-3 w-3 dh-spin" />
+          <Save v-else class="h-3 w-3" />保存策略
+        </button>
+      </div>
+      <div class="flex flex-col gap-3 p-3.5">
+        <SettingRow title="每容器保留最近份数" sub="超出后按时间滚动覆盖（更新前快照不计入这个额度）">
+          <select v-model.number="policy.backupKeepPerContainer" class="dh-select !w-[110px] !py-[5px] !text-[11.5px]">
+            <option :value="0">不限制</option>
+            <option :value="5">5 份</option>
+            <option :value="10">10 份</option>
+            <option :value="20">20 份</option>
+            <option :value="50">50 份</option>
+          </select>
+        </SettingRow>
+        <SettingRow title="快照保留期" sub="到期自动清理">
+          <select v-model.number="policy.backupMaxAgeDays" class="dh-select !w-[110px] !py-[5px] !text-[11.5px]">
+            <option :value="0">不限制</option>
+            <option :value="7">7 天</option>
+            <option :value="30">30 天</option>
+            <option :value="90">90 天</option>
+            <option :value="365">365 天</option>
+          </select>
+        </SettingRow>
+        <SettingRow title="快照总容量上限" sub="达到上限后先清最旧的快照">
+          <select v-model.number="policy.backupMaxTotalMB" class="dh-select !w-[110px] !py-[5px] !text-[11.5px]">
+            <option :value="0">不限制</option>
+            <option :value="512">512 MB</option>
+            <option :value="2048">2 GB</option>
+            <option :value="8192">8 GB</option>
+            <option :value="20480">20 GB</option>
+          </select>
+        </SettingRow>
+        <SettingRow title="更新前快照永不自动清理" sub="这是回滚的底牌 —— 自动更新出事后唯一能救回来的东西">
+          <ToggleSwitch v-model="policy.backupKeepPreUpdate" label="更新前快照永不自动清理" />
+        </SettingRow>
+      </div>
+    </div>
+
+    <!-- 存储位置 -->
+    <div v-if="tab === 'snapshots'" class="dh-card">
+      <div class="dh-card-head">
+        <HardDrive class="h-3.5 w-3.5 text-text-4" />
+        <span>存储位置</span>
+      </div>
+      <div class="flex flex-col gap-3 p-3.5">
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5">
+          <div class="font-mono text-[12px] text-text-2">{{ stats?.dir || '/data/backups' }}</div>
+          <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-5">
+            这是 Dockhelm <b class="text-text-4">容器内</b>的路径。建议把宿主目录映射进来，
+            这样容器重建、换镜像都还在自己的快照。
+          </div>
+        </div>
+        <div class="border-t border-line-1" />
+        <div class="flex items-start gap-2.5">
+          <span class="mt-[3px] h-[15px] w-[15px] flex-none rounded-[5px] bg-[#fbbf24] opacity-60" />
+          <div class="text-[11.5px] leading-relaxed text-text-4">
+            <b class="text-text-3">bind mount</b> 的数据在宿主机目录上，容器内默认看不见 ——
+            Dockhelm 只能把路径记进快照，没法替你打包那份数据；
+            <b class="text-text-3">named volume</b> 的内容才在 <code class="text-text-3">/var/lib/docker/volumes</code> 下，可以真正读到。
+          </div>
+        </div>
+        <div v-if="pathMappings.length" class="border-t border-line-1 pt-3">
+          <div class="mb-2 text-[12px] text-text-4">宿主机路径映射（启动时从自身容器自动识别）</div>
+          <div class="flex flex-col gap-1.5">
+            <div v-for="(m, i) in pathMappings" :key="i" class="flex flex-wrap items-center gap-2 text-[11.5px]">
+              <span class="dh-badge" :class="m.source === 'auto' ? 'dh-badge-accent' : 'dh-badge-plain'">
+                {{ m.source === 'auto' ? '自动识别' : '环境变量' }}
+              </span>
+              <code class="font-mono text-text-3">{{ m.host }}</code>
+              <span class="text-text-6">→</span>
+              <code class="font-mono text-text-3">{{ m.container }}</code>
+              <span class="dh-badge" :class="m.visible ? 'dh-badge-run' : 'dh-badge-err'">
+                {{ m.visible ? '可见' : '看不见' }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
     <!-- 快照列表 -->
     <div v-if="tab === 'snapshots'" class="dh-card">
       <div class="dh-card-head">
@@ -342,6 +583,7 @@ onMounted(async () => {
             <div class="min-w-[160px] flex-1 truncate font-mono text-[11px] text-text-4" :title="item.image">
               {{ item.image }}
             </div>
+            <span class="dh-badge" :class="reasonTone(item.reason)">{{ reasonLabel(item.reason) }}</span>
             <span class="dh-badge" :class="item.running ? 'dh-badge-run' : 'dh-badge-stop'">
               {{ item.running ? '当时运行中' : '当时已停止' }}
             </span>
@@ -511,6 +753,61 @@ onMounted(async () => {
             </table>
           </div>
         </div>
+
+      <!-- 卷数据 -->
+        <div v-if="volMeta?.items?.length" class="border-t border-line-1 pt-3">
+          <div class="mb-2 text-[12px] text-text-3">卷数据</div>
+
+          <label
+            class="flex cursor-pointer items-start gap-2.5 rounded-[9px] border px-3 py-2.5"
+            :class="
+              packedVolumes.length
+                ? 'border-line-1 bg-ink-800'
+                : 'cursor-not-allowed border-line-1 bg-ink-800 opacity-60'
+            "
+          >
+            <input
+              v-model="withVolumes"
+              type="checkbox"
+              class="mt-[3px] h-[14px] w-[14px] accent-[#f5a524]"
+              :disabled="!packedVolumes.length"
+            />
+            <span class="text-[12.5px]">
+              <b :class="packedVolumes.length ? 'text-[#fcd34d]' : 'text-text-4'">
+                含卷数据（覆盖现有文件）
+              </b>
+              <div class="mt-[2px] text-[11px] leading-relaxed text-text-5">
+                <template v-if="packedVolumes.length">
+                  这份快照打包了 {{ packedVolumes.length }} 个卷：
+                  <span class="font-mono text-text-4">{{ packedVolumes.map((v) => v.name).join('、') }}</span>
+                  （共 {{ formatBytes(packedVolumes.reduce((a, v) => a + v.bytes, 0)) }}）。
+                  勾选后会把卷<b>当前的内容整个覆盖掉</b> —— 这是不可逆的。
+                </template>
+                <template v-else>
+                  这份快照里没有任何被打包的卷数据，只能还原容器配置。
+                </template>
+              </div>
+            </span>
+          </label>
+
+          <div v-if="unpackedVolumes.length" class="mt-2 flex flex-col gap-1">
+            <div v-for="v in unpackedVolumes" :key="v.destination" class="flex items-start gap-2 text-[11.5px]">
+              <span class="dh-badge flex-none" :class="v.type === 'bind' ? 'dh-badge-warn' : 'dh-badge-plain'">
+                {{ v.type === 'bind' ? '绑定挂载' : v.type }}
+              </span>
+              <code class="flex-none font-mono text-text-4">{{ v.destination }}</code>
+              <span class="text-text-6">{{ v.note }}</span>
+            </div>
+          </div>
+
+          <div
+            v-if="withVolumes && packedVolumes.length"
+            class="mt-2.5 flex items-start gap-2 rounded-[9px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-3 py-2 text-[11.5px] leading-relaxed text-[#fca5a5]"
+          >
+            <AlertTriangle class="mt-[1px] h-3.5 w-3.5 flex-none" />
+            <span>已勾选「含卷数据」：还原过程中会把这些卷里的现有文件覆盖成快照里的版本，无法撤销。</span>
+          </div>
+        </div>
       </div>
 
       <template #footer>
@@ -519,6 +816,58 @@ onMounted(async () => {
         </button>
         <button v-if="!restoreResult" class="dh-btn dh-btn-danger" :disabled="restoring" @click="doRestore">
           <RotateCcw class="h-3.5 w-3.5" />{{ restoring ? '还原中…' : '确认还原' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!-- 导入备份包 -->
+    <Modal :open="showImport" title="导入备份包" subtitle="粘贴一份快照 JSON" width="640px" @close="showImport = false">
+      <div class="flex flex-col gap-3">
+        <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
+          <Download class="mt-[2px] h-3.5 w-3.5 flex-none" />
+          <span>
+            接受 Dockhelm 写出的快照文件（内容形如 <code>{"_dockhelm":{…},"inspect":{…}}</code>）。
+            导入只写文件、不动任何容器；导入后就能像本地快照一样在还原弹窗里使用。
+            同名时间戳不会覆盖已有快照，会自动加后缀。
+          </span>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="mb-[5px] block text-[12px] text-text-4">容器名</label>
+            <input
+              v-model="importContainer"
+              class="dh-input"
+              placeholder="redis"
+              @change="guessContainer"
+            />
+            <div class="mt-1 text-[11px] text-text-5">决定这份快照归到哪个容器的列表下。</div>
+          </div>
+          <div>
+            <label class="mb-[5px] block text-[12px] text-text-4">快照时间戳</label>
+            <input v-model="importTS" class="dh-input font-mono" placeholder="20261009-094200" />
+            <div class="mt-1 text-[11px] text-text-5">格式 20060102-150405。</div>
+          </div>
+        </div>
+        <div>
+          <label class="mb-[5px] block text-[12px] text-text-4">快照 JSON</label>
+          <textarea
+            v-model="importText"
+            rows="10"
+            class="dh-input dh-scroll h-auto resize-y font-mono text-[11.5px] leading-relaxed"
+            placeholder='{"_dockhelm":{...},"inspect":{...}}'
+            @change="guessContainer"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <button class="dh-btn" @click="showImport = false">取消</button>
+        <button
+          class="dh-btn dh-btn-primary"
+          :disabled="importing || !importContainer.trim() || !importTS.trim() || !importText.trim()"
+          @click="doImport"
+        >
+          <Loader2 v-if="importing" class="h-3.5 w-3.5 dh-spin" />
+          <Download v-else class="h-3.5 w-3.5" />导入
         </button>
       </template>
     </Modal>

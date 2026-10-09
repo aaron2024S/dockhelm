@@ -4,20 +4,25 @@ import { RouterLink } from 'vue-router'
 import {
   AlertTriangle,
   CheckCircle2,
+  Clock,
   Download,
   HelpCircle,
   Info,
   Loader2,
+  Play,
   RefreshCw,
   ShieldQuestion,
+  ShieldAlert,
   Zap,
 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
-import type { CheckResult, UpdatesResponse } from '@/api/types'
-import { checkLabel, relativeTime, shortImage } from '@/utils/format'
+import type { AutoUpdateInfo, CheckResult, Settings, UpdatesResponse } from '@/api/types'
+import { checkLabel, formatDateTime, relativeTime, shortImage } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
+import SettingRow from '@/components/SettingRow.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
 const toast = useToastStore()
 const results = ref<CheckResult[]>([])
@@ -33,9 +38,20 @@ const forceUpdate = ref(false)
 const showInfo = ref(false)
 let closeStream: (() => void) | null = null
 
+// —— 自动更新 ——
+const auto = ref<AutoUpdateInfo | null>(null)
+const autoBusy = ref(false)
+const policy = ref<Settings | null>(null)
+const savingPolicy = ref(false)
+
 const available = computed(() => results.value.filter((r) => r.status === 'update_available'))
 const other = computed(() => results.value.filter((r) => r.status !== 'update_available'))
 const selectedNames = computed(() => [...selected.value])
+
+/** 会被自动更新的那几台（预览）。 */
+const willUpdate = computed(() => (auto.value?.candidates ?? []).filter((c) => c.willUpdate))
+/** 被跳过的（含排除列表、自身、以及未检测到更新的）。 */
+const skipped = computed(() => (auto.value?.candidates ?? []).filter((c) => !c.willUpdate && (c.protected || c.excluded)))
 
 function toggle(name: string) {
   const s = new Set(selected.value)
@@ -104,8 +120,75 @@ async function apply() {
 
 const toneOf = (status: string) => checkLabel(status).tone
 
+// ---------- 自动更新 ----------
+
+async function loadAuto() {
+  try {
+    auto.value = await api.get<AutoUpdateInfo>('/api/updates/auto')
+  } catch {
+    // 自动更新信息读不到不影响主流程（例如守护进程暂时不可达）
+    auto.value = null
+  }
+}
+
+async function loadPolicy() {
+  try {
+    policy.value = await api.get<Settings>('/api/settings')
+  } catch {
+    policy.value = null
+  }
+}
+
+async function savePolicy() {
+  if (!policy.value) return
+  savingPolicy.value = true
+  try {
+    policy.value = await api.put<Settings>('/api/settings', policy.value)
+    await loadAuto()
+    toast.success('更新策略已保存', '下一轮自动更新就会按新策略执行')
+  } catch (e) {
+    toast.error('保存失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    savingPolicy.value = false
+  }
+}
+
+/** 切换自动更新总开关（立即生效，不必再点保存）。 */
+async function toggleAuto(on: boolean) {
+  if (!policy.value) return
+  policy.value.autoApply = on
+  await savePolicy()
+}
+
+/** 立即跑一轮；dryRun 为真时只巡检不动容器。 */
+async function runAutoCycle(dryRun: boolean) {
+  autoBusy.value = true
+  try {
+    await api.post('/api/updates/auto-run', { dryRun })
+    toast.info(dryRun ? '已开始巡检（不动容器）' : '已开始自动更新', '完成后本页会自动刷新')
+    // 后端在后台跑，轮询几次把结果拉回来
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => window.setTimeout(r, 1500))
+      const info = await api.get<AutoUpdateInfo>('/api/updates/auto').catch(() => null)
+      if (info) auto.value = info
+      if (info && !info.running) break
+    }
+    await Promise.all([load(), loadAuto()])
+    const last = auto.value?.lastRun
+    if (last && !last.dryRun) {
+      toast.success('自动更新完成', `更新 ${last.updated} 台，失败 ${last.failed} 台`)
+    }
+  } catch (e) {
+    toast.error('启动失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    autoBusy.value = false
+  }
+}
+
 onMounted(() => {
   void load()
+  void loadAuto()
+  void loadPolicy()
   closeStream = openStream('/api/events/stream', (topic, ev) => {
     if (topic !== 'update') return
     const d = ev.data ?? {}
@@ -132,6 +215,11 @@ onMounted(() => {
       void load()
       const msg = `更新 ${d.updated ?? 0} 个，已是最新/跳过 ${d.skipped ?? 0} 个，失败 ${d.failed ?? 0} 个`
       toast.success('批量更新完成', msg)
+    }
+    // 自动更新：巡检结束 / 整轮结束都要把这块刷新一下
+    if (ev.kind === 'auto_check_done' || ev.kind === 'auto_done') {
+      void loadAuto()
+      if (ev.kind === 'auto_done') void load()
     }
   })
 })
@@ -293,6 +381,149 @@ onUnmounted(() => closeStream?.())
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 自动更新 -->
+    <div class="dh-card">
+      <div class="dh-card-head">
+        <Zap class="h-3.5 w-3.5" :class="auto?.enabled ? 'text-[#fbbf24]' : 'text-text-4'" />
+        <span>自动更新</span>
+        <span class="ml-2 text-[11.5px] font-normal" :class="auto?.enabled ? 'text-[#fcd34d]' : 'text-text-5'">
+          {{ auto?.enabled ? '检测到新版本会自动更新' : '只检测，不会自动动容器' }}
+        </span>
+        <div class="ml-auto flex items-center gap-2">
+          <button class="dh-btn dh-btn-sm" :disabled="autoBusy" @click="runAutoCycle(true)">
+            <RefreshCw class="h-3 w-3" :class="autoBusy ? 'dh-spin' : ''" />立即巡检一轮
+          </button>
+          <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="autoBusy || !auto?.enabled" @click="runAutoCycle(false)">
+            <Play class="h-3 w-3" />立即执行自动更新
+          </button>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3 p-3.5">
+        <!-- 总开关 + 下次巡检时间 -->
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
+          <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3 lg:col-span-2">
+            <SettingRow title="检测到新版本后自动更新" sub="每轮巡检结束后，把有更新的容器（排除列表与自己除外）自动重建到新镜像">
+              <ToggleSwitch
+                v-if="policy"
+                :model-value="policy.autoApply"
+                :disabled="savingPolicy"
+                label="自动更新"
+                @update:model-value="toggleAuto"
+              />
+              <span v-else class="text-[11.5px] text-text-5">…</span>
+            </SettingRow>
+          </div>
+          <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
+            <div class="flex items-center gap-1.5 text-[12px] text-text-4"><Clock class="h-3.5 w-3.5" />下次巡检</div>
+            <div class="mt-1.5 text-[14px] font-semibold text-text-1">
+              {{ auto?.nextCheckAt ? formatDateTime(auto.nextCheckAt) : '未开启周期巡检' }}
+            </div>
+            <div class="mt-1 text-[11px] text-text-5">
+              {{ auto?.lastCheckAt ? `上次 ${relativeTime(auto.lastCheckAt)}` : '还没有巡检记录' }}
+              · 每 {{ auto?.checkIntervalHours ?? 0 }} 小时一次
+            </div>
+          </div>
+        </div>
+
+        <!-- 本轮会发生什么 -->
+        <div class="rounded-[10px] border border-line-1 bg-ink-800">
+          <div class="flex flex-wrap items-center gap-2 border-b border-line-1 px-3 py-2">
+            <span class="text-[12px] font-medium text-text-3">本轮会发生什么</span>
+            <span class="dh-badge dh-badge-warn">{{ willUpdate.length }} 台将被更新</span>
+            <span class="dh-badge dh-badge-plain">{{ skipped.length }} 台被保护/排除</span>
+            <RouterLink to="/settings" class="ml-auto text-[11.5px] text-text-5 hover:text-accent">
+              去设置里调整检测频率与排除列表 →
+            </RouterLink>
+          </div>
+          <div v-if="!auto?.candidates?.length" class="px-3 py-3 text-[12px] text-text-5">
+            还没有巡检结果，点右上角「立即巡检一轮」先跑一次。
+          </div>
+          <div v-else class="overflow-x-auto">
+            <table class="dh-table">
+              <thead>
+                <tr>
+                  <th class="w-[200px]">容器</th>
+                  <th class="w-[220px]">镜像</th>
+                  <th class="w-[110px]">状态</th>
+                  <th>去向</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in auto.candidates" :key="c.name">
+                  <td class="font-mono text-[11.5px] text-text-3">{{ c.name }}</td>
+                  <td class="max-w-[220px] truncate font-mono text-[11px] text-text-5">{{ shortImage(c.image) }}</td>
+                  <td>
+                    <span class="dh-badge" :class="c.running ? 'dh-badge-run' : 'dh-badge-stop'">
+                      {{ c.running ? '运行中' : '已停止' }}
+                    </span>
+                  </td>
+                  <td class="text-[11.5px]">
+                    <span v-if="c.willUpdate" class="dh-badge dh-badge-warn">将更新</span>
+                    <span v-else-if="c.protected" class="dh-badge dh-badge-accent">受保护</span>
+                    <span v-else-if="c.excluded" class="dh-badge dh-badge-plain">已排除</span>
+                    <span v-else class="dh-badge dh-badge-plain">无需更新</span>
+                    <span v-if="c.reason" class="ml-2 text-text-5">{{ c.reason }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 上一轮结果 -->
+        <div v-if="auto?.lastRun" class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5">
+          <div class="flex flex-wrap items-center gap-2 text-[12px]">
+            <span class="font-medium text-text-3">上一轮（{{ auto.lastRun.trigger === 'manual' ? '手动触发' : '定时触发' }}）</span>
+            <span class="dh-badge dh-badge-plain">{{ relativeTime(auto.lastRun.startedAt) }}</span>
+            <span v-if="auto.lastRun.dryRun" class="dh-badge dh-badge-plain">仅巡检</span>
+            <span v-else class="dh-badge dh-badge-run">更新 {{ auto.lastRun.updated }} 台</span>
+            <span v-if="auto.lastRun.failed" class="dh-badge dh-badge-err">失败 {{ auto.lastRun.failed }} 台</span>
+            <span class="ml-auto text-[11.5px] text-text-5">
+              巡检 {{ auto.lastRun.checked }} 台 · 发现 {{ auto.lastRun.available }} 台有更新 · 耗时 {{ (auto.lastRun.durationMs / 1000).toFixed(1) }}s
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="auto && !auto.enabled"
+          class="flex items-start gap-2 rounded-[8px] border border-line-1 px-2.5 py-2 text-[11.5px] leading-relaxed text-text-4"
+        >
+          <Info class="mt-[1px] h-3.5 w-3.5 flex-none" />
+          <span>
+            自动更新默认关闭：检测到新版本只会打上「有新版本」标记，要不要更新由你决定。
+            打开开关后，每轮巡检结束就会按上面的清单自动重建容器 —— 开启前建议先看清清单。
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 更新策略 -->
+    <div v-if="policy" class="dh-card">
+      <div class="dh-card-head">
+        <ShieldAlert class="h-3.5 w-3.5 text-text-4" />
+        <span>更新策略</span>
+        <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="savingPolicy" @click="savePolicy">
+          <Loader2 v-if="savingPolicy" class="h-3 w-3 dh-spin" />
+          <Download v-else class="h-3 w-3" />保存策略
+        </button>
+      </div>
+      <div class="flex flex-col gap-3 p-3.5">
+        <SettingRow title="仅在镜像真正变化时重启容器" sub="比对更新前后的镜像 ID，一致就完全不动它">
+          <span class="dh-badge dh-badge-plain">始终开启</span>
+        </SettingRow>
+        <SettingRow title="同一镜像的多个容器只拉取一次" sub="4 台共用 nginx:alpine 时，下载 1 次、重建 4 台">
+          <ToggleSwitch v-model="policy.pullOnce" label="同一镜像只拉取一次" />
+        </SettingRow>
+        <SettingRow title="更新前自动备份容器配置" sub="失败可一键回滚到更新前">
+          <ToggleSwitch v-model="policy.backupBefore" label="更新前自动备份容器配置" />
+        </SettingRow>
+        <SettingRow title="更新后清理旧镜像" sub="确认无引用后才删除">
+          <ToggleSwitch v-model="policy.cleanupAfter" label="更新后清理旧镜像" />
+        </SettingRow>
       </div>
     </div>
 

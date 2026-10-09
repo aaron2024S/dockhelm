@@ -181,8 +181,13 @@ func main() {
 	// 定期清理
 	go housekeeping(appCtx, st, bk, nt)
 
-	// 启动后的首次巡检
-	if st.GetSetting("update.checkOnStart", "1") == "1" {
+	// 周期检测 + 自动更新。
+	//
+	// 这一条循环同时承担了原来的「启动后首次巡检」：如果 checkOnStart 开着，
+	// 它启动后 8 秒就先跑一轮；之后按 update.checkInterval 周期跑。
+	// 之所以合并，是因为两套并行跑会在启动瞬间同时打镜像仓库、白白触发限流。
+	checkOnStart := st.GetSetting("update.checkOnStart", "1") == "1"
+	if checkOnStart {
 		go func() {
 			time.Sleep(8 * time.Second) // 等面板先起来
 			log.Printf("开始启动后首次更新巡检（只读，不会动任何容器）…")
@@ -197,6 +202,16 @@ func main() {
 			}
 			log.Printf("首次巡检完成：检查 %d 个容器，%d 个有可用更新", len(results), avail)
 		}()
+	}
+	go srv.StartAutoLoop(appCtx)
+	{
+		interval := config.AtoiDefault(st.GetSetting("update.checkInterval", ""), 6)
+		if interval > 0 {
+			log.Printf("周期更新检测已启用：每 %d 小时巡检一次（自动更新 %s）",
+				interval, onOff(st.GetSetting("update.autoApply", "0") == "1"))
+		} else {
+			log.Printf("周期更新检测已关闭（设置页可开启）")
+		}
 	}
 
 	// —— 启动 HTTP ——
@@ -281,8 +296,17 @@ func housekeeping(ctx context.Context, st *store.Store, bk *backup.Service, nt *
 		case <-t.C:
 			purge()
 			if time.Since(lastPrune) > 20*time.Hour {
-				// 快照保留：每容器 10 份、最多 30 天、总额 2GB
-				res := bk.Prune(10, 30, 2048)
+				// 快照保留策略来自设置页；更新前快照默认受保护，
+				// 免得「保留最近 N 份」把唯一能回滚的那一份挤掉。
+				readInt := func(key string, def int) int {
+					return config.AtoiDefault(st.GetSetting(key, ""), def)
+				}
+				res := bk.Prune(backup.PruneOptions{
+					KeepPerContainer: readInt("backup.keepPerContainer", 10),
+					MaxAgeDays:       readInt("backup.maxAgeDays", 30),
+					MaxTotalMB:       readInt("backup.maxTotalMB", 2048),
+					KeepPreUpdate:    st.GetSetting("backup.keepPreUpdate", "1") == "1",
+				})
 				if res.Removed > 0 {
 					log.Printf("已清理 %d 份过期配置快照，释放 %.1f MB", res.Removed, float64(res.FreedBytes)/1024/1024)
 				}
@@ -290,6 +314,14 @@ func housekeeping(ctx context.Context, st *store.Store, bk *backup.Service, nt *
 			}
 		}
 	}
+}
+
+// onOff 把 "1"/"0" 渲染成中文开关，只为启动日志好读。
+func onOff(enabled bool) string {
+	if enabled {
+		return "已开启"
+	}
+	return "已关闭"
 }
 
 func excludedFrom(st *store.Store, self string) map[string]bool {

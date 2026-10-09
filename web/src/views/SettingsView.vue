@@ -9,10 +9,13 @@ import {
   RefreshCw,
   Save,
   ScrollText,
+  SearchCheck,
   ShieldAlert,
+  SlidersHorizontal,
   Trash2,
   User,
   Users,
+  Zap,
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { ContainerView, RunLog, Settings } from '@/api/types'
@@ -20,6 +23,8 @@ import { formatDateTime, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
 import { version } from '@/config'
+import SettingRow from '@/components/SettingRow.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
 const toast = useToastStore()
 const app = useAppStore()
@@ -31,6 +36,17 @@ const settings = ref<Settings>({
   deepCheckCron: '',
   logRetention: 500,
   checkOnStart: true,
+  checkIntervalHours: 6,
+  notifyOnCheck: false,
+  autoApply: false,
+  pullOnce: true,
+  backupBefore: true,
+  cleanupAfter: true,
+  directFirst: true,
+  backupKeepPerContainer: 10,
+  backupMaxAgeDays: 30,
+  backupMaxTotalMB: 2048,
+  backupKeepPreUpdate: true,
 })
 const containers = ref<ContainerView[]>([])
 const logs = ref<RunLog[]>([])
@@ -45,9 +61,6 @@ const confirmPw = ref('')
 const showOld = ref(false)
 const showNew = ref(false)
 const changing = ref(false)
-
-/** 模板里安全渲染「双花括号」变量写法（直接写字面量会被 Vue 的插值分隔符截断）。 */
-const tplVar = (name: string) => `{{${name}}}`
 
 const recentLogins = computed<{ ts: string; ip: string; ok: boolean }[]>(
   () => (account.value?.recentLogins as { ts: string; ip: string; ok: boolean }[]) ?? [],
@@ -154,57 +167,130 @@ onMounted(() => void load())
       <div class="dh-sub">更新行为、计划任务与账户安全</div>
     </div>
 
-    <!-- 更新行为 -->
+    <!-- 更新与检测 -->
     <div class="dh-card">
       <div class="dh-card-head">
         <RefreshCw class="h-3.5 w-3.5 text-text-4" />
-        <span>更新行为</span>
+        <span>更新与检测</span>
+        <span class="ml-2 text-[11.5px] font-normal text-text-5">
+          {{ settings.checkIntervalHours > 0 ? `每 ${settings.checkIntervalHours} 小时巡检一次` : '未开启周期巡检' }}
+          · 自动更新{{ settings.autoApply ? '已开启' : '已关闭' }}
+        </span>
         <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="saving" @click="save">
           <Loader2 v-if="saving" class="h-3 w-3 dh-spin" />
           <Save v-else class="h-3 w-3" />保存
         </button>
       </div>
-      <div class="grid grid-cols-1 gap-x-8 gap-y-4 p-3.5 lg:grid-cols-2">
-        <div>
-          <label class="dh-label">批量更新并发度</label>
-          <select v-model.number="settings.concurrency" class="dh-select">
-            <option :value="1">1（串行，最稳）</option>
-            <option :value="2">2（推荐）</option>
-            <option :value="3">3</option>
-            <option :value="4">4</option>
-            <option :value="6">6（激进）</option>
-          </select>
-          <div class="mt-1 text-[11px] leading-relaxed text-text-5">
-            同时更新的容器数量。并发越高越快，但更容易触发镜像仓库限流。
+
+      <div class="flex flex-col gap-3 p-3.5">
+        <!-- 检测：这是「多久检查一次」的落点 -->
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
+          <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
+            <SearchCheck class="h-3.5 w-3.5 text-text-4" />检测
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <SettingRow title="检测频率" :sub="settings.checkIntervalHours > 0 ? `每 ${settings.checkIntervalHours} 小时自动扫描一次镜像仓库` : '关闭后只在手动点「重新检测」时才检查'">
+              <select v-model.number="settings.checkIntervalHours" class="dh-select !w-[120px] !py-[5px] !text-[11.5px]">
+                <option :value="0">关闭</option>
+                <option :value="1">每 1 小时</option>
+                <option :value="3">每 3 小时</option>
+                <option :value="6">每 6 小时</option>
+                <option :value="12">每 12 小时</option>
+                <option :value="24">每 24 小时</option>
+              </select>
+            </SettingRow>
+            <SettingRow title="摘要来源" sub="由本机 Docker 守护进程解析，与 docker pull 走同一数据源">
+              <span class="dh-badge dh-badge-plain">推荐</span>
+            </SettingRow>
+            <SettingRow title="检测完成后通知" sub="巡检发现问题时推一条通知到已配置的渠道">
+              <ToggleSwitch v-model="settings.notifyOnCheck" label="检测完成后通知" />
+            </SettingRow>
+            <SettingRow title="启动后自动巡检一次" sub="延迟 8 秒执行，只读检查，不会停止任何容器">
+              <ToggleSwitch v-model="settings.checkOnStart" label="启动后自动巡检一次" />
+            </SettingRow>
           </div>
         </div>
 
-        <div>
-          <label class="dh-label">面板地址（通知模板里的 <code>{{ tplVar('url') }}</code>）</label>
-          <input v-model="settings.panelURL" class="dh-input" placeholder="http://192.168.1.10:5923" />
+        <!-- 自动更新：回答「检测到有更新会不会自己动手」 -->
+        <div class="rounded-[10px] border p-3" :class="settings.autoApply ? 'border-[rgba(245,165,36,.35)] bg-[#1a1611]' : 'border-line-1 bg-ink-800'">
+          <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
+            <Zap class="h-3.5 w-3.5" :class="settings.autoApply ? 'text-[#fbbf24]' : 'text-text-4'" />自动更新
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <SettingRow
+              title="检测到新版本后自动更新"
+              :sub="
+                settings.autoApply
+                  ? '每轮巡检结束后，把有更新的容器（排除列表与自己除外）自动重建到新镜像'
+                  : '当前只检测、不动手 —— 发现更新后要你在更新中心手动点'
+              "
+            >
+              <ToggleSwitch v-model="settings.autoApply" label="自动更新" />
+            </SettingRow>
+            <div
+              v-if="settings.autoApply"
+              class="flex items-start gap-2 rounded-[8px] border border-[rgba(245,165,36,.3)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[#fcd34d]"
+            >
+              <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none" />
+              <span>
+                自动更新会<b>真的重启容器</b>。建议保持「更新前自动备份容器配置」开启，并确认排除列表里
+                放好了数据库、反向代理这类不能随便重启的服务。更新中心页可以先看「本轮会更新哪几台」再决定。
+              </span>
+            </div>
+          </div>
         </div>
 
-        <label class="flex items-start gap-2.5">
-          <input v-model="settings.checkOnStart" type="checkbox" class="mt-[3px] h-[14px] w-[14px] accent-[#2dd4bf]" />
-          <span class="text-[12.5px]">
-            启动后自动巡检一次
-            <div class="text-[11px] text-text-5">延迟 8 秒执行，只读检查，不会停止任何容器。</div>
+        <!-- 执行策略 -->
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
+          <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
+            <SlidersHorizontal class="h-3.5 w-3.5 text-text-4" />执行策略
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <SettingRow title="仅在镜像真正变化时重启容器" sub="比对更新前后的镜像 ID，一致就完全不动它">
+              <span class="dh-badge dh-badge-plain">始终开启</span>
+            </SettingRow>
+            <SettingRow title="同一镜像的多个容器只拉取一次" sub="4 台共用 nginx:alpine 时，下载 1 次、重建 4 台">
+              <ToggleSwitch v-model="settings.pullOnce" label="同一镜像只拉取一次" />
+            </SettingRow>
+            <SettingRow title="更新前自动备份容器配置" sub="失败可一键回滚到更新前">
+              <ToggleSwitch v-model="settings.backupBefore" label="更新前自动备份容器配置" />
+            </SettingRow>
+            <SettingRow title="更新后清理旧镜像" sub="确认没有任何容器再引用后才删除">
+              <ToggleSwitch v-model="settings.cleanupAfter" label="更新后清理旧镜像" />
+            </SettingRow>
+            <SettingRow title="批量更新并发度" sub="并发越高越快，但更容易触发镜像仓库限流">
+              <select v-model.number="settings.concurrency" class="dh-select !w-[150px] !py-[5px] !text-[11.5px]">
+                <option :value="1">1（串行，最稳）</option>
+                <option :value="2">2（推荐）</option>
+                <option :value="3">3</option>
+                <option :value="4">4</option>
+                <option :value="6">6（激进）</option>
+              </select>
+            </SettingRow>
+          </div>
+        </div>
+
+        <!-- 面板与记录 -->
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
+          <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
+            <ScrollText class="h-3.5 w-3.5 text-text-4" />面板与记录
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <SettingRow title="面板地址" sub="通知模板里的 {{url}} 用它拼可点击的链接">
+              <input v-model="settings.panelURL" class="dh-input !w-[260px]" placeholder="http://192.168.1.10:5923" />
+            </SettingRow>
+            <SettingRow title="运行记录保留条数" sub="超出后按时间滚动覆盖，只影响面板里的历史列表">
+              <input v-model.number="settings.logRetention" type="number" min="50" class="dh-input !w-[110px]" />
+            </SettingRow>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
+          <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-[#fbbf24]" />
+          <span>
+            这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及下面的排除列表。
+            计划任务里的「全部容器」也会自动跳过它们。
           </span>
-        </label>
-
-        <div>
-          <label class="dh-label">运行记录保留条数</label>
-          <input v-model.number="settings.logRetention" type="number" min="50" class="dh-input" />
-        </div>
-
-        <div class="lg:col-span-2">
-          <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
-            <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-[#fbbf24]" />
-            <span>
-              这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及下面的排除列表。
-              计划任务里的「全部容器」也会自动跳过它们。
-            </span>
-          </div>
         </div>
       </div>
     </div>

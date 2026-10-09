@@ -46,10 +46,28 @@ type SnapshotItem struct {
 	Image     string `json:"image"`
 	Running   bool   `json:"running"`
 	Created   string `json:"created"`
+	// Reason 快照的由来：manual / pre_update / scheduled。
+	// 「更新前快照永不自动清理」这条保留策略靠它识别。
+	Reason string `json:"reason"`
+	// WithData 这份快照里是否真的打包了卷数据。
+	WithData bool `json:"withData"`
 }
 
-// Snapshot 给某个容器写一份配置快照。
+// SnapshotOptions 备份选项。
+type SnapshotOptions struct {
+	Reason string
+	// WithVolumes 同时把 named volume 的数据打包进来。
+	// 只有卷根目录被映射进 Dockhelm 时才真的打得到，打不到会在快照里写明原因。
+	WithVolumes bool
+}
+
+// Snapshot 给某个容器写一份配置快照（不含卷数据）。
 func (s *Service) Snapshot(ctx context.Context, nameOrID, reason string) (*SnapshotItem, error) {
+	return s.SnapshotWith(ctx, nameOrID, SnapshotOptions{Reason: reason})
+}
+
+// SnapshotWith 按选项写一份快照。
+func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt SnapshotOptions) (*SnapshotItem, error) {
 	insp, err := s.dc.Inspect(ctx, nameOrID)
 	if err != nil {
 		return nil, err
@@ -72,14 +90,21 @@ func (s *Service) Snapshot(ctx context.Context, nameOrID, reason string) (*Snaps
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", ts, i))
 	}
 
-	doc := map[string]any{
-		"_dockhelm": map[string]any{
-			"snapshotAt": time.Now().UTC().Format(time.RFC3339),
-			"reason":     reason,
-			"version":    1,
-		},
-		"inspect": insp,
+	// 卷数据：先打包再写 json，这样 json 里记的 Packed/Bytes 一定是真的
+	var volumes VolumesMeta
+	if opt.WithVolumes {
+		volumes = s.PackVolumes(ctx, insp, filepath.Join(dir, ts+".volumes"))
 	}
+
+	meta := map[string]any{
+		"snapshotAt": time.Now().UTC().Format(time.RFC3339),
+		"reason":     opt.Reason,
+		"version":    1,
+	}
+	if opt.WithVolumes {
+		meta["volumes"] = volumes
+	}
+	doc := map[string]any{"_dockhelm": meta, "inspect": insp}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, err
@@ -88,18 +113,39 @@ func (s *Service) Snapshot(ctx context.Context, nameOrID, reason string) (*Snaps
 	if err := os.WriteFile(p, b, 0o600); err != nil {
 		return nil, err
 	}
+	total := int64(len(b))
+	for _, e := range volumes.Items {
+		total += e.Bytes
+	}
 	item := &SnapshotItem{
 		Container: name,
 		TS:        ts,
 		Path:      p,
-		Size:      int64(len(b)),
+		Size:      total,
 		Image:     imageRef(insp),
 		Running:   isRunning(insp),
 		Created:   time.Now().UTC().Format(time.RFC3339),
+		Reason:    opt.Reason,
+		WithData:  len(volumes.Items) > 0 && volumes.Items[0].Packed,
+	}
+	for _, e := range volumes.Items {
+		if e.Packed {
+			item.WithData = true
+			break
+		}
+	}
+	msg := fmt.Sprintf("%s（%.1f KB）", filepath.Base(p), float64(total)/1024)
+	if opt.WithVolumes {
+		packed := 0
+		for _, e := range volumes.Items {
+			if e.Packed {
+				packed++
+			}
+		}
+		msg += fmt.Sprintf(" · 含 %d 个卷的数据", packed)
 	}
 	s.notify.Emit("backup_success", map[string]string{
-		"container": name, "result": "配置快照已保存",
-		"message": fmt.Sprintf("%s（%.1f KB）", filepath.Base(p), float64(len(b))/1024),
+		"container": name, "result": "配置快照已保存", "message": msg,
 	})
 	s.st.AddRunLog("backup", name, "success", "配置快照 "+filepath.Base(p), "")
 	return item, nil
@@ -146,6 +192,34 @@ func (s *Service) List() ([]SnapshotItem, error) {
 					it.Image = imageRef(insp)
 					it.Running = isRunning(insp)
 				}
+				if meta, ok := doc["_dockhelm"].(map[string]any); ok {
+					if r, ok := meta["reason"].(string); ok {
+						it.Reason = r
+					}
+					// 卷数据块存在且有任意一项 Packed ⇒ 这份快照含数据
+					if vm, ok := meta["volumes"].(map[string]any); ok {
+						if items, ok := vm["items"].([]any); ok {
+							for _, x := range items {
+								if m, ok := x.(map[string]any); ok {
+									if packed, _ := m["packed"].(bool); packed {
+										it.WithData = true
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			// 卷 tar 的体积要计进快照总体积，否则「占用空间」会明显偏小
+			if vdir := filepath.Join(dir, it.TS+".volumes"); dirExists(vdir) {
+				if entries, err := os.ReadDir(vdir); err == nil {
+					for _, ve := range entries {
+						if fi, err := ve.Info(); err == nil {
+							it.Size += fi.Size()
+						}
+					}
+				}
 			}
 			out = append(out, it)
 		}
@@ -159,13 +233,100 @@ func (s *Service) List() ([]SnapshotItem, error) {
 	return out, nil
 }
 
-// Delete 删除一份快照。
+// Delete 删除一份快照（连同它的卷数据一起删）。
 func (s *Service) Delete(container, ts string) error {
 	p := filepath.Join(s.cfg.ContainerBackupDir(), sanitize(container), sanitize(ts)+".json")
 	if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(s.cfg.ContainerBackupDir())) {
 		return fmt.Errorf("非法路径")
 	}
-	return os.Remove(p)
+	if err := os.Remove(p); err != nil {
+		return err
+	}
+	// 卷数据目录：删了 json 却留着几 GB 的 tar 是最讨厌的一种「已删除」
+	_ = os.RemoveAll(filepath.Join(s.cfg.ContainerBackupDir(), sanitize(container), sanitize(ts)+".volumes"))
+	return nil
+}
+
+// Import 导入一份外部快照（用户手工上传的 json）。
+//
+// 只做最小校验：必须是合法 JSON、且带 inspect 块 —— 没有 inspect 的文件
+// 既不能展示也不能还原，收进来只会变成垃圾。容器名与时间戳由调用方给，
+// 时间戳撞车时自动加后缀，绝不覆盖已有快照。
+func (s *Service) Import(container, ts, content string) (*SnapshotItem, error) {
+	container = strings.TrimSpace(container)
+	ts = strings.TrimSpace(ts)
+	if container == "" || ts == "" {
+		return nil, fmt.Errorf("需要指定容器名与快照时间戳")
+	}
+	if strings.ContainsAny(container, `/\`) {
+		return nil, fmt.Errorf("名字里不能包含路径分隔符")
+	}
+	// 先判时间戳格式再判 ts 里的分隔符：用户把 "2026/10/09" 粘进来时，
+	// 「时间戳格式应为 20060102-150405」比「不能包含路径分隔符」有用得多。
+	if _, err := time.Parse("20060102-150405", ts); err != nil {
+		return nil, fmt.Errorf("时间戳格式应为 20060102-150405（例如 20261009-094200）")
+	}
+	if strings.ContainsAny(ts, `/\`) {
+		return nil, fmt.Errorf("时间戳里不能包含路径分隔符")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(content), &doc); err != nil {
+		return nil, fmt.Errorf("不是合法的 JSON：%w", err)
+	}
+	insp, ok := doc["inspect"].(map[string]any)
+	if !ok || len(insp) == 0 {
+		return nil, fmt.Errorf("文件里没有 inspect 内容，无法作为快照使用")
+	}
+
+	dir := filepath.Join(s.cfg.ContainerBackupDir(), sanitize(container))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	p := filepath.Join(dir, sanitize(ts)+".json")
+	for i := 1; ; i++ {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			break
+		}
+		if i > 999 {
+			return nil, fmt.Errorf("同名快照太多了，换个时间戳")
+		}
+		p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", sanitize(ts), i))
+	}
+	// 落盘前重新序列化：保持与其它快照一致的缩进，也顺手挡掉不可控的额外字段。
+	//
+	// _dockhelm 块存在就沿用文件自带的信息（我们不改写别人的元数据），
+	// 缺失才补一份。下面的 effectiveReason 与返回值必须一致 ——
+	// 否则「接口说你导入了，列表说这份是定时快照」这种自相矛盾迟早会被当成 bug 报上来。
+	effectiveReason := "imported"
+	if meta, ok := doc["_dockhelm"].(map[string]any); ok && meta != nil {
+		if r, ok := meta["reason"].(string); ok && r != "" {
+			effectiveReason = r
+		}
+	} else {
+		doc["_dockhelm"] = map[string]any{
+			"snapshotAt": time.Now().UTC().Format(time.RFC3339),
+			"reason":     effectiveReason,
+			"version":    1,
+		}
+	}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		return nil, err
+	}
+	s.st.AddRunLog("backup", container, "success", "已导入外部快照 "+filepath.Base(p), "")
+	return &SnapshotItem{
+		Container: container,
+		TS:        strings.TrimSuffix(filepath.Base(p), ".json"),
+		Path:      p,
+		Size:      int64(len(b)),
+		Image:     imageRef(insp),
+		Running:   isRunning(insp),
+		Created:   time.Now().UTC().Format(time.RFC3339),
+		Reason:    effectiveReason,
+	}, nil
 }
 
 // DiffEntry 快照与现状的一项差异。
@@ -212,6 +373,9 @@ type RestoreOptions struct {
 	KeepBackupContainer bool
 	// PreSnapshot 还原前是否先给当前状态也存一份（安全护栏，默认 true）。
 	PreSnapshot bool
+	// WithVolumes 连卷数据一起还原（覆盖现有文件）。
+	// 默认 false —— 覆盖数据不可逆，必须是用户显式勾选的结果。
+	WithVolumes bool
 }
 
 // RestoreResult 还原结果。
@@ -308,6 +472,12 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 	}
 	step("新容器已创建（%s）", shortID(newID))
 
+	// 卷数据在「新容器已建好、但还没启动」的窗口里还原 —— 此刻没有任何进程
+	// 在读写这份卷，覆盖它才是安全的。
+	if opt.WithVolumes {
+		s.UnpackVolumes(ctx, container, ts, step)
+	}
+
 	if isRunning(snap) {
 		if err := s.dc.ContainerAction(ctx, newID, "start", nil); err != nil {
 			step("✗ 启动失败：%v", err)
@@ -336,9 +506,22 @@ type PruneResult struct {
 	FreedBytes int64 `json:"freedBytes"`
 }
 
-// Prune 按「每容器保留 N 份 + 最大保留天数 + 总体积上限」清理旧快照。
-// 手工备份不会被自动清理（文件名不含 pre-update 的视为手工）。
-func (s *Service) Prune(keepPerContainer, maxAgeDays int, maxTotalMB int) PruneResult {
+// PruneOptions 快照清理策略。三个上限互相独立，任一为 0 表示该维度不限制。
+type PruneOptions struct {
+	// KeepPerContainer 每个容器保留最近 N 份。
+	KeepPerContainer int
+	// MaxAgeDays 超过 N 天的快照删掉。
+	MaxAgeDays int
+	// MaxTotalMB 全部快照的总体积上限（MB），超出时从最旧的开始删。
+	MaxTotalMB int
+	// KeepPreUpdate 更新前写的快照永不自动清理。
+	// 它对准的是最贵的场景：自动更新把容器搞坏之后，唯一能救回来的就是
+	// 更新前那一刻的配置 —— 而它恰恰是最容易被「保留最近 10 份」挤掉的。
+	KeepPreUpdate bool
+}
+
+// Prune 按策略清理旧快照。
+func (s *Service) Prune(opt PruneOptions) PruneResult {
 	res := PruneResult{}
 	items, err := s.List()
 	if err != nil {
@@ -348,39 +531,56 @@ func (s *Service) Prune(keepPerContainer, maxAgeDays int, maxTotalMB int) PruneR
 	for _, it := range items {
 		byContainer[it.Container] = append(byContainer[it.Container], it)
 	}
-	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
-	if maxAgeDays <= 0 {
+	cutoff := time.Now().AddDate(0, 0, -opt.MaxAgeDays)
+	if opt.MaxAgeDays <= 0 {
 		cutoff = time.Time{}
 	}
 	var total int64
 	for _, it := range items {
 		total += it.Size
 	}
-	limitBytes := int64(maxTotalMB) * 1024 * 1024
+	limitBytes := int64(opt.MaxTotalMB) * 1024 * 1024
 	remove := map[string]bool{}
+
+	// protected 判定：更新前快照在开了开关时不参与任何维度的清理。
+	protected := func(it SnapshotItem) bool {
+		return opt.KeepPreUpdate && it.Reason == "pre_update"
+	}
+
 	for _, list := range byContainer {
 		sort.Slice(list, func(i, j int) bool { return list[i].TS > list[j].TS })
-		for i, it := range list {
-			if keepPerContainer > 0 && i >= keepPerContainer {
+		kept := 0
+		for _, it := range list {
+			if protected(it) {
+				continue // 受保护的快照不占「保留份数」的额度，也不被天数清理
+			}
+			if opt.KeepPerContainer > 0 && kept >= opt.KeepPerContainer {
 				remove[it.Path] = true
+				continue
 			}
 			if !cutoff.IsZero() {
 				if t, err := time.Parse("20060102-150405", it.TS); err == nil && t.Before(cutoff) {
 					remove[it.Path] = true
+					continue
 				}
 			}
+			kept++
 		}
 	}
-	for _, it := range items {
-		if maxTotalMB > 0 && total > limitBytes && !remove[it.Path] {
+	// 总量超限时从最旧的开始删，但同样跳过受保护的。
+	sorted := make([]SnapshotItem, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS < sorted[j].TS })
+	for _, it := range sorted {
+		if opt.MaxTotalMB > 0 && total > limitBytes && !remove[it.Path] && !protected(it) {
 			remove[it.Path] = true
 			total -= it.Size
 		}
 	}
 	for p := range remove {
-		if err := os.Remove(p); err == nil {
-			res.Removed++
-			if fi, err := os.Stat(p); err == nil {
+		if fi, err := os.Stat(p); err == nil {
+			if err := os.Remove(p); err == nil {
+				res.Removed++
 				res.FreedBytes += fi.Size()
 			}
 		}
