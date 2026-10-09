@@ -23,6 +23,8 @@ const toast = useToastStore()
 const tab = ref<'snapshots' | 'projects'>('snapshots')
 const backups = ref<SnapshotItem[]>([])
 const stats = ref<BackupStats | null>(null)
+/** 当前生效的宿主路径映射（启动时自动识别 + DOCKHELM_HOST_ROOTS） */
+const pathMappings = computed(() => stats.value?.pathMappings ?? [])
 const containers = ref<ContainerView[]>([])
 const projects = ref<ProjectInfo[]>([])
 const loading = ref(true)
@@ -54,20 +56,21 @@ const grouped = computed(() => {
 
 async function load() {
   loading.value = true
-  try {
-    const [b, s, c] = await Promise.all([
-      api.get<{ backups: SnapshotItem[] }>('/api/backups'),
-      api.get<BackupStats>('/api/backups/stats'),
-      api.get<{ containers: ContainerView[] }>('/api/containers'),
-    ])
-    backups.value = b.backups ?? []
-    stats.value = s
-    containers.value = c.containers ?? []
-  } catch (e) {
-    toast.error('读取备份失败', e instanceof Error ? e.message : String(e))
-  } finally {
-    loading.value = false
-  }
+  // 用 allSettled：容器列表依赖 Docker 守护进程，它一时连不上不该把备份页
+  // 其它信息（尤其是路径映射）一起清空 —— 那些数据本地就有。
+  const [b, s, c] = await Promise.allSettled([
+    api.get<{ backups: SnapshotItem[] }>('/api/backups'),
+    api.get<BackupStats>('/api/backups/stats'),
+    api.get<{ containers: ContainerView[] }>('/api/containers'),
+  ])
+  const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+  if (b.status === 'fulfilled') backups.value = b.value.backups ?? []
+  else toast.error('读取快照失败', errText(b.reason))
+  if (s.status === 'fulfilled') stats.value = s.value
+  else toast.error('读取备份统计失败', errText(s.reason))
+  if (c.status === 'fulfilled') containers.value = c.value.containers ?? []
+  else toast.error('读取容器列表失败', errText(c.reason))
+  loading.value = false
 }
 
 async function loadProjects() {
@@ -261,6 +264,41 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- 路径映射：把「Dockhelm 到底看见了什么」摊开给人看 -->
+    <div class="dh-card">
+      <div class="dh-card-head">
+        <FolderTree class="h-3.5 w-3.5 text-text-4" />
+        <span>宿主路径映射</span>
+        <span class="ml-auto text-[11.5px] font-normal text-text-5">
+          冒号两边不必写一样，右边叫什么都可以
+        </span>
+      </div>
+      <div class="dh-card-body">
+        <div v-if="!pathMappings.length" class="text-[12px] leading-relaxed text-text-4">
+          没有识别到任何挂载映射 —— 说明 Dockhelm 看不到宿主机的 docker 目录，读不到你的 compose 文件。
+          在 compose 里挂一行即可，例如
+          <code class="font-mono text-accent">/volume1/docker:/host/docker</code>
+          （右边叫什么名字都行，启动时会自动识别）。
+        </div>
+        <div v-else class="space-y-1.5">
+          <div
+            v-for="m in pathMappings"
+            :key="m.host + '>' + m.container"
+            class="flex flex-wrap items-center gap-x-2 gap-y-1"
+          >
+            <span class="dh-badge" :class="m.visible ? 'dh-badge-run' : 'dh-badge-warn'">
+              {{ m.visible ? '可见' : '不可见' }}
+            </span>
+            <span class="font-mono text-[11.5px] text-text-3">{{ m.host }}</span>
+            <span class="text-text-5">→</span>
+            <span class="font-mono text-[11.5px] text-accent">{{ m.container }}</span>
+            <span v-if="m.host === m.container" class="text-[11px] text-text-5">两边一致</span>
+            <span v-if="m.source === 'env'" class="text-[11px] text-text-5">来自 DOCKHELM_HOST_ROOTS</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 快照列表 -->
     <div v-if="tab === 'snapshots'" class="dh-card">
       <div class="dh-card-head">
@@ -383,9 +421,10 @@ onMounted(async () => {
               {{ u }}
             </div>
             <div class="text-[11px] leading-relaxed text-text-5">
-              解决办法：在 Dockhelm 的 compose 里把这个目录也挂进来，
-              <b class="text-text-3">冒号两边路径写一样</b>（例如
-              <code>- /volume1/docker:/volume1/docker</code>），标签里的宿主路径就能直接使用。
+              解决办法：在 Dockhelm 的 compose 里把这个目录也挂进来即可 ——
+              <b class="text-text-3">右边叫什么名字都行</b>（例如
+              <code>- /volume1/docker:/host/docker</code>），启动时会自动识别，
+              容器标签里的宿主路径就能换算过去。
             </div>
           </div>
         </div>

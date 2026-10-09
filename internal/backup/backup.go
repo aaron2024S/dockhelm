@@ -406,6 +406,9 @@ type Stats struct {
 	// DockerRootVisible 是否能看到 Docker 数据根目录
 	DockerRootVisible bool `json:"dockerRootVisible"`
 	DockerRoot        string `json:"dockerRoot"`
+	// PathMappings 当前生效的「宿主机路径 → 容器内路径」映射，界面上直接展示，
+	// 免得用户猜 Dockhelm 到底看见了什么。
+	PathMappings []config.PathMapping `json:"pathMappings"`
 }
 
 // GetStats 统计备份占用与「能看到什么」。
@@ -418,10 +421,16 @@ func (s *Service) GetStats(ctx context.Context) Stats {
 		set[it.Container] = true
 	}
 	st.Containers = len(set)
-	st.VolumeRootMounted = dirExists("/var/lib/docker/volumes")
+	st.PathMappings = s.cfg.PathMappings()
+	// 具名卷的实体在宿主机的 /var/lib/docker/volumes，能不能读到得走映射判断
+	if local, ok := s.cfg.MapHostPath("/var/lib/docker/volumes"); ok {
+		st.VolumeRootMounted = dirExists(local)
+	}
 	if info, err := s.dc.Info(ctx); err == nil {
 		st.DockerRoot = info.DockerRootDir
-		st.DockerRootVisible = dirExists(info.DockerRootDir)
+		if local, ok := s.cfg.MapHostPath(info.DockerRootDir); ok {
+			st.DockerRootVisible = dirExists(local)
+		}
 	}
 	return st
 }

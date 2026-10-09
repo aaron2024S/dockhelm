@@ -322,7 +322,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
             <Box class="mt-[1px] h-3.5 w-3.5 flex-none" />
             <span>
               「绑定挂载」的数据在<b>宿主机目录</b>上，Dockhelm 容器默认看不见 —— 要备份这份数据，
-              需要把对应宿主目录也挂进 Dockhelm（冒号两边路径写一样）。「命名卷」的数据在
+              需要把对应宿主目录也挂进 Dockhelm（冒号右边叫什么名字都可以，启动时会自动识别）。「命名卷」的数据在
               <code class="text-text-3">/var/lib/docker/volumes</code> 下，只读挂载该目录即可备份。
             </span>
           </div>

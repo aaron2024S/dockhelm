@@ -135,27 +135,32 @@ Dockhelm 能做到「看见」你的 compose 文件与卷数据，靠的是这�
 ```yaml
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock     # 必填：管理容器与镜像
-  - /volume1/docker:/volume1/docker              # 强烈建议：冒号两边写一样
+  - /volume1/docker:/host/docker                 # 强烈建议：宿主机的 docker 目录
 ```
 
-**★ 冒号两边必须完全一致 ★**
+**冒号右边叫什么名字都可以。** 左边改成你自己的宿主机目录（群晖一般是 `/volume1/docker`，
+威联通可能是 `/share/Container`，普通 Linux 通常是 `/opt/docker`），右边叫 `/host/docker`、
+`/compose`、`/whatever` 都行。
 
-Docker 会在容器 label 里写下 compose 文件的**宿主机路径**（例如
-`/volume1/docker/moontv/docker-compose.yml`）。如果映射写成
-`/volume1/docker:/compose`，那么 Dockhelm 在容器内只能看到 `/compose`，
-而 label 里写的是 `/volume1/docker/...` —— 对不上，就读不到文件。
+Dockhelm 启动时会读**自己这个容器**的挂载表（`Mounts`），自动得到「宿主路径 → 容器内路径」的对应关系。
+于是容器 label 里记着的 `/volume1/docker/moontv/docker-compose.yml`，会被换算成
+`/host/docker/moontv/docker-compose.yml` 再去读 —— 你不需要为了迁就它把容器内路径也写成 `/volume1/docker`。
 
-写成「两边一样」之后，label 里的路径在容器内直接可用，什么都不用配。
+- **「备份与恢复」页面顶部**会列出当前生效的全部映射，以及每一条**是否真的可见**，启动日志里也会打一行，
+  所以不用猜它到底看见了什么。
+- 「两边写一样」（`/volume1/docker:/volume1/docker`）作为一种特例依然有效，只是容器里会出现
+  `/volume1/...` 这种只属于宿主机的目录结构，看日志时容易误以为那是容器自己的路径。
 
-如果你确实没法做到两边一致，可以退而求其次：
+万一自动识别不出来（例如你在 compose 里自定义了 `hostname`，Dockhelm 认不出自己那个容器），
+把映射显式写一遍即可：
 
 ```yaml
 environment:
-  DOCKHELM_HOST_ROOTS: /volume1/docker,/volume2/apps
+  DOCKHELM_HOST_ROOTS: /volume1/docker=/host/docker
 ```
 
-Dockhelm 会用这些前缀尝试换算。**换算失败时它会明说「看不见」，
-不会假装读到了。**
+语法是 `宿主机路径=容器内路径`（逗号分隔可写多组）；只写一个路径就表示「两边一致」。
+**换算失败时它会明说「看不见」，不会假装读到了。**
 
 ---
 
@@ -167,7 +172,7 @@ Dockhelm 会用这些前缀尝试换算。**换算失败时它会明说「看不
 | `DOCKHELM_LISTEN` | `:8080` | 监听地址 |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker 守护进程地址（支持 `unix://` 与 `tcp://`） |
 | `DOCKHELM_PASSWORD` | 空 | 设置后每次启动都强制把密码重置为该值。**忘记密码的兜底手段，用完请删掉这行** |
-| `DOCKHELM_HOST_ROOTS` | 空 | 宿主目录前缀白名单（逗号分隔），用于路径映射兜底 |
+| `DOCKHELM_HOST_ROOTS` | 空 | 手动声明路径映射，写法 `宿主机路径=容器内路径`（逗号分隔可多组；只写一个路径表示两边一致）。默认自动识别，一般不用填 |
 | `DOCKHELM_SELF` | 空 | 显式指定 Dockhelm 自身容器名。默认靠 hostname 反查 |
 | `DOCKHELM_TRUSTED_PROXIES` | 空 | 反代 IP 白名单。**只有填了它，后端才会信任 `X-Forwarded-For`** |
 | `DOCKHELM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |

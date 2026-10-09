@@ -189,6 +189,17 @@ export interface BackupStats {
   volumeRootMounted: boolean
   dockerRootVisible: boolean
   dockerRoot: string
+  pathMappings: PathMapping[]
+}
+
+/** 一条「宿主机路径 → 容器内路径」映射。 */
+export interface PathMapping {
+  host: string
+  container: string
+  /** auto = 启动时从自身容器挂载自动识别；env = DOCKHELM_HOST_ROOTS 显式声明 */
+  source: 'auto' | 'env'
+  /** 容器内这个路径当前是否真的存在 */
+  visible: boolean
 }
 
 export interface ProjectFile {

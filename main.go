@@ -101,15 +101,25 @@ func main() {
 		st.AddRunLog(kind, ref, status, message, detail)
 	})
 
-	// 自身容器识别（永不更新自己）
+	// 自身容器识别（永不更新自己）+ 读自己的挂载映射
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		name, id := watch.DetectSelf(ctx, dc, cfg.SelfContainer)
-		cancel()
 		up.SetSelf(name, id)
 		if name != "" {
 			log.Printf("识别到 Dockhelm 自身容器：%s（%s），已加入永久排除", name, id[:min(12, len(id))])
+			target := id
+			if target == "" {
+				target = name
+			}
+			if insp, err := dc.Inspect(ctx, target); err == nil {
+				cfg.SetMounts(dockerx.SelfMountMap(insp))
+			} else {
+				log.Printf("读取自身挂载失败，路径映射退回 DOCKHELM_HOST_ROOTS：%v", err)
+			}
 		}
+		cancel()
+		log.Printf("宿主路径映射：%s", cfg.Summary())
 	}
 
 	// 加速源配置注入

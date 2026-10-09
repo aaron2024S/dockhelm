@@ -138,10 +138,12 @@ func (s *Server) hListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{
-		"projects": projects,
-		"roots":    s.cfg.HostRoots,
-		"note": "compose 文件是项目的唯一事实源。列表里的「看得见 / 看不见」取决于你在 compose 里" +
-			"把宿主目录挂进来了没有 —— 没挂进来就只能记录路径，请自行备份那份 yaml。",
+		"projects":     projects,
+		"roots":        s.cfg.HostRoots,
+		"pathMappings": s.cfg.PathMappings(),
+		"note": "compose 文件是项目的唯一事实源。列表里的「看得见 / 看不见」取决于宿主目录有没有" +
+			"挂进 Dockhelm —— 挂进来了（冒号右边随便叫什么，启动时会自动识别）就能读到；" +
+			"没挂进来就只能记录路径，请自行备份那份 yaml。",
 	})
 }
 
