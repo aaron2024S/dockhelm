@@ -19,6 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: 版本号一致性闸门
+        # 排在最前面：三处声明不一致（version.go / package.json / config.ts）
+        # 或 tag 与声明不一致时，直接失败，不浪费一次构建与推送。
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            bash scripts/check-version.sh --expect-tag "$REF_NAME"
+          else
+            bash scripts/check-version.sh
+          fi
+
       - name: 从 internal/version/version.go 读出版本号
         id: meta
         run: |

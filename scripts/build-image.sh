@@ -35,6 +35,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# 三处版本号声明必须先一致（version.go / package.json / config.ts），
+# 否则会出现「镜像里后端报的版本、和设置页页脚显示的版本对不上」这种情况。
+bash scripts/check-version.sh
+
 VERSION=$(grep -oE '^var Version = "[^"]+"' internal/version/version.go | sed 's/.*"\(.*\)"/\1/')
 if [ -z "$VERSION" ]; then
   echo "读不到版本号，请检查 internal/version/version.go" >&2

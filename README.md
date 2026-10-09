@@ -105,7 +105,7 @@ docker compose up -d
 
 | tag | 含义 |
 |---|---|
-| `aaron2024s/dockhelm:0.1.0` | 固定版本。**推荐**，升级由你决定，行为可复现 |
+| `aaron2024s/dockhelm:0.2.0` | 固定版本。**推荐**，升级由你决定，行为可复现 |
 | `aaron2024s/dockhelm:latest` | 总是指向最近一次正式发版。图省事用它，代价是每次 `docker compose pull` 都可能变版本 |
 
 ### 方式二：自己构建
