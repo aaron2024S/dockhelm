@@ -1,0 +1,53 @@
+# Dockhelm 部署模板
+#
+# 用法：
+#   1. 改端口 / 改镜像 tag（版本号可在「关于」页或 internal/version/version.go 里看到）
+#   2. 把下面那行 `/volume1/docker:/volume1/docker` 改成你自己的 docker 目录
+#      ★ 冒号两边必须写成一模一样 ★（原因见 README「目录挂载」一节）
+#   3. docker compose up -d
+#   4. 打开 http://<你的NAS_IP>:8080 ，首次进入会让你设置访问密码
+#
+# 群晖 / 威联通的面板（Container Manager / Container Station）也能直接粘贴这个 compose，
+# 但要注意面板里「路径映射」必须自己核对成「两边一致」。
+
+services:
+  dockhelm:
+    # 版本号只打一个 tag，不加 :latest
+    image: aaron2024s/dockhelm:0.1.0
+    # 想本地自己构建就把上面那行注释掉，换成下面两行
+    # build:
+    #   context: .
+    container_name: dockhelm
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      DOCKHELM_DATA: /data
+      # ── 忘记密码时的兜底：临时打开、重启容器即可强制改密，改完请删掉这行 ──
+      # DOCKHELM_PASSWORD: "改成你的新密码"
+      # ── 只想知道某几个目录，可以让路径映射更容错（逗号分隔）──
+      # DOCKHELM_HOST_ROOTS: /volume1/docker,/volume2/apps
+      # ── 排障时打开 ──
+      # DOCKHELM_LOG_LEVEL: debug
+    volumes:
+      # Dockhelm 自己的配置（密码哈希、计划任务、通知渠道、更新记录、快照）
+      - ./data:/data
+
+      # Docker 套接字：容器与镜像管理全靠它
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # ★★★ 关键的一行 ★★★
+      # 把宿主机的 docker 目录原样挂进来。两边路径必须完全一致，
+      # 这样容器 label 里的 compose 文件路径才能在 Dockhelm 里直接读到。
+      # 群晖通常是 /volume1/docker；威联通可能是 /share/Container；
+      # 普通 Linux 一般是 /opt/docker 或 /home/xxx/docker。
+      - /volume1/docker:/volume1/docker
+
+      # 可选（只读）：挂上它，「备份与恢复」才能看到具名卷（named volume）里的数据。
+      # 绑定挂载（bind mount）的数据本来就在上面的 docker 目录里，不需要这一行。
+      # - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
+
+    # 安全提醒：Dockhelm 持有 Docker 套接字 = 持有宿主机 root。
+    # 只在内网暴露，不要做公网端口转发。若必须外网访问，请套一层带 HTTPS 与
+    # 额外认证的反向代理，并在 Dockhelm 设置里填好「面板地址」。

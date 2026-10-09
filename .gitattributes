@@ -1,0 +1,20 @@
+# 统一换行符：仓库里一律 LF。
+# 这个项目要在 Linux 容器里构建，CRLF 会污染 shell 脚本、Dockerfile 与
+# 前端产物（里面的 source map 与模板字符串对行尾敏感）。
+* text=auto eol=lf
+
+# 仅 Windows 专有脚本保留 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# 构建产物不参与 diff 统计（它们本来就是压缩过的）
+web/dist/assets/* linguist-generated=true -diff
+web/package-lock.json linguist-generated=true

@@ -1,0 +1,20 @@
+.git
+.github
+.gitignore
+
+# 依赖与产物：镜像里会重新装、重新构建
+web/node_modules
+web/dist
+
+# 运行期数据，绝不能打进镜像
+data
+*.db
+*.db.tmp
+*.exe
+*.log
+
+# 文档与本地脚本对镜像没意义
+README.md
+LICENSE
+docker-compose.yml
+scripts

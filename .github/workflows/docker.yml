@@ -1,0 +1,82 @@
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 校验：每次推到 main 都跑一遍，确认 Dockerfile 与前端构建是好的 ──
+  #    public 仓库的标准 runner 免费且不计量，这里不会产生任何费用。
+  #    这个 job 只构建不推送，避免每个 commit 都把同一个版本 tag 覆盖一遍。
+  verify:
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: 构建（不推送）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 发布：打 tag（v0.1.0）或手动触发时，构建 amd64 + arm64 并推到 Docker Hub ──
+  publish:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 从 internal/version/version.go 读出版本号
+        id: meta
+        run: |
+          V=$(grep -oE '^var Version = "[^"]+"' internal/version/version.go | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$V" ]; then echo "读不到版本号"; exit 1; fi
+          echo "version=$V"                 >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "版本号 = $V"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # 只打一个版本 tag，不附 :latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 摘要
+        run: |
+          {
+            echo "### Dockhelm \`${{ steps.meta.outputs.version }}\` 已推送"
+            echo ""
+            echo "- 镜像：\`${{ secrets.DOCKERHUB_USERNAME }}/dockhelm:${{ steps.meta.outputs.version }}\`"
+            echo "- 平台：linux/amd64, linux/arm64"
+            echo "- 提交：\`${{ steps.meta.outputs.commit_short }}\`"
+            echo "- 构建时间：${{ steps.meta.outputs.build_time }}"
+          } >> "$GITHUB_STEP_SUMMARY"

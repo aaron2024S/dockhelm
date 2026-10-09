@@ -1,0 +1,403 @@
+@import 'tailwindcss';
+
+/* Dockhelm 配色取自设计稿：深海蓝底 + 青绿色点缀。
+   全部走 CSS 变量，Tailwind 4 的 @theme 会据此生成 ink-900 / panel / accent 这类工具类。 */
+@theme {
+  /* 背景层 */
+  --color-ink-950: #05080b;
+  --color-ink-900: #0a0e13;
+  --color-ink-875: #0b1017;
+  --color-ink-850: #0c1219;
+  --color-ink-800: #0f151d;
+  --color-ink-750: #111823;
+  --color-ink-700: #141b24;
+  --color-ink-650: #1b2431;
+
+  /* 描边 */
+  --color-line-1: #1e2836;
+  --color-line-2: #1b2431;
+  --color-line-3: #222c39;
+  --color-line-4: #2a3644;
+
+  /* 文字 */
+  --color-text-1: #e6edf5;
+  --color-text-2: #b9c4d0;
+  --color-text-3: #93a0af;
+  --color-text-4: #8a97a8;
+  --color-text-5: #5d6975;
+  --color-text-6: #4e5a66;
+
+  /* 主色 */
+  --color-accent: #2dd4bf;
+  --color-accent-deep: #1e7a6c;
+  --color-accent-ink: #04211d;
+  --color-accent-soft: #10231f;
+
+  /* 状态 */
+  --color-run: #34d399;
+  --color-run-text: #4ade80;
+  --color-stop: #64748b;
+  --color-stop-text: #94a3b8;
+  --color-warn: #f5a524;
+  --color-warn-text: #fbbf24;
+  --color-err: #f87171;
+  --color-err-text: #fca5a5;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a3644 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #24303e;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #33414f;
+    background-clip: content-box;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--color-ink-950);
+    color: var(--color-text-1);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-text-5);
+  }
+  code,
+  pre,
+  .mono {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  /* 卡片 */
+  .dh-card {
+    background: var(--color-ink-700);
+    border: 1px solid var(--color-line-1);
+    border-radius: 14px;
+  }
+  .dh-card-head {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--color-line-1);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .dh-card-body {
+    padding: 14px;
+  }
+
+  /* 徽标 */
+  .dh-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+    line-height: 1.6;
+  }
+  .dh-badge-run {
+    background: rgba(52, 211, 153, 0.13);
+    color: #4ade80;
+  }
+  .dh-badge-stop {
+    background: rgba(100, 116, 139, 0.16);
+    color: #94a3b8;
+  }
+  .dh-badge-warn {
+    background: rgba(245, 165, 36, 0.15);
+    color: #fbbf24;
+  }
+  .dh-badge-accent {
+    background: rgba(45, 212, 191, 0.12);
+    color: #5eead4;
+  }
+  .dh-badge-err {
+    background: rgba(248, 113, 113, 0.14);
+    color: #fca5a5;
+  }
+  .dh-badge-plain {
+    background: var(--color-line-2);
+    color: var(--color-text-4);
+  }
+
+  /* 按钮 */
+  .dh-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12.5px;
+    padding: 7px 13px;
+    border-radius: 9px;
+    border: 1px solid var(--color-line-4);
+    color: var(--color-text-2);
+    background: #151c26;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      border-color 0.15s,
+      color 0.15s,
+      opacity 0.15s;
+  }
+  .dh-btn:hover:not(:disabled) {
+    border-color: #3a4757;
+    color: var(--color-text-1);
+  }
+  .dh-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .dh-btn-primary {
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    border-color: var(--color-accent);
+    font-weight: 600;
+  }
+  .dh-btn-primary:hover:not(:disabled) {
+    background: #5eead4;
+    border-color: #5eead4;
+    color: var(--color-accent-ink);
+  }
+  .dh-btn-danger {
+    background: rgba(248, 113, 113, 0.12);
+    border-color: rgba(248, 113, 113, 0.4);
+    color: #fca5a5;
+  }
+  .dh-btn-danger:hover:not(:disabled) {
+    background: rgba(248, 113, 113, 0.2);
+    border-color: rgba(248, 113, 113, 0.6);
+    color: #fecaca;
+  }
+  .dh-btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--color-text-3);
+  }
+  .dh-btn-ghost:hover:not(:disabled) {
+    background: #17212c;
+    border-color: transparent;
+    color: var(--color-text-1);
+  }
+  .dh-btn-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  /* 输入 */
+  .dh-input,
+  .dh-select,
+  .dh-textarea {
+    width: 100%;
+    border: 1px solid var(--color-line-3);
+    border-radius: 9px;
+    padding: 8px 11px;
+    font-size: 12.5px;
+    color: var(--color-text-2);
+    background: var(--color-ink-800);
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s;
+  }
+  .dh-input:focus,
+  .dh-select:focus,
+  .dh-textarea:focus {
+    outline: none;
+    border-color: rgba(45, 212, 191, 0.55);
+    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.08);
+  }
+  .dh-textarea {
+    resize: vertical;
+    min-height: 72px;
+    line-height: 1.7;
+  }
+  .dh-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a97a8' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+  }
+  .dh-label {
+    display: block;
+    font-size: 12px;
+    color: var(--color-text-4);
+    margin-bottom: 5px;
+  }
+
+  /* 表格 */
+  .dh-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .dh-table th {
+    text-align: left;
+    font-weight: 500;
+    font-size: 11.5px;
+    color: var(--color-text-5);
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--color-line-1);
+    background: var(--color-ink-750);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .dh-table td {
+    padding: 11px 14px;
+    border-bottom: 1px solid #171f2a;
+    vertical-align: middle;
+  }
+  .dh-table tr:last-child td {
+    border-bottom: none;
+  }
+  .dh-table tbody tr:hover {
+    background: rgba(45, 212, 191, 0.035);
+  }
+
+  /* 开关 */
+  .dh-switch {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 19px;
+    border-radius: 999px;
+    background: #2e3a49;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    flex: none;
+    transition: background 0.18s;
+  }
+  .dh-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #8a97a8;
+    transition:
+      left 0.18s,
+      transform 0.18s,
+      background 0.18s;
+  }
+  .dh-switch[data-on='true'] {
+    background: var(--color-accent-deep);
+  }
+  .dh-switch[data-on='true']::after {
+    left: 17px;
+    background: var(--color-accent);
+  }
+  .dh-switch:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* 进度条 */
+  .dh-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-line-1);
+    overflow: hidden;
+  }
+  .dh-bar > i {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
+    transition: width 0.3s;
+  }
+
+  /* 分段控件 */
+  .dh-seg {
+    display: inline-flex;
+    gap: 4px;
+    padding: 3px;
+    background: var(--color-ink-800);
+    border: 1px solid var(--color-line-2);
+    border-radius: 10px;
+  }
+  .dh-seg button {
+    border: none;
+    background: transparent;
+    color: var(--color-text-3);
+    font-size: 12px;
+    padding: 5px 11px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .dh-seg button:hover {
+    color: var(--color-text-1);
+  }
+  .dh-seg button[data-on='true'] {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+}
+
+@layer utilities {
+  .dh-scroll {
+    overflow: auto;
+  }
+  .dh-fade-enter-active,
+  .dh-fade-leave-active {
+    transition: opacity 0.16s ease;
+  }
+  .dh-fade-enter-from,
+  .dh-fade-leave-to {
+    opacity: 0;
+  }
+  .dh-spin {
+    animation: dh-spin 0.9s linear infinite;
+  }
+  @keyframes dh-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
