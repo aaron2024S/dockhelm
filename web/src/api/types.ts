@@ -347,7 +347,7 @@ export interface Settings {
   backupKeepPreUpdate: boolean
 }
 
-/** 自动更新：单台容器在本轮里的去向。 */
+/** 自动更新：单个容器在本轮里的去向。 */
 export interface AutoRunItem {
   name: string
   image: string

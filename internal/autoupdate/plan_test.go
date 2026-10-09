@@ -12,7 +12,7 @@ func TestPlan(t *testing.T) {
 		{Name: "redis", Image: "redis:alpine", HasUpdate: true, Running: true},
 		{Name: "postgres", Image: "postgres:16", HasUpdate: true, Running: true},
 		{Name: "nginx", Image: "nginx:alpine", HasUpdate: false, Running: true},
-		{Name: "dockhelm", Image: "aaron2024s/dockhelm:0.2.0", HasUpdate: true, Running: true},
+		{Name: "dockhelm", Image: "aaron2024s/dockhelm", HasUpdate: true, Running: true},
 	}
 	opt := Options{SelfName: "dockhelm", Exclude: []string{"redis*", "postgres"}}
 
@@ -24,7 +24,7 @@ func TestPlan(t *testing.T) {
 		{Name: "redis", Image: "redis:alpine", HasUpdate: true, Running: true, Excluded: true, Reason: "命中排除列表"},
 		{Name: "postgres", Image: "postgres:16", HasUpdate: true, Running: true, Excluded: true, Reason: "命中排除列表"},
 		{Name: "nginx", Image: "nginx:alpine", HasUpdate: false, Running: true, Reason: "未检测到更新"},
-		{Name: "dockhelm", Image: "aaron2024s/dockhelm:0.2.0", HasUpdate: true, Running: true, Protected: true, Reason: "Dockhelm 自身，永不自动更新"},
+		{Name: "dockhelm", Image: "aaron2024s/dockhelm", HasUpdate: true, Running: true, Protected: true, Reason: "Dockhelm 自身，永不自动更新"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Plan 结果不符\n got=%+v\nwant=%+v", got, want)

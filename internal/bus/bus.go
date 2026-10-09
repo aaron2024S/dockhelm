@@ -88,11 +88,20 @@ func (b *Bus) Subscribe() (<-chan Event, func()) {
 
 	cancel := func() {
 		b.mu.Lock()
-		if c, ok := b.subs[id]; ok {
-			delete(b.subs, id)
-			close(c)
-		}
+		delete(b.subs, id)
 		b.mu.Unlock()
+		// 这里**故意不 close(ch)**。
+		//
+		// Publish 是「锁内拷贝订阅者、锁外逐个发送」，而 cancel 在锁内把它摘掉。
+		// 两者的临界区不重叠：一旦在 cancel 里 close，就可能出现
+		// 「Publish 已拷到 ch → cancel 关掉 ch → Publish 发送」的时序，
+		// 而向已关闭的 channel 发送即使在 select+default 下也会 **panic**。
+		// 这个 panic 发生在发布方 goroutine（updater / watch / scheduler），
+		// 没有 recover，会把整个进程带走 —— 掉线重连的 SSE 客户端多的时候很容易撞上。
+		//
+		// 不 close 也没有副作用：两个消费方（server.go / updates.go）都已经盯
+		// r.Context().Done() 退出，`!ok` 分支只是多一层保险；摘掉订阅后没人再持有
+		// 这个 channel，交给 GC 即可。
 	}
 	return ch, cancel
 }

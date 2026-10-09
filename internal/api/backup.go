@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/aaron2024s/dockhelm/internal/backup"
@@ -196,16 +197,45 @@ func (s *Server) hListProjects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hReadProjectFile 预览一个 compose 文件的内容（只允许读备份目录与已映射的宿主路径）。
+// hReadProjectFile 预览一个 compose 文件的内容。
+//
+// 白名单只有一份：**刚刚列出来的那份 compose 文件清单**。
+//
+// 绝不能直接拿 MapHostPath 的结果去读 —— 它为了让「两边路径一致」这种挂法能用，
+// 留了两条兜底（「原样可用」和「基名启发」），对容器内**任意**已存在的路径都会
+// 返回 ok。于是 ?path=/data/dockhelm.db 就能把通知渠道的 Bot Token、SMTP 密码
+// 整份读出来，?path=/proc/self/environ 还能读到 DOCKHELM_PASSWORD。
+// 这个接口的用途只是「看一眼 compose 文件」，不需要那么宽的权限。
 func (s *Server) hReadProjectFile(w http.ResponseWriter, r *http.Request) {
-	p := r.URL.Query().Get("path")
-	if strings.TrimSpace(p) == "" {
+	p := strings.TrimSpace(r.URL.Query().Get("path"))
+	if p == "" {
 		writeErr(w, http.StatusBadRequest, "需要提供 path")
 		return
 	}
-	local, ok := s.cfg.MapHostPath(p)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "这个路径在 Dockhelm 容器里看不见，请把宿主目录挂进来")
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+
+	projects, err := s.bk.ListProjects(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	clean := filepath.Clean(p)
+	local := ""
+	for _, pr := range projects {
+		for _, f := range pr.Readable {
+			if filepath.Clean(f.HostPath) == clean {
+				local = f.Path
+				break
+			}
+		}
+		if local != "" {
+			break
+		}
+	}
+	if local == "" {
+		writeErr(w, http.StatusNotFound,
+			"只能查看 compose 项目清单里的文件；这个路径不在清单里（或它在 Dockhelm 容器里看不见）")
 		return
 	}
 	if !fileExistsAndSmall(local) {
@@ -218,9 +248,9 @@ func (s *Server) hReadProjectFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]any{
-		"path":    local,
+		"path":     local,
 		"hostPath": p,
-		"content": string(b),
+		"content":  string(b),
 	})
 }
 

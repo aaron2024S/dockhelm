@@ -601,7 +601,7 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	s.st.AddRunLog("image", "-", "success", fmt.Sprintf("清理悬空镜像释放 %.1f MB", float64(freed)/1024/1024), "")
+	s.st.AddRunLog("image", "-", "success", fmt.Sprintf("清理未使用镜像释放 %.1f MB", float64(freed)/1024/1024), "")
 	writeOK(w, map[string]any{"ok": true, "freedBytes": freed})
 }
 

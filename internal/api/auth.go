@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -116,7 +117,13 @@ func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "两次输入的密码不一致")
 		return
 	}
-	if err := s.auth.ForceSetPassword(in.Password); err != nil {
+	// 走 SetupPassword 而不是 ForceSetPassword：只靠上面那次 Initialized() 判断
+	// 是「检查后使用」，两个并发请求会双双通过，后来者覆盖先来者设的密码。
+	if err := s.auth.SetupPassword(in.Password); err != nil {
+		if errors.Is(err, auth.ErrAlreadyInitialized) {
+			writeErrCode(w, http.StatusConflict, "密码已设置，如需重置请在 NAS 面板里删除 data/auth.json 后重启容器", "already_initialized")
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

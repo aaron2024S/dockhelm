@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -484,10 +485,32 @@ func (s *Store) AddRunLog(kind, ref, status, message, detail string) {
 		ID: s.db.Seq, TS: time.Now().UTC().Format(time.RFC3339),
 		Kind: kind, Ref: ref, Status: status, Message: message, Detail: detail,
 	})
-	if len(s.db.RunLogs) > maxRunLogs {
-		s.db.RunLogs = s.db.RunLogs[len(s.db.RunLogs)-maxRunLogs:]
+	limit := s.runLogLimitLocked()
+	if len(s.db.RunLogs) > limit {
+		s.db.RunLogs = s.db.RunLogs[len(s.db.RunLogs)-limit:]
 	}
 	_ = s.flushLocked()
+}
+
+// runLogLimitLocked 取运行记录的保留条数（调用方必须已持锁）。
+//
+// 以前这里是硬编码的 500，而设置页里那个「日志保留条数」只存不读 ——
+// 用户改了完全没效果。现在按设置生效，并夹在 [50, 100000]：
+// 下限防止手改文件写成 0（那会让日志一条都不剩），上限防止把落盘文件撑爆。
+func (s *Store) runLogLimitLocked() int {
+	limit := maxRunLogs
+	if v, ok := s.db.Settings["log.retention"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	if limit < 50 {
+		limit = 50
+	}
+	if limit > 100000 {
+		limit = 100000
+	}
+	return limit
 }
 
 // ListRunLogs 按时间倒序取运行记录。

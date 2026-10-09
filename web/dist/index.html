@@ -2,13 +2,43 @@
 <html lang="zh-CN" class="dark">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      主题预设：必须在样式表加载之前「同步」执行。
+      如果等到打包产物里的 store 初始化再设 class，浏览器会先用默认（深色）画一帧，
+      亮色用户就会看到一次黑白闪烁。所以这段只能内联、只能放最前面。
+
+      ⚠ 逻辑与 src/stores/theme.ts 的 applyTheme() 必须保持一致，改一处要改两处。
+      默认值取 dark：不因为新增了主题功能就把老用户突然变白；想跟随系统的用户点一下按钮即可。
+    -->
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem('dockhelm.theme') || 'dark'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' &&
+              !!window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var root = document.documentElement
+          root.classList.toggle('dark', dark)
+          root.classList.toggle('light', !dark)
+          root.style.colorScheme = dark ? 'dark' : 'light'
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', dark ? '#05080b' : '#eceff5')
+        } catch (e) {
+          /* 读不到偏好（隐私模式）时保持 HTML 上的默认深色 */
+        }
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0A0E13" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#05080b" />
     <title>Dockhelm · 容器舵手</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%232DD4BF'/%3E%3Cpath d='M16 7l7 4v10l-7 4-7-4V11z' fill='none' stroke='%2304211D' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='M16 15v10M9 11l7 4 7-4' stroke='%2304211D' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E" />
-    <script type="module" crossorigin src="/assets/index-HPgVGrf3.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DccenA5l.css">
+    <!-- 方案 C · 航向罗盘：外圈 + 四向罗盘星 + 中心孔（hole 用 evenodd 复合路径，不依赖底色）。
+         改这里要同步改四处：AppShell 顶栏、App.vue 启动态、AboutView 头部、LoginView 的 .dh-lglogo。 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%232DD4BF'/%3E%3Ccircle cx='16' cy='16' r='12.3' fill='none' stroke='%2304211D' stroke-width='2.5'/%3E%3Cpath fill-rule='evenodd' fill='%2304211D' d='M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z'/%3E%3C/svg%3E" />
+    <script type="module" crossorigin src="/assets/index-D8YHJPqb.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-D2XMtlvV.css">
   </head>
   <body>
     <div id="app"></div>

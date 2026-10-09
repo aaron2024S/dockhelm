@@ -3,29 +3,44 @@ import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vu
 import { useRoute, useRouter } from 'vue-router'
 import {
   Archive,
+  Bell,
   Box,
   CalendarClock,
   ChevronsLeft,
   ChevronsRight,
   Download,
   Gauge,
+  Info,
   Layers,
   LogOut,
   Menu,
+  Monitor,
+  Moon,
   RefreshCw,
   Rocket,
   Search,
   Settings as SettingsIcon,
+  Sun,
 } from 'lucide-vue-next'
 import { useAppStore } from '@/stores/app'
+import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useToastStore } from '@/stores/toast'
 import { api } from '@/api/client'
 import type { BackupStats, OverviewResponse, Schedule } from '@/api/types'
 
 const app = useAppStore()
+const theme = useThemeStore()
 const toast = useToastStore()
 const route = useRoute()
 const router = useRouter()
+
+/** 主题按钮：图标即当前模式，点一下切下一档。 */
+const THEME_ICON: Record<ThemeMode, Component> = { dark: Moon, light: Sun, system: Monitor }
+const themeIcon = computed(() => THEME_ICON[theme.mode])
+const themeTip = computed(() => {
+  const now = theme.mode === 'system' ? `跟随系统（当前${theme.effective === 'dark' ? '深色' : '浅色'}）` : theme.label
+  return `主题：${now} · 点击切换为「${theme.nextLabel}」`
+})
 
 /** 数量角标的取值来源。 */
 type CountKey = 'containers' | 'images' | 'updates' | 'schedules' | 'snapshots'
@@ -40,14 +55,18 @@ interface NavItem {
 }
 
 /**
- * 导航顺序、分组与数量角标照设计稿来。
+ * 导航顺序、分组与数量角标照设计稿来，共 10 项。
  *
- * 与设计稿唯一的一处刻意差别：**没有「网络与端口」这一项**。
- * 设计稿里它只是一个侧栏条目、没有对应屏；而端口信息本身在容器页
- * 逐台展示更有用（每个容器的端口就摆在它自己卡片上，不用跨页对照）。
- * 因此这一项并进了容器页，侧栏保持 8 项。
- * 「通知」是「设置」的子页 —— 进入后标签变成「设置 · 通知」，
- * 所以也不单列。「关于」入口放在设置页底部。
+ * 与设计稿的两处刻意差别：
+ *
+ * ① **没有「网络与端口」这一项**。设计稿里它只是一个侧栏条目、没有对应屏；
+ *    而端口信息在容器页逐个展示更有用（每个容器的端口就摆在它自己卡片上，
+ *    不用跨页对照）。因此并进了容器页。
+ *
+ * ② **「通知」与「关于」从设置页底部提到侧栏单列**。设计稿把它们当成设置的子页，
+ *    唯一的入口是设置页底部一行 11.5px 的灰字 —— 字号那么小、又贴着页面最底，
+ *    实际等于藏起来。它们是两个完整的独立功能面，单列之后能直接点到，
+ *    也省掉了「进通知页就把『设置』改名成『设置 · 通知』」那套花招。
  */
 const nav: NavItem[] = [
   { name: 'overview', label: '总览', icon: Gauge },
@@ -57,11 +76,10 @@ const nav: NavItem[] = [
   { name: 'schedules', label: '计划任务', icon: CalendarClock, count: 'schedules' },
   { name: 'backup', label: '备份与恢复', icon: Archive, count: 'snapshots', group: '资源' },
   { name: 'registries', label: '镜像加速源', icon: Rocket, group: '系统' },
+  { name: 'notify', label: '通知', icon: Bell },
   { name: 'settings', label: '设置', icon: SettingsIcon },
+  { name: 'about', label: '关于', icon: Info },
 ]
-
-/** 侧栏条目在特定页面上要换一个更具体的名字（设计稿：设置 · 通知）。 */
-const LABEL_OVERRIDE: Record<string, string> = { notify: '设置 · 通知' }
 
 const collapsed = ref(localStorage.getItem('dockhelm.side') === 'collapsed')
 const mobileOpen = ref(false)
@@ -86,8 +104,6 @@ const contextLabel = computed(() => {
       return `容器 · ${String(route.params.name ?? '')}`
     case 'registries':
       return '设置 · 镜像加速源'
-    case 'notify':
-      return '设置 · 通知'
     default:
       return (route.meta.title as string) ?? 'Dockhelm'
   }
@@ -98,39 +114,17 @@ function isActive(item: NavItem) {
   if (item.name === 'containers') {
     return route.name === 'containers' || route.name === 'container-detail'
   }
-  // 通知是设置页的子页，进通知时「设置」这一项保持高亮（设计稿如此）
-  if (item.name === 'settings') {
-    return route.name === 'settings' || route.name === 'notify'
-  }
   return route.name === item.name
 }
 
-/** 侧栏显示用的文字：通知页下「设置」要显示成「设置 · 通知」。 */
-function labelOf(item: NavItem) {
-  if (item.name === 'settings' && route.name === 'notify') return LABEL_OVERRIDE.notify as string
-  return item.label
-}
-
-/** 顶栏搜索框的占位文案也随页面变（设计稿：搜索容器… / 搜索镜像… / 搜索快照…）。 */
-const searchPlaceholder = computed(() => {
-  switch (route.name) {
-    case 'containers':
-    case 'container-detail':
-      return '搜索容器…'
-    case 'images':
-      return '搜索镜像…'
-    case 'updates':
-      return '搜索镜像…'
-    case 'schedules':
-      return '搜索任务…'
-    case 'backup':
-      return '搜索快照…'
-    case 'overview':
-      return '搜索容器、镜像、任务…'
-    default:
-      return '搜索设置…'
-  }
-})
+/**
+ * 顶栏搜索框的占位文案。
+ *
+ * 以前它随页面变（「搜索镜像…」「搜索快照…」「搜索任务…」），但回车**一律**跳到
+ * 容器列表 —— 在镜像页输入「nginx」回车会跑到容器列表去按容器名筛，文案与行为对不上。
+ * 现在文案只说它真正能做的事，细节写在 title 里。
+ */
+const searchPlaceholder = '搜索容器…'
 
 function countOf(key?: CountKey) {
   if (!key) return 0
@@ -140,22 +134,32 @@ function countOf(key?: CountKey) {
 /** 侧栏数量角标：更新中心恒为琥珀色（提醒），其余跟随是否高亮。 */
 function countClass(item: NavItem, n: number) {
   if (item.count === 'updates' && n > 0) {
-    return 'bg-[rgba(245,165,36,.15)] text-[#fbbf24]'
+    return 'bg-soft-warn text-warn-text'
   }
-  return isActive(item) ? 'bg-[#0c3230] text-[#5eead4]' : 'bg-ink-700 text-text-5'
+  return isActive(item) ? 'bg-accent-soft text-accent-text' : 'bg-ink-700 text-text-5'
 }
 
-/** 拉一次侧栏角标。三个接口并行，任何一个失败都不影响其它。 */
+/**
+ * 拉一次侧栏角标。三个接口并行，任何一个失败都不影响其它。
+ *
+ * 带序号：onMounted、每 60 秒的定时器、以及每次换页都会触发它，
+ * 三者可能并发。不带序号时先发的响应会盖掉后发的，角标数字凭空回退。
+ */
+let countsSeq = 0
+
 async function loadCounts() {
+  const seq = ++countsSeq
   const [ov, sch, bk] = await Promise.allSettled([
     api.get<OverviewResponse>('/api/overview'),
     api.get<{ schedules: Schedule[] }>('/api/schedules'),
     api.get<BackupStats>('/api/backups/stats'),
   ])
+  if (seq !== countsSeq) return // 已有更新的一次在跑，这次结果作废
   if (ov.status === 'fulfilled') {
     counts.value.containers = ov.value.containers.total
     counts.value.images = ov.value.images.total
-    // 角标数的是「有几个镜像待更新」而不是「几台容器」—— 与设计稿一致
+    // 角标数的是「有几个镜像待更新」而不是「几个容器」—— 原设计稿写的是「几台」，
+    // 2026-10-09 起全站统一用「个」计量容器
     counts.value.updates = new Set((ov.value.updates.items ?? []).map((i) => i.image)).size
     hostName.value = ov.value.docker?.name ?? ''
     app.dockerOnline = !ov.value.dockerError
@@ -196,6 +200,7 @@ watch(() => route.fullPath, () => void loadCounts())
 function submitSearch() {
   const q = searchText.value.trim()
   router.push({ name: 'containers', query: q ? { q } : {} })
+  searchText.value = '' // 提交后清空，免得下次回车又搜同一个词
   mobileOpen.value = false
 }
 
@@ -244,9 +249,13 @@ async function quickCheck() {
       <div
         class="grid h-[27px] w-[27px] flex-none place-items-center rounded-[9px] bg-accent text-accent-ink"
       >
-        <svg viewBox="0 0 32 32" class="h-[15px] w-[15px]" fill="none" stroke="currentColor" stroke-width="2.6">
-          <path d="M16 7l7 4v10l-7 4-7-4V11z" stroke-linejoin="round" />
-          <path d="M16 15v10M9 11l7 4 7-4" stroke-linejoin="round" />
+        <svg viewBox="0 0 32 32" class="h-[15px] w-[15px]">
+          <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
+          <path
+            fill-rule="evenodd"
+            fill="currentColor"
+            d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+          />
         </svg>
       </div>
       <div class="flex-none text-[14px] font-semibold tracking-[0.2px]">Dockhelm</div>
@@ -258,7 +267,7 @@ async function quickCheck() {
           class="dh-badge dh-badge-err whitespace-nowrap"
           title="无法连接 Docker 守护进程"
         >
-          <span class="h-[7px] w-[7px] rounded-full bg-[#f87171]" />Docker 离线
+          <span class="h-[7px] w-[7px] rounded-full bg-err" />Docker 离线
         </span>
 
         <div class="relative max-md:hidden">
@@ -272,6 +281,11 @@ async function quickCheck() {
           />
         </div>
 
+        <!-- 主题：深色 / 浅色 / 跟随系统 三档循环，图标即当前档 -->
+        <button type="button" class="dh-iconbtn" :title="themeTip" @click="theme.cycle()">
+          <component :is="themeIcon" class="h-[14px] w-[14px]" />
+        </button>
+
         <button
           type="button"
           class="dh-iconbtn"
@@ -282,17 +296,6 @@ async function quickCheck() {
           <RefreshCw class="h-[14px] w-[14px]" :class="checking ? 'dh-spin' : ''" />
         </button>
 
-        <button
-          type="button"
-          class="dh-iconbtn max-md:hidden"
-          :title="collapsed ? '展开侧栏' : '收起侧栏'"
-          @click="collapsed = !collapsed"
-        >
-          <component :is="collapsed ? ChevronsRight : ChevronsLeft" class="h-[14px] w-[14px]" />
-        </button>
-
-        <button type="button" class="dh-avatar" title="账户设置" @click="go('settings')">A</button>
-
         <button type="button" class="dh-iconbtn" title="退出登录" @click="doLogout">
           <LogOut class="h-[14px] w-[14px]" />
         </button>
@@ -300,40 +303,66 @@ async function quickCheck() {
     </header>
 
     <div class="flex min-h-0 flex-1">
-      <!-- 侧边栏：纯导航，分组 + 数量角标 -->
+      <!-- 侧边栏：纯导航，分组 + 数量角标；折叠开关钉在最底下 -->
       <aside
-        class="z-40 flex flex-none flex-col gap-0.5 overflow-y-auto border-r border-line-2 bg-ink-875 px-2.5 py-3.5 transition-[width] duration-200 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[172px] max-md:transition-transform"
+        class="z-40 flex flex-none flex-col border-r border-line-2 bg-ink-875 px-2.5 py-3.5 transition-[width] duration-200 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[172px] max-md:transition-transform"
         :class="[
           collapsed ? 'w-[62px]' : 'w-[172px]',
           mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         ]"
       >
-        <template v-for="item in nav" :key="item.name">
-          <div v-if="item.group && !collapsed" class="dh-nav-group">{{ item.group }}</div>
-          <div v-else-if="item.group" class="my-1 h-px flex-none bg-line-2" />
+        <nav class="dh-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+          <template v-for="item in nav" :key="item.name">
+            <div v-if="item.group && !collapsed" class="dh-nav-group">{{ item.group }}</div>
+            <div v-else-if="item.group" class="my-1 h-px flex-none bg-line-2" />
 
+            <button
+              type="button"
+              class="flex w-full items-center gap-[9px] rounded-[9px] px-2.5 py-2 text-left text-[13px] transition-colors"
+              :class="
+                isActive(item)
+                  ? 'bg-accent-soft text-accent'
+                  : 'text-text-3 hover:bg-ink-700 hover:text-text-1'
+              "
+              :title="collapsed ? item.label : undefined"
+              @click="go(item.name)"
+            >
+              <component :is="item.icon" class="h-[15px] w-[15px] flex-none" :stroke-width="2" />
+              <span v-if="!collapsed" class="truncate">{{ item.label }}</span>
+              <span
+                v-if="!collapsed && item.count && countOf(item.count) > 0"
+                class="ml-auto flex-none rounded-[6px] px-1.5 text-[11px] leading-[18px]"
+                :class="countClass(item, countOf(item.count))"
+              >
+                {{ countOf(item.count) }}
+              </span>
+            </button>
+          </template>
+        </nav>
+
+        <!--
+          折叠开关：钉在侧栏最底部并配文字。
+          原先它在顶栏、只有一对箭头图标（‹‹），既不好找也看不出是干什么的；
+          侧栏底部是「导航的收尾位置」，摆在这里语义自明。
+          收窄态只剩图标（宽度 62px 放不下字），靠 title 兜底。
+          移动端不显示：那时侧栏是抽屉，开关由顶栏的汉堡按钮负责。
+        -->
+        <div class="mt-1 hidden flex-none border-t border-line-2 pt-1.5 md:block">
           <button
             type="button"
-            class="flex w-full items-center gap-[9px] rounded-[9px] px-2.5 py-2 text-left text-[13px] transition-colors"
-            :class="
-              isActive(item)
-                ? 'bg-accent-soft text-accent'
-                : 'text-text-3 hover:bg-ink-700 hover:text-text-1'
-            "
-            :title="collapsed ? labelOf(item) : undefined"
-            @click="go(item.name)"
+            class="flex w-full items-center gap-[9px] rounded-[9px] px-2.5 py-2 text-left text-[12.5px] text-text-4 transition-colors hover:bg-ink-700 hover:text-text-1"
+            :class="collapsed ? 'justify-center' : ''"
+            :title="collapsed ? '展开侧栏' : '收起侧栏'"
+            @click="collapsed = !collapsed"
           >
-            <component :is="item.icon" class="h-[15px] w-[15px] flex-none" :stroke-width="2" />
-            <span v-if="!collapsed" class="truncate">{{ labelOf(item) }}</span>
-            <span
-              v-if="!collapsed && item.count && countOf(item.count) > 0"
-              class="ml-auto flex-none rounded-[6px] px-1.5 text-[11px] leading-[18px]"
-              :class="countClass(item, countOf(item.count))"
-            >
-              {{ countOf(item.count) }}
-            </span>
+            <component
+              :is="collapsed ? ChevronsRight : ChevronsLeft"
+              class="h-[15px] w-[15px] flex-none"
+              :stroke-width="2"
+            />
+            <span v-if="!collapsed" class="truncate">收起侧栏</span>
           </button>
-        </template>
+        </div>
       </aside>
 
       <!-- 移动端遮罩 -->

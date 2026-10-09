@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -136,12 +136,31 @@ onMounted(async () => {
   })
 })
 
+// /containers/:name 是同一条路由记录，在详情页之间跳转时组件会被复用，
+// onMounted 不会再跑 —— 结果就是标题换成了新容器，内容与按钮还指着旧容器。
+watch(name, async () => {
+  detail.value = null
+  summary.value = null
+  stats.value = null
+  logs.value = ''
+  await load()
+  await loadLogs()
+  await loadStats()
+})
+
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
   closeStream?.()
 })
 
-const running = computed(() => container.value.health !== undefined && (detail.value?.['State'] as any)?.Running)
+/**
+ * 容器**当前**是否在运行 —— 只看 inspect 里的 State.Running。
+ *
+ * 早前这里还夹了一个 `container.health !== undefined` 的条件，于是**没有健康检查**的
+ * 容器（绝大多数）运行态恒为 false：状态徽标显示「运行中」，右上角却同时给出「启动」
+ * 按钮，点下去后端报错 —— 页面自己和自己打架，还是个误操作入口。
+ */
+const running = computed(() => Boolean((detail.value?.['State'] as any)?.Running))
 </script>
 
 <template>
@@ -150,7 +169,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
       <button class="dh-iconbtn" title="返回列表" @click="router.back()">
         <ArrowLeft class="h-4 w-4" />
       </button>
-      <div class="grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-line-2 text-[12px] font-semibold text-[#5eead4]">
+      <div class="grid h-[30px] w-[30px] flex-none place-items-center rounded-[9px] bg-line-2 text-[12px] font-semibold text-accent-text">
         {{ name.slice(0, 2).toUpperCase() }}
       </div>
       <div class="min-w-0">
@@ -177,7 +196,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
       </div>
     </div>
 
-    <!-- 端口速览：进详情页第一眼就能看到「这台怎么访问」，不必切标签 -->
+    <!-- 端口速览：进详情页第一眼就能看到「这个容器怎么访问」，不必切标签 -->
     <div v-if="portList.length" class="dh-card flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5">
       <span class="text-[12px] text-text-4">端口</span>
       <PortChips :ports="portList" :max="0" />
@@ -304,7 +323,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
           <div class="dh-scroll max-h-[360px] overflow-auto">
             <table class="w-full">
               <tbody>
-                <tr v-for="e in envList" :key="e.key" class="border-b border-[#171f2a] last:border-b-0">
+                <tr v-for="e in envList" :key="e.key" class="border-b border-line-row last:border-b-0">
                   <td class="py-1.5 pr-3 align-top font-mono text-[11px] text-text-4">{{ e.key }}</td>
                   <td class="break-all py-1.5 font-mono text-[11px] text-text-2">
                     <template v-if="e.sensitive === 'true' && !showSensitive">
@@ -348,7 +367,7 @@ const running = computed(() => container.value.health !== undefined && (detail.v
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="p in portList" :key="`${p.hostIp}:${p.hostPort}>${p.innerPort}/${p.proto}`" class="border-b border-[#171f2a] last:border-b-0">
+                <tr v-for="p in portList" :key="`${p.hostIp}:${p.hostPort}>${p.innerPort}/${p.proto}`" class="border-b border-line-row last:border-b-0">
                   <td class="px-3 py-2 font-mono text-[11.5px] text-text-3">
                     {{ p.published ? p.hostIp || '0.0.0.0' : '—' }}
                   </td>

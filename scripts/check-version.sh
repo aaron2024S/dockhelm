@@ -2,7 +2,7 @@
 # 版本号一致性闸门 —— 在「登录 / 推送 / 构建镜像」之前跑，参数错了别浪费一次发布。
 #
 #   ./scripts/check-version.sh                # 校验三处声明一致
-#   ./scripts/check-version.sh --expect-tag v0.2.0   # 顺带校验 git tag 与声明一致
+#   ./scripts/check-version.sh --expect-tag v0.3.0   # 顺带校验 git tag 与声明一致
 #
 # 为什么需要它：Dockhelm 的版本号有三个声明处 ——
 #   1. internal/version/version.go   ← 唯一事实源，「关于」页与 /api/about 用它
@@ -11,8 +11,8 @@
 # 第 3 个是容易漏的那一类「看起来是常量、其实是版本号」的第二出处：
 # 只改 version.go 不改它，设置页会一直显示旧版本号，而且**没有任何地方会报错**。
 #
-# --expect-tag 防的是另一种事故：tag 打成了 v0.2.1 而 version.go 还是 0.2.0，
-# 于是 CI 推出 Docker 镜像 :0.2.0，git 里却挂着 v0.2.1 —— 版本无法按 tag 回溯。
+# --expect-tag 防的是另一种事故：tag 打成了 v0.3.1 而 version.go 还是 0.3.0，
+# 于是 CI 推出 Docker 镜像 :0.3.0，git 里却挂着 v0.3.1 —— 版本无法按 tag 回溯。
 
 set -euo pipefail
 
@@ -55,7 +55,7 @@ echo "  internal/version/version.go : $V_GO"
 echo "  web/package.json            : $V_PKG"
 echo "  web/src/config.ts           : $V_TS"
 
-# ---- 格式校验：挡住 latest / v0.2.0 / 0.2 这类手填值 ----
+# ---- 格式校验：挡住 latest / v0.3.0 / 0.2 这类手填值 ----
 if ! printf '%s' "$V_GO" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
   echo "  ✗ 版本号 '$V_GO' 不是 x.y.z 形式" >&2
   exit 1

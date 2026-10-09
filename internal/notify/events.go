@@ -28,7 +28,7 @@ var EventCatalog = []EventDef{
 	{Event: "update_failed", Label: "容器更新失败", Group: "更新", Level: LevelUrgent, Default: true,
 		Description: "更新失败，正文里会带上「是否已回滚」的结论"},
 	{Event: "batch_update_done", Label: "批量更新完成", Group: "更新", Level: LevelNormal, Default: true,
-		Description: "一次批量更新结束后合并成一条汇总，而不是每台一条"},
+		Description: "一次批量更新结束后合并成一条汇总，而不是每个一条"},
 
 	// —— 容器 ——
 	{Event: "container_died", Label: "容器意外退出", Group: "容器", Level: LevelUrgent, Default: true,

@@ -15,12 +15,26 @@ export const useAppStore = defineStore('app', {
     settings: null as Settings | null,
     dockerOnline: true,
     sidebarCollapsed: false,
+    /** bootstrap 的进行中 promise（非响应式用途，仅用于去重）。 */
+    _bootstrapping: null as Promise<void> | null,
   }),
   getters: {
     authReady: (s) => s.ready,
   },
   actions: {
     async bootstrap() {
+      // 冷启动时 App 与登录页都会调 bootstrap（登录页是子组件，先触发），
+      // 不去重就会并发发两条 /api/session、跑两遍 loadSettings。
+      // 用同一个 promise 兜住，谁先来谁真正干活。
+      if (this._bootstrapping) return this._bootstrapping
+      this._bootstrapping = this._bootstrap()
+      try {
+        await this._bootstrapping
+      } finally {
+        this._bootstrapping = null
+      }
+    },
+    async _bootstrap() {
       setUnauthorizedHandler(() => {
         this.loggedIn = false
         this.ready = true
@@ -72,8 +86,8 @@ export const useAppStore = defineStore('app', {
       }
     },
     async saveSettings(patch: Partial<Settings>) {
-      const merged = { ...(this.settings ?? ({} as Settings)), ...patch } as Settings
-      this.settings = await api.put<Settings>('/api/settings', merged)
+      // 局部更新：只提交 patch 里出现过的键，不会把别处的改动覆盖掉
+      this.settings = await api.patch<Settings>('/api/settings', patch)
       return this.settings
     },
   },

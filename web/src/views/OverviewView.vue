@@ -14,6 +14,17 @@ const checking = ref(false)
 const errorMsg = ref('')
 let closeStream: (() => void) | null = null
 
+/**
+ * 延时刷新用的定时器。
+ * 巡检/批次结束后会延后几秒再拉一次数据；如果这几秒内用户切走了页面，
+ * 原实现仍会执行 —— 会往已卸载的组件里写 state，且失败的请求会静默堆积。
+ * 这里统一登记，卸载时全部清掉。
+ */
+let timers: number[] = []
+function later(fn: () => void, ms: number) {
+  timers.push(window.setTimeout(fn, ms))
+}
+
 async function load() {
   loading.value = true
   errorMsg.value = ''
@@ -38,7 +49,7 @@ async function checkNow() {
   errorMsg.value = ''
   try {
     await api.post('/api/updates/check', {})
-    window.setTimeout(load, 2500)
+    later(() => void load(), 2500)
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -53,8 +64,8 @@ function sizeParts(n: number | undefined | null) {
 }
 
 const donut = computed(() => {
-  const total = data.value?.containers.total ?? 0
-  const running = data.value?.containers.running ?? 0
+  const total = data.value?.containers?.total ?? 0
+  const running = data.value?.containers?.running ?? 0
   const C = 2 * Math.PI * 46
   const runArc = total ? (running / total) * C : 0
   const stopArc = total ? ((total - running) / total) * C : 0
@@ -75,13 +86,13 @@ const pct = (used: number, total: number) =>
 
 const cpuPercent = computed(() => Math.min(data.value?.usage?.cpuPercent ?? 0, 100))
 
-/** 待更新：按镜像归并，同一镜像影响几台容器就标几台（设计稿的「N 台」）。 */
+/** 待更新：按镜像归并，同一镜像影响几个容器就标几个（原设计稿写的是「N 台」，2026-10-09 起统一成「个」）。 */
 const updateGroups = computed(() => {
   const map = new Map<
     string,
     { image: string; containers: string[]; localDigest: string; remoteDigest: string }
   >()
-  for (const it of data.value?.updates.items ?? []) {
+  for (const it of data.value?.updates?.items ?? []) {
     const entry = map.get(it.image)
     if (entry) {
       entry.containers.push(it.container)
@@ -182,12 +193,16 @@ onMounted(() => {
   closeStream = openStream('/api/events/stream', (topic, ev) => {
     if (topic !== 'update' && topic !== 'schedule') return
     if (ev.kind === 'batch_done' || ev.kind === 'check_done') {
-      window.setTimeout(load, 800)
+      later(() => void load(), 800)
     }
   })
 })
 
-onUnmounted(() => closeStream?.())
+onUnmounted(() => {
+  closeStream?.()
+  timers.forEach((t) => window.clearTimeout(t))
+  timers = []
+})
 </script>
 
 <template>
@@ -208,21 +223,21 @@ onUnmounted(() => closeStream?.())
       <div class="dh-metric">
         <div class="k">容器</div>
         <div class="v">
-          {{ data?.containers.total ?? '—' }} <small>台</small>
+          {{ data?.containers?.total ?? '—' }} <small>个</small>
         </div>
         <div class="s">
-          运行 {{ data?.containers.running ?? 0 }} · 停止 {{ data?.containers.stopped ?? 0 }}
-          <template v-if="data?.containers.unhealthy"> · 异常 {{ data.containers.unhealthy }}</template>
+          运行 {{ data?.containers?.running ?? 0 }} · 停止 {{ data?.containers?.stopped ?? 0 }}
+          <template v-if="data?.containers?.unhealthy"> · 异常 {{ data.containers.unhealthy }}</template>
         </div>
       </div>
 
       <div class="dh-metric">
         <div class="k">待更新镜像</div>
-        <div class="v" :class="updateGroups.length ? 'text-[#fbbf24]' : ''">
+        <div class="v" :class="updateGroups.length ? 'text-warn-text' : ''">
           {{ updateGroups.length }} <small>个</small>
         </div>
         <div class="s">
-          {{ data?.updates.checkedAt ? `影响 ${data.updates.items.length} 台容器` : '还没做过巡检' }}
+          {{ data?.updates?.checkedAt ? `影响 ${data.updates.items?.length ?? 0} 个容器` : '还没做过巡检' }}
         </div>
       </div>
 
@@ -237,9 +252,9 @@ onUnmounted(() => closeStream?.())
       <div class="dh-metric">
         <div class="k">镜像占用</div>
         <div class="v">
-          {{ sizeParts(data?.images.sizeBytes).v }} <small>{{ sizeParts(data?.images.sizeBytes).u }}</small>
+          {{ sizeParts(data?.images?.sizeBytes).v }} <small>{{ sizeParts(data?.images?.sizeBytes).u }}</small>
         </div>
-        <div class="s">可回收 {{ formatBytes(data?.images.reclaimable) }}</div>
+        <div class="s">可回收 {{ formatBytes(data?.images?.reclaimable) }}</div>
       </div>
     </div>
 
@@ -251,14 +266,23 @@ onUnmounted(() => closeStream?.())
           <span class="ml-auto dh-badge dh-badge-plain">实时</span>
         </div>
         <div class="dh-card-body flex items-center gap-[22px]">
+          <!-- SVG 的呈现属性（stroke="..."）里不能写 var()，变量只在 style 属性/样式表里生效，
+               所以下面这些颜色统一走 style，跟随主题切换。 -->
           <svg viewBox="0 0 120 120" class="h-[118px] w-[118px] flex-none">
-            <circle cx="60" cy="60" r="46" fill="none" stroke="#1e2836" stroke-width="13" />
             <circle
               cx="60"
               cy="60"
               r="46"
               fill="none"
-              stroke="#34d399"
+              style="stroke: var(--color-line-1)"
+              stroke-width="13"
+            />
+            <circle
+              cx="60"
+              cy="60"
+              r="46"
+              fill="none"
+              style="stroke: var(--color-run)"
               stroke-width="13"
               stroke-linecap="round"
               :stroke-dasharray="`${donut.runArc} ${donut.C}`"
@@ -270,25 +294,34 @@ onUnmounted(() => closeStream?.())
               cy="60"
               r="46"
               fill="none"
-              stroke="#64748b"
+              style="stroke: var(--color-stop)"
               stroke-width="13"
               :stroke-dasharray="`${donut.stopArc} ${donut.C}`"
               :stroke-dashoffset="-donut.runArc"
               transform="rotate(-90 60 60)"
             />
-            <text x="60" y="56" text-anchor="middle" fill="#e6edf5" font-size="21" font-weight="600">
-              {{ data?.containers.running ?? 0 }}
+            <text
+              x="60"
+              y="56"
+              text-anchor="middle"
+              style="fill: var(--color-text-1)"
+              font-size="21"
+              font-weight="600"
+            >
+              {{ data?.containers?.running ?? 0 }}
             </text>
-            <text x="60" y="74" text-anchor="middle" fill="#8a97a8" font-size="11">运行中</text>
+            <text x="60" y="74" text-anchor="middle" style="fill: var(--color-text-4)" font-size="11">
+              运行中
+            </text>
           </svg>
 
           <div class="flex min-w-0 flex-1 flex-col gap-[11px]">
             <div class="flex gap-4 text-[12px] text-text-4">
               <span class="flex items-center gap-1.5">
-                <i class="h-[7px] w-[7px] rounded-full bg-run" />运行中 {{ data?.containers.running ?? 0 }}
+                <i class="h-[7px] w-[7px] rounded-full bg-run" />运行中 {{ data?.containers?.running ?? 0 }}
               </span>
               <span class="flex items-center gap-1.5">
-                <i class="h-[7px] w-[7px] rounded-full bg-stop" />已停止 {{ data?.containers.stopped ?? 0 }}
+                <i class="h-[7px] w-[7px] rounded-full bg-stop" />已停止 {{ data?.containers?.stopped ?? 0 }}
               </span>
             </div>
 
@@ -305,18 +338,18 @@ onUnmounted(() => closeStream?.())
                 <span>{{ pct(memUsed, memTotal).toFixed(0) }}%</span>
               </div>
               <div class="dh-bar">
-                <i :style="{ width: `${pct(memUsed, memTotal)}%`, background: '#5eead4' }" />
+                <i :style="{ width: `${pct(memUsed, memTotal)}%`, background: 'var(--color-accent-text)' }" />
               </div>
             </div>
 
             <!-- 磁盘：拿不到宿主机文件系统信息时（例如后端跑在 Windows 上）整行隐藏 -->
             <div v-if="data?.disk?.total" class="flex flex-col gap-1.5">
               <div class="flex justify-between text-[11.5px] text-text-4">
-                <span>磁盘 {{ formatBytes(diskUsed) }} / {{ formatBytes(data?.disk.total) }}</span>
-                <span>{{ pct(diskUsed, data?.disk.total ?? 0).toFixed(0) }}%</span>
+                <span>磁盘 {{ formatBytes(diskUsed) }} / {{ formatBytes(data?.disk?.total) }}</span>
+                <span>{{ pct(diskUsed, data?.disk?.total ?? 0).toFixed(0) }}%</span>
               </div>
               <div class="dh-bar">
-                <i :style="{ width: `${pct(diskUsed, data?.disk.total ?? 0)}%`, background: '#818cf8' }" />
+                <i :style="{ width: `${pct(diskUsed, data?.disk?.total ?? 0)}%`, background: 'var(--color-chart-indigo)' }" />
               </div>
             </div>
           </div>
@@ -333,16 +366,16 @@ onUnmounted(() => closeStream?.())
 
         <div v-if="!updateGroups.length" class="dh-card-body flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
           <div class="text-[12.5px] text-text-3">
-            {{ data?.updates.checkedAt ? '所有镜像都是最新的' : '还没有做过巡检' }}
+            {{ data?.updates?.checkedAt ? '所有镜像都是最新的' : '还没有做过巡检' }}
           </div>
           <div class="text-[11.5px] leading-relaxed text-text-5">
             {{
-              data?.updates.checkedAt
+              data?.updates?.checkedAt
                 ? '没有任何容器需要更新。'
                 : '点顶栏的刷新按钮可以只读地检查一遍所有容器。'
             }}
           </div>
-          <button v-if="!data?.updates.checkedAt" class="dh-btn dh-btn-sm mt-1" :disabled="checking" @click="checkNow">
+          <button v-if="!data?.updates?.checkedAt" class="dh-btn dh-btn-sm mt-1" :disabled="checking" @click="checkNow">
             <Loader2 v-if="checking" class="h-3 w-3 dh-spin" />
             立即巡检
           </button>
@@ -350,7 +383,7 @@ onUnmounted(() => closeStream?.())
         <div v-else class="dh-card-body flex flex-col gap-[11px]">
           <div v-for="g in updateGroups.slice(0, 4)" :key="g.image" class="flex items-center gap-2.5">
             <div
-              class="grid h-[28px] w-[28px] flex-none place-items-center rounded-[9px] bg-line-2 text-[11px] font-semibold text-[#5eead4]"
+              class="grid h-[28px] w-[28px] flex-none place-items-center rounded-[9px] bg-line-2 text-[11px] font-semibold text-accent-text"
             >
               {{ initial(g.image) }}
             </div>
@@ -360,7 +393,7 @@ onUnmounted(() => closeStream?.())
                 {{ digestShort(g.localDigest) }} → {{ digestShort(g.remoteDigest) }}
               </div>
             </div>
-            <span class="dh-badge dh-badge-warn flex-none">{{ g.containers.length }} 台</span>
+            <span class="dh-badge dh-badge-warn flex-none">{{ g.containers.length }} 个</span>
           </div>
 
           <button class="dh-btn dh-btn-primary mt-0.5" @click="router.push('/updates')">

@@ -17,8 +17,10 @@ type MirrorConfig struct {
 	Enabled    bool   `json:"enabled"`
 	LastTested string `json:"lastTested,omitempty"`
 	LatencyMs  int64  `json:"latencyMs,omitempty"`
-	OK         bool   `json:"ok,omitempty"`
-	Err        string `json:"err,omitempty"`
+	// OK 不带 omitempty：false 是有意义的信息（测过了但不可用）。
+	// 「有没有测过」由 LastTested 是否为空判断，别用 ok 是否出现来判断。
+	OK  bool   `json:"ok"`
+	Err string `json:"err,omitempty"`
 	// Builtin 表示这是内置建议列表里带过来的
 	Builtin bool `json:"builtin,omitempty"`
 }
@@ -51,17 +53,13 @@ func (s *Server) hGetRegistries(w http.ResponseWriter, r *http.Request) {
 	if cfg.Mirrors == nil {
 		cfg.Mirrors = []MirrorConfig{}
 	}
-	// 把内置但尚未添加的项补到列表尾部（标记 builtin，默认不启用）
-	have := map[string]bool{}
-	for _, m := range cfg.Mirrors {
-		have[normalizeMirror(m.URL)] = true
-	}
-	suggestions := []MirrorConfig{}
-	for _, b := range builtinMirrors {
-		if !have[normalizeMirror(b.URL)] {
-			suggestions = append(suggestions, b)
-		}
-	}
+	// suggestions 始终返回**完整**的内置清单，包括用户已经添加过的那些。
+	//
+	// 早先是把已添加的过滤掉，结果「推荐加速源」会随着用户一条条添加而逐渐变空 ——
+	// 全加完整个栏位就没了，看起来像功能消失。改为固定清单，由前端拿 settings.mirrors
+	// 自行标记「已添加」，栏位就稳定了。
+	suggestions := make([]MirrorConfig, 0, len(builtinMirrors))
+	suggestions = append(suggestions, builtinMirrors...)
 
 	ctx, cancel := s.ctx(r)
 	defer cancel()

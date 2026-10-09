@@ -74,6 +74,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("无法读取认证数据：%v", err)
 	}
+	if w := authMgr.LoadWarning(); w != "" {
+		log.Printf("⚠ %s", w)
+	}
 	if cfg.ForcePassword != "" {
 		if err := authMgr.ForceSetPassword(cfg.ForcePassword); err != nil {
 			log.Printf("⚠ DOCKHELM_PASSWORD 设置失败：%v", err)

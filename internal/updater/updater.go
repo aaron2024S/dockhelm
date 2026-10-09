@@ -52,7 +52,7 @@ type Options struct {
 	BackupDir string
 
 	// PullOnce 同一轮批量更新里，同一个镜像只真正拉取一次（默认开）。
-	// 4 台共用 nginx:alpine 时下载 1 次、重建 4 台 —— 镜像 ID 是内容寻址的，
+	// 4 个容器共用 nginx:alpine 时下载 1 次、重建 4 个 —— 镜像 ID 是内容寻址的，
 	// 复用第一次的结果完全安全。
 	PullOnce bool
 	// BackupBefore 重建前先写一份配置快照（默认开）。这是失败回滚与人肉排查的底牌。
@@ -115,9 +115,12 @@ type Updater struct {
 	opts atomic.Pointer[Options]
 
 	mu     sync.Mutex
-	locks  map[string]*sync.Mutex // 逐容器串行锁
-	onLog  func(kind, ref, status, message, detail string)
-	nowStr func() string
+	locks  map[string]*sync.Mutex // 逐容器串行锁（键 = 容器名，重建前后都稳定）
+	// resolveMu 只包住「把名字/ID 解析成容器名」这一次 Inspect，
+	// 保证两个并发调用拿到的是同一把锁（见 lockForContainer）。
+	resolveMu sync.Mutex
+	onLog     func(kind, ref, status, message, detail string)
+	nowStr    func() string
 	// mirrorFn 返回用户配置的「拉取加速源」；空字符串表示完全交给守护进程。
 	mirrorFn func() string
 
@@ -230,7 +233,7 @@ func mirrorHost(mirror string) string {
 //
 // 返回的 fromCache 表示这次是复用了别的容器拉到的结果 —— 那种情况下
 // **不能**采信 pr.UpToDate：那是「第一次拉取时镜像是否已经最新」的结论，
-// 对另一台还跑着旧镜像的容器并不成立，采信它就会漏掉一次本该做的重建。
+// 对另一个还跑着旧镜像的容器并不成立，采信它就会漏掉一次本该做的重建。
 func (u *Updater) pullForBatch(
 	ctx context.Context,
 	image string,
@@ -278,15 +281,50 @@ func (u *Updater) log(kind, ref, status, message, detail string) {
 }
 
 // lockFor 取某容器的串行锁（同一容器不会被两个任务同时更新）。
-func (u *Updater) lockFor(name string) *sync.Mutex {
+//
+// key 必须是**容器名**。调用方不要直接用它 —— 用 lockForContainer，
+// 它负责把「名字或 ID」统一换成名字，原因见那里的注释。
+func (u *Updater) lockFor(key string) *sync.Mutex {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	m, ok := u.locks[name]
+	m, ok := u.locks[key]
 	if !ok {
 		m = &sync.Mutex{}
-		u.locks[name] = m
+		u.locks[key] = m
 	}
 	return m
+}
+
+// lockForContainer 解析出容器名并返回它对应的串行锁。
+//
+// **锁键必须是容器名，不能是 ID**，两个原因：
+//
+//  1. 同一个容器既可能被名字引用（界面上的批量更新按名字），也可能被 ID 引用
+//     （计划任务用的是容器列表里的 ID）。以前直接把调用方传进来的字符串当锁键，
+//     于是 "web" 与 "a1b2c3…" 会拿到两把互不相干的锁 —— 等于没有互斥。真撞上时
+//     （计划任务到点 + 用户手点更新），同一个容器会被并发执行 stop→rename→create：
+//     轻则 rename 撞名失败，重则留下 `xxx__bak_` 悬挂容器 + 没启起来的新容器。
+//
+//  2. 更新本身就是「重建」：更新完容器会拿到一个**新的 ID**。若用 ID 当锁键，
+//     第二个调用只要解析得晚一点就会拿到新 ID 的锁，与仍在收尾的第一个调用
+//     并发操作同一个容器 —— 名字是重建前后都不变的那一个标识。
+//
+// 解析只用一把很短的全局锁包住一次 Inspect（本地 socket，几毫秒）。
+//
+// 注意：拿到锁之后调用方**必须重新 Inspect 一次**。这里读到的状态是取锁之前那一刻的，
+// 前一个持锁者可能已经把容器改名/重建过了。
+func (u *Updater) lockForContainer(ctx context.Context, nameOrID string) (*sync.Mutex, error) {
+	u.resolveMu.Lock()
+	defer u.resolveMu.Unlock()
+	insp, err := u.dc.Inspect(ctx, nameOrID)
+	if err != nil {
+		return nil, err
+	}
+	key := inspectName(insp)
+	if key == "" {
+		key = nameOrID // 理论上不会发生；真发生了至少保证不与别人共享锁
+	}
+	return u.lockFor(key), nil
 }
 
 // IsSelf 判断是否是 Dockhelm 自身。
@@ -406,7 +444,10 @@ func (u *Updater) Check(ctx context.Context, nameOrID string) (*CheckResult, err
 // 因为「拉取」走的必然是守护进程（含 registry-mirrors），这是唯一 100% 同源的判定。
 // 镜像已最新时，守护进程只会下载 manifest 与 config（几 KB），不会下载层。
 func (u *Updater) DeepCheck(ctx context.Context, nameOrID string) (*CheckResult, error) {
-	lk := u.lockFor(nameOrID)
+	lk, err := u.lockForContainer(ctx, nameOrID)
+	if err != nil {
+		return nil, err
+	}
 	lk.Lock()
 	defer lk.Unlock()
 
@@ -567,15 +608,22 @@ func (u *Updater) status(res *Result, st ResultStatus, msg string) {
 // Update 更新单个容器。
 //
 // 语义：**镜像没变就完全不动容器**。这是对 dockerCopilot 那个
-// 「一键更新 10 台，没更新的也被停掉」缺陷的直接修复。
+// 「一键更新 10 个，没更新的也被停掉」缺陷的直接修复。
 func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Result {
 	started := time.Now()
 	res := &Result{Container: nameOrID}
 
-	lk := u.lockFor(nameOrID)
+	lk, err := u.lockForContainer(ctx, nameOrID)
+	if err != nil {
+		u.status(res, ResultFailed, "读取容器信息失败："+err.Error())
+		u.log("update", nameOrID, "failed", res.Message, "")
+		return res
+	}
 	lk.Lock()
 	defer lk.Unlock()
 
+	// 锁拿到手之后必须重新读一次：上面那次 Inspect 只是为了拿 ID 做锁键，
+	// 读到的状态可能是前一个持锁者动手之前的样子。
 	insp, err := u.dc.Inspect(ctx, nameOrID)
 	if err != nil {
 		u.status(res, ResultFailed, "读取容器信息失败："+err.Error())
@@ -758,10 +806,26 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	oldID := inspectID(insp)
 	bakName := fmt.Sprintf("%s__bak_%s", truncName(name, 40), time.Now().Format("20060102-150405"))
 
+	// 先把创建请求体准备好并校验 —— **必须在动这个容器之前**。
+	// 否则会走成「停旧容器 → 改名 → 创建失败 → 回滚」：容器白停一次，
+	// 日志里还会留下一次吓人的失败，而问题其实在第一步就看得见。
+	// 先取一次现存网络，避免把已被删除的网络别名传回去导致 404。
+	var existingNets map[string]bool
+	if nets, err := u.dc.ListNetworks(ctx); err == nil {
+		existingNets = NetworkNameSet(nets)
+	}
+	cfg, hostCfg, netCfg := BuildCreateSpec(insp, existingNets)
+	if fail := u.validateCreateSpec(cfg, insp, res); fail != "" {
+		return "", fail, false // false：一个容器都没动过，没什么可回滚的
+	}
+
 	// AutoRemove 的容器一停就自动删除，改名会失败 —— 先关掉它（新容器仍按原配置创建）。
+	// 这个改动必须能被回滚还原（否则更新失败回滚之后，容器会永久丢掉 --rm 语义）。
+	autoRemoveOn := false
 	if hc, ok := insp["HostConfig"].(map[string]any); ok {
 		if ar, _ := hc["AutoRemove"].(bool); ar {
 			if err := u.dc.UpdateContainer(ctx, oldID, map[string]any{"AutoRemove": false}); err == nil {
+				autoRemoveOn = true
 				u.step(res, "原容器开启了自动删除，已临时关闭以保证可回滚")
 			}
 		}
@@ -782,39 +846,35 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	// 6. 改名保留（绝不删除 —— 旧容器的可写层与运行期身份因此保留下来）
 	if err := u.dc.RenameContainer(ctx, oldID, bakName); err != nil {
 		if wasRunning {
-			_ = u.dc.ContainerAction(ctx, oldID, "start", nil)
+			// 这一步的「把旧容器重新启起来」也是补救动作，用独立 ctx
+			cctx, cancel := cleanupCtx(ctx)
+			_ = u.dc.ContainerAction(cctx, oldID, "start", nil)
+			cancel()
 		}
 		return "", "重命名旧容器失败：" + err.Error(), true
 	}
 	u.step(res, "旧容器已改名为 %s（保留以便回滚）", bakName)
 
-	// 7. 用原配置创建同名新容器
-	// 先取一次现存网络，避免把已被删除的网络别名传回去导致 404
-	var existingNets map[string]bool
-	if nets, err := u.dc.ListNetworks(ctx); err == nil {
-		existingNets = NetworkNameSet(nets)
-	}
-	cfg, hostCfg, netCfg := BuildCreateSpec(insp, existingNets)
+	// 7. 用原配置创建同名新容器（请求体在函数开头就备好了）
 	u.status(res, ResultCreated, "正在创建新容器…")
 	newID, err := u.dc.CreateContainer(ctx, name, cfg, hostCfg, netCfg)
 	if err != nil {
 		u.step(res, "创建新容器失败：%v，开始回滚", err)
-		return "", "创建新容器失败：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, res)
+		return "", "创建新容器失败：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, autoRemoveOn, res)
 	}
 	u.step(res, "新容器已创建（%s）", dockerx.ShortID(newID))
 
 	// 8. 启动（原本停止的容器保持停止）
 	if wasRunning {
 		if err := u.dc.ContainerAction(ctx, newID, "start", nil); err != nil {
-			_ = u.dc.RemoveContainer(ctx, newID, true, false)
-			return "", "启动新容器失败：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, res)
+			u.discardContainer(ctx, newID)
+			return "", "启动新容器失败：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, autoRemoveOn, res)
 		}
 		u.step(res, "新容器已启动，开始健康检查")
 		// 9. 健康判定
 		if err := u.waitHealthy(ctx, newID, insp); err != nil {
-			_ = u.dc.ContainerAction(ctx, newID, "stop", nil)
-			_ = u.dc.RemoveContainer(ctx, newID, true, false)
-			return "", "新容器健康检查未通过：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, res)
+			u.discardContainer(ctx, newID)
+			return "", "新容器健康检查未通过：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, autoRemoveOn, res)
 		}
 		u.step(res, "健康检查通过")
 	}
@@ -832,8 +892,54 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	return newID, "", false
 }
 
-// rollback 回滚：删新容器 → 把 __bak_ 改回原名 → 按原状态启动。
-func (u *Updater) rollback(ctx context.Context, oldID, bakName, name string, wasRunning bool, res *Result) bool {
+// validateCreateSpec 在动容器之前判断「这份配置能不能建出一个容器」。
+// 返回空字符串表示可以继续；否则返回一句给人看的失败原因。
+//
+// 存在的理由：创建请求体是从 inspect 拼出来的，而 inspect 来自网络 ——
+// 一旦它不完整（没有 Config），等真到了 create 那一步才失败，代价是
+// 「旧容器已经停了、改了名，再回滚」。而这个判断在任何时候都能做，
+// 且做完就知道没法继续，所以必须在动手之前做。
+func (u *Updater) validateCreateSpec(cfg map[string]any, insp map[string]any, res *Result) string {
+	patched, fail := EnsureCreateSpec(cfg, insp)
+	if patched != "" {
+		u.step(res, "容器没有记录镜像引用，改用镜像 ID %s 重建", dockerx.ShortID(patched))
+	}
+	if fail == "" {
+		return ""
+	}
+	return fail + "，拒绝重建，容器保持原样"
+}
+
+// rollback 回滚：删新容器 → 把 __bak_ 改回原名 → 按原状态启动 →
+// 把为改名而临时关掉的 AutoRemove 还原回去。
+//
+// autoRemoveOn 表示「本次确实动过 AutoRemove」。不还原的话，一次失败的更新
+// 会永久改掉这个容器的语义：它本该在退出时被自动删除，回滚之后却不会了。
+// cleanupCtx 返回一个**不受调用方取消影响**的短超时上下文，专供回滚/清理使用。
+//
+// 回滚存在的意义就是「前面已经失败了」，而最常见的失败原因恰恰是调用方的
+// ctx 超时或取消（批量更新各有 20 / 60 分钟预算）。若这些补救动作继续用同一个
+// ctx，它们必然跟着一起失败 —— 于是承诺过的「失败自动回滚」在最需要它的时候
+// 恰好失效：留下一个已改名停着的旧容器 + 一个建了但没启起来的新容器，
+// 而返回的 RolledBack=true 还让调用方以为已经退回去了。
+func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+}
+
+// discardContainer 清掉一个不该留下的容器（用独立 ctx，别被调用方的取消带走）。
+func (u *Updater) discardContainer(ctx context.Context, id string) {
+	cctx, cancel := cleanupCtx(ctx)
+	defer cancel()
+	_ = u.dc.ContainerAction(cctx, id, "stop", nil)
+	_ = u.dc.RemoveContainer(cctx, id, true, false)
+}
+
+// rollback 把旧容器改回原名并恢复运行。返回是否真的回滚成功。
+func (u *Updater) rollback(ctx context.Context, oldID, bakName, name string, wasRunning, autoRemoveOn bool, res *Result) bool {
+	// 回滚全程用独立 ctx，理由见 cleanupCtx
+	ctx, cancel := cleanupCtx(ctx)
+	defer cancel()
+
 	u.step(res, "开始回滚：删除新容器并把旧容器改回原名")
 	if err := u.dc.RenameContainer(ctx, oldID, name); err != nil {
 		u.step(res, "✗ 回滚失败（改名）：%v", err)
@@ -843,6 +949,13 @@ func (u *Updater) rollback(ctx context.Context, oldID, bakName, name string, was
 		if err := u.dc.ContainerAction(ctx, oldID, "start", nil); err != nil {
 			u.step(res, "✗ 回滚失败（启动）：%v", err)
 			return false
+		}
+	}
+	if autoRemoveOn {
+		if err := u.dc.UpdateContainer(ctx, oldID, map[string]any{"AutoRemove": true}); err != nil {
+			u.step(res, "⚠ 已回滚，但恢复自动删除（--rm）失败：%v", err)
+		} else {
+			u.step(res, "已还原原来的自动删除（--rm）设置")
 		}
 	}
 	u.step(res, "✓ 已回滚，容器 %s 恢复为更新前的状态", name)
@@ -963,10 +1076,10 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 		summary += "，清理旧镜像回收 " + humanBytes(reclaimed)
 	}
 	if reused > 0 {
-		summary += fmt.Sprintf("，%d 台复用了同轮已拉取的镜像", reused)
+		summary += fmt.Sprintf("，%d 个容器复用了同轮已拉取的镜像", reused)
 	}
 	u.log("update", "batch", "done", summary, "")
-	// 批量更新合并成一条汇总，而不是每台一条
+	// 批量更新合并成一条汇总，而不是每个一条
 	u.notify.Emit("batch_update_done", map[string]string{
 		"container": fmt.Sprintf("%d 个容器", len(names)),
 		"result":    "批量更新完成",

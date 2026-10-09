@@ -46,6 +46,9 @@ var ErrNotInitialized = errors.New("尚未初始化密码")
 // ErrWeakPassword 密码太短。
 var ErrWeakPassword = fmt.Errorf("密码至少需要 %d 位", MinPasswordLen)
 
+// ErrAlreadyInitialized 已经设置过密码。
+var ErrAlreadyInitialized = errors.New("密码已设置")
+
 // manager 认证数据（只存 bcrypt 哈希）。
 type authFile struct {
 	Version     int    `json:"version"`
@@ -60,6 +63,8 @@ type Manager struct {
 	store *store.Store
 	mu    sync.RWMutex
 	data  authFile
+	// loadWarning 启动时发现的问题（如 auth.json 损坏被隔离），由 main 负责打日志。
+	loadWarning string
 
 	// Notify 登录成功/失败的告警钩子（由 main 注入，避免循环依赖）
 	Notify func(event string, vars map[string]string)
@@ -82,19 +87,60 @@ func (m *Manager) load() error {
 		}
 		return err
 	}
-	return json.Unmarshal(b, &m.data)
+	if err := json.Unmarshal(b, &m.data); err != nil {
+		// auth.json 坏了**不能**让进程起不来（NAS 上那意味着只能进 SSH 手删文件）。
+		// 把它挪到一边、当作「未初始化」继续跑，并留一条 warning 给 main 打日志。
+		// 这不降低安全性：能碰到这个文件的人本来就能直接删掉它，效果完全一样。
+		quarantine := m.path + ".corrupt-" + time.Now().Format("20060102-150405")
+		if mvErr := os.Rename(m.path, quarantine); mvErr != nil {
+			return fmt.Errorf("auth.json 解析失败且无法移走：%w（原错误：%v）", mvErr, err)
+		}
+		m.data = authFile{}
+		m.loadWarning = fmt.Sprintf(
+			"auth.json 解析失败，已改名为 %s 并按「未初始化」处理，请重新设置登录密码（%v）",
+			filepath.Base(quarantine), err)
+		return nil
+	}
+	return nil
 }
 
+// LoadWarning 返回启动时的可读告警（目前只有「auth.json 损坏已被隔离」一种）。
+func (m *Manager) LoadWarning() string { return m.loadWarning }
+
 func (m *Manager) save() error {
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
+	dir := filepath.Dir(m.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(m.data, "", "  ")
 	if err != nil {
 		return err
 	}
-	// 0600：即使只是哈希，也不该让其他用户读到
-	return os.WriteFile(m.path, b, 0o600)
+	// 先写临时文件、fsync、再 rename —— 与 store 的落盘方式一致。
+	// 直接 os.WriteFile 是「截断 + 写」，NAS 上掉电/被杀进程会留下半截 JSON，
+	// 而 auth.json 半截就等于启动时解析失败。
+	tmp, err := os.CreateTemp(dir, ".auth-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // rename 成功后这里是空操作
+	if err := tmp.Chmod(0o600); err != nil { // 即使只是哈希，也不该让其他用户读到
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, m.path)
 }
 
 // Initialized 是否已经设置过密码。
@@ -139,6 +185,35 @@ func (m *Manager) SetPassword(oldPassword, newPassword string) error {
 	return m.store.DeleteAllSessions()
 }
 
+// SetupPassword 首次设置密码。
+//
+// 与 ForceSetPassword 的区别：**「还没设过密码」这个判断和写入在同一把锁里完成**。
+// 首启接口原来是先 Initialized() 再 ForceSetPassword，两个并发请求可能都通过判断，
+// 后一个把前一个刚设的密码覆盖掉（后者自己还拿到一个会话）。窗口很小，但一次就够。
+func (m *Manager) SetupPassword(pw string) error {
+	if len(pw) < MinPasswordLen {
+		return ErrWeakPassword
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.data.PasswordHash != "" {
+		return ErrAlreadyInitialized
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.data.CreatedAt = now
+	m.data.UpdatedAt = now
+	m.data.Version = 1
+	m.data.PasswordHash = string(hash)
+	if err := m.save(); err != nil {
+		return err
+	}
+	return m.store.DeleteAllSessions()
+}
+
 // ForceSetPassword 无条件覆盖密码（DOCKHELM_PASSWORD 环境变量或删除 auth.json 后的首启）。
 func (m *Manager) ForceSetPassword(pw string) error {
 	if len(pw) < MinPasswordLen {
@@ -177,12 +252,14 @@ func (m *Manager) Verify(password, ip, ua string, keep bool) (string, error) {
 	}
 	// 时序安全由 bcrypt 的恒定时间比较保证
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
-		m.store.RecordLogin(ip, false)
+		m.store.RecordLogin(ip, false) // 本次失败已经记进去了
 		// 故意延迟 1s，抬高暴力破解成本
 		time.Sleep(time.Second)
-		if m.store.CountRecentFailures(ip, LockWindow)+1 == MaxFailures && m.Notify != nil {
+		// 不要再 +1：上一行的 RecordLogin 已经把这次算进计数了，
+		// 加一等于在第 4 次失败时就喊「已锁定 5 次」
+		if n := m.store.CountRecentFailures(ip, LockWindow); n == MaxFailures && m.Notify != nil {
 			m.Notify("login_locked", map[string]string{
-				"message": fmt.Sprintf("来源 %s 连续 %d 次密码错误，已临时锁定 %s", ip, MaxFailures, LockWindow),
+				"message": fmt.Sprintf("来源 %s 连续 %d 次密码错误，已临时锁定 %s", ip, n, LockWindow),
 			})
 		}
 		return "", ErrBadPassword

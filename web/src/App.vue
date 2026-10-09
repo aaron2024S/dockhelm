@@ -22,9 +22,13 @@ onMounted(() => {
     <div v-if="!app.ready" class="fixed inset-0 grid place-items-center bg-ink-950">
       <div class="flex flex-col items-center gap-3">
         <div class="grid h-11 w-11 place-items-center rounded-[13px] bg-accent text-accent-ink">
-          <svg viewBox="0 0 32 32" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.4">
-            <path d="M16 7l7 4v10l-7 4-7-4V11z" stroke-linejoin="round" />
-            <path d="M16 15v10M9 11l7 4 7-4" stroke-linejoin="round" />
+          <svg viewBox="0 0 32 32" class="h-6 w-6">
+            <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.5" />
+            <path
+              fill-rule="evenodd"
+              fill="currentColor"
+              d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+            />
           </svg>
         </div>
         <div class="text-[12px] text-text-5">正在载入 Dockhelm…</div>

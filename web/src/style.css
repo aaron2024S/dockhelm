@@ -1,9 +1,24 @@
-@import 'tailwindcss';
+/* 来源范围必须写死。
+   默认的自动探测会把 web/dist 也算进去 —— 而 dist 是「故意入库」的构建产物，
+   里面躺着上一轮编译出的全部类名，于是删掉的类会被产物重新喂回来（阴魂不散），
+   构建结果还会依赖上一次的产物。所以关掉自动探测，只认源码。 */
+@import 'tailwindcss' source(none);
+@source '../src';
+@source '../index.html';
 
 /* Dockhelm 配色取自设计稿：深海蓝底 + 青绿色点缀。
-   全部走 CSS 变量，Tailwind 4 的 @theme 会据此生成 ink-900 / panel / accent 这类工具类。 */
-@theme {
-  /* 背景层 */
+   全部走 CSS 变量，Tailwind 4 的 @theme 会据此生成 ink-900 / panel / accent 这类工具类。
+
+   2026-10-09 起支持亮色主题，机制是「只换变量、不换类名」：
+   ① 这里（@theme static）写的是**暗色**默认值，也是没有 class 时的样子；
+   ② 亮色整套覆盖写在下面的 `html.light` 块里（「亮色主题覆盖」一节）；
+   ③ 组件里那 500 多处 bg-ink-700 / text-text-3 / border-line-1 是引用变量的，
+      所以两套配色会自动跟随，不需要在每个组件里写条件类。
+
+   `static` 不能省：Tailwind 默认只输出「被工具类引用到」的变量，而下面 CSS 与
+   组件模板里还有一批手写的 `var(--color-xxx)`，默认策略会把它们 tree-shake 掉。 */
+@theme static {
+  /* 背景层：数字越大越「亮」（亮色下则越白），层级语义两套一致 */
   --color-ink-950: #05080b;
   --color-ink-900: #0a0e13;
   --color-ink-875: #0b1017;
@@ -43,15 +58,125 @@
   --color-err: #f87171;
   --color-err-text: #fca5a5;
 
+  /* 语义扩展：原先散落在组件里的 rgba 硬编码集中到这里，两套主题各给一份。
+     没有这些 token 的话，亮色主题下会出现「深色底 + 深色字」这种看不见的组合。 */
+  --color-accent-text: #5eead4; /* 压在深底上的强调文字，比 accent 亮一档 */
+  --color-accent-hover: #5eead4; /* 主按钮悬停底色（亮色下要变深而不是变浅） */
+  --color-accent-line: rgba(45, 212, 191, 0.5);
+  --color-accent-ring: rgba(45, 212, 191, 0.08); /* 输入框聚焦外圈 */
+  --color-accent-row: rgba(45, 212, 191, 0.035); /* 表格行悬停 */
+  --color-soft-accent: rgba(45, 212, 191, 0.07); /* 提示条底 */
+  --color-line-accent-soft: rgba(45, 212, 191, 0.28); /* 提示条描边 */
+  --color-soft-ok: rgba(52, 211, 153, 0.1);
+  --color-soft-warn: rgba(245, 165, 36, 0.08);
+  --color-soft-err: rgba(248, 113, 113, 0.07);
+  --color-line-ok: rgba(52, 211, 153, 0.4);
+  --color-line-warn: rgba(245, 165, 36, 0.35);
+  --color-line-err: rgba(248, 113, 113, 0.35);
+  --color-line-row: #171f2a; /* 表格 / 列表行分隔线 */
+  --color-line-hover: #3a4757;
+  --color-btn-bg: #151c26;
+  --color-hover: #17212c; /* 幽灵按钮悬停底 */
+  --color-track: #2e3a49;
+  --color-thumb: #8a97a8;
+  --color-scrollbar: #24303e;
+  --color-scrollbar-hover: #33414f;
+  --color-glow: rgba(45, 212, 191, 0.1); /* 登录页顶部光晕 */
+  --color-chart-indigo: #818cf8;
+
+  /* 投影：亮色下纯黑阴影会糊成一团，必须换成带蓝的淡影 */
+  --shadow-pop: 0 12px 30px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --shadow-toast: 0 10px 30px rgba(0, 0, 0, 0.45);
+
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
+/* ── 亮色主题覆盖 ────────────────────────────────────────────────
+   只覆盖变量、不动任何工具类。`html.light` 特异性 (0,1,1) 高于 Tailwind 输出默认值的
+   `:root` (0,1,0)，而且这条规则不在任何 @layer 里 —— 未分层的规则一定压得住分层规则，
+   所以不依赖书写顺序。
+
+   配色思路：层级关系与暗色一致，只是方向反过来 ——
+   侧栏（浅灰）< 内容底（近白）< 卡片（纯白），凹陷元素（输入框、内嵌块）比卡片深。
+   青绿主色在两套里都保留，但亮色下必须换成 700 号段：原来的 #2dd4bf 压在白底上
+   对比度只有 1.9:1，正是「白底上写浅青字」看不清的典型。 */
+html.light {
+  --color-ink-950: #eceff5;
+  --color-ink-900: #f3f6fa;
+  --color-ink-875: #eef2f7;
+  --color-ink-850: #f9fbfd;
+  --color-ink-800: #eef2f7;
+  --color-ink-750: #f2f5fa;
+  --color-ink-700: #ffffff;
+  --color-ink-650: #e9eef5;
+
+  --color-line-1: #e3e8f0;
+  --color-line-2: #e6ebf2;
+  --color-line-3: #d7dee8;
+  --color-line-4: #c9d2df;
+
+  --color-text-1: #101827;
+  --color-text-2: #334155;
+  --color-text-3: #475569;
+  --color-text-4: #5b6675;
+  --color-text-5: #7b8794;
+  --color-text-6: #9aa5b1;
+
+  /* 亮色下的青绿要压到 700 号段：#2dd4bf 白底对比度只有 1.9:1，
+     而 #0f766e 压白底是 4.6:1（主按钮配白字）、压 accent-soft 是 4.4:1，
+     侧栏高亮文字与按钮文字都够看。 */
+  --color-accent: #0f766e;
+  --color-accent-deep: #115e59;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #e2f5f2;
+
+  --color-run: #16a34a;
+  --color-run-text: #15803d;
+  --color-stop: #94a3b8;
+  --color-stop-text: #64748b;
+  --color-warn: #d97706;
+  --color-warn-text: #b45309;
+  --color-err: #dc2626;
+  --color-err-text: #dc2626;
+
+  --color-accent-text: #0f766e;
+  --color-accent-hover: #115e59;
+  --color-accent-line: rgba(15, 118, 110, 0.45);
+  --color-accent-ring: rgba(15, 118, 110, 0.12);
+  --color-accent-row: rgba(15, 118, 110, 0.045);
+  --color-soft-accent: rgba(15, 118, 110, 0.06);
+  --color-line-accent-soft: rgba(15, 118, 110, 0.24);
+  --color-soft-ok: rgba(22, 163, 74, 0.08);
+  --color-soft-warn: rgba(217, 119, 6, 0.09);
+  --color-soft-err: rgba(220, 38, 38, 0.06);
+  --color-line-ok: rgba(22, 163, 74, 0.3);
+  --color-line-warn: rgba(217, 119, 6, 0.32);
+  --color-line-err: rgba(220, 38, 38, 0.28);
+  --color-line-row: #eaeff5;
+  --color-line-hover: #b2bfcf;
+  --color-btn-bg: #ffffff;
+  --color-hover: #eef2f7;
+  --color-track: #d5dde7;
+  --color-thumb: #94a3b8;
+  --color-scrollbar: #c6cfdb;
+  --color-scrollbar-hover: #a8b5c4;
+  --color-glow: rgba(15, 118, 110, 0.07);
+  --color-chart-indigo: #6366f1;
+
+  --shadow-pop: 0 10px 26px rgba(15, 23, 42, 0.14);
+  --shadow-modal: 0 18px 50px rgba(15, 23, 42, 0.18);
+  --shadow-toast: 0 8px 24px rgba(15, 23, 42, 0.12);
+
+  color-scheme: light;
+}
+
 @layer base {
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2a3644 transparent;
+    scrollbar-color: var(--color-scrollbar) transparent;
   }
   *::-webkit-scrollbar {
     width: 9px;
@@ -61,13 +186,13 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background: #24303e;
+    background: var(--color-scrollbar);
     border-radius: 999px;
     border: 2px solid transparent;
     background-clip: content-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: #33414f;
+    background: var(--color-scrollbar-hover);
     background-clip: content-box;
   }
 
@@ -138,24 +263,24 @@
     line-height: 1.6;
   }
   .dh-badge-run {
-    background: rgba(52, 211, 153, 0.13);
-    color: #4ade80;
+    background: var(--color-soft-ok);
+    color: var(--color-run-text);
   }
   .dh-badge-stop {
-    background: rgba(100, 116, 139, 0.16);
-    color: #94a3b8;
+    background: var(--color-line-2);
+    color: var(--color-stop-text);
   }
   .dh-badge-warn {
-    background: rgba(245, 165, 36, 0.15);
-    color: #fbbf24;
+    background: var(--color-soft-warn);
+    color: var(--color-warn-text);
   }
   .dh-badge-accent {
-    background: rgba(45, 212, 191, 0.12);
-    color: #5eead4;
+    background: var(--color-accent-soft);
+    color: var(--color-accent-text);
   }
   .dh-badge-err {
-    background: rgba(248, 113, 113, 0.14);
-    color: #fca5a5;
+    background: var(--color-soft-err);
+    color: var(--color-err-text);
   }
   .dh-badge-plain {
     background: var(--color-line-2);
@@ -173,7 +298,7 @@
     border-radius: 9px;
     border: 1px solid var(--color-line-4);
     color: var(--color-text-2);
-    background: #151c26;
+    background: var(--color-btn-bg);
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -183,7 +308,7 @@
       opacity 0.15s;
   }
   .dh-btn:hover:not(:disabled) {
-    border-color: #3a4757;
+    border-color: var(--color-line-hover);
     color: var(--color-text-1);
   }
   .dh-btn:disabled {
@@ -197,19 +322,18 @@
     font-weight: 600;
   }
   .dh-btn-primary:hover:not(:disabled) {
-    background: #5eead4;
-    border-color: #5eead4;
+    background: var(--color-accent-hover);
+    border-color: var(--color-accent-hover);
     color: var(--color-accent-ink);
   }
   .dh-btn-danger {
-    background: rgba(248, 113, 113, 0.12);
-    border-color: rgba(248, 113, 113, 0.4);
-    color: #fca5a5;
+    background: var(--color-soft-err);
+    border-color: var(--color-line-err);
+    color: var(--color-err-text);
   }
   .dh-btn-danger:hover:not(:disabled) {
-    background: rgba(248, 113, 113, 0.2);
-    border-color: rgba(248, 113, 113, 0.6);
-    color: #fecaca;
+    border-color: var(--color-err);
+    color: var(--color-err-text);
   }
   .dh-btn-ghost {
     background: transparent;
@@ -217,7 +341,7 @@
     color: var(--color-text-3);
   }
   .dh-btn-ghost:hover:not(:disabled) {
-    background: #17212c;
+    background: var(--color-hover);
     border-color: transparent;
     color: var(--color-text-1);
   }
@@ -245,8 +369,8 @@
   .dh-select:focus,
   .dh-textarea:focus {
     outline: none;
-    border-color: rgba(45, 212, 191, 0.55);
-    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.08);
+    border-color: var(--color-accent-line);
+    box-shadow: 0 0 0 3px var(--color-accent-ring);
   }
   .dh-textarea {
     resize: vertical;
@@ -255,7 +379,7 @@
   }
   .dh-select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a97a8' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
     padding-right: 30px;
@@ -287,14 +411,14 @@
   }
   .dh-table td {
     padding: 11px 14px;
-    border-bottom: 1px solid #171f2a;
+    border-bottom: 1px solid var(--color-line-row);
     vertical-align: middle;
   }
   .dh-table tr:last-child td {
     border-bottom: none;
   }
   .dh-table tbody tr:hover {
-    background: rgba(45, 212, 191, 0.035);
+    background: var(--color-accent-row);
   }
 
   /* 开关 */
@@ -304,7 +428,7 @@
     width: 34px;
     height: 19px;
     border-radius: 999px;
-    background: #2e3a49;
+    background: var(--color-track);
     border: none;
     padding: 0;
     cursor: pointer;
@@ -319,7 +443,7 @@
     width: 15px;
     height: 15px;
     border-radius: 50%;
-    background: #8a97a8;
+    background: var(--color-thumb);
     transition:
       left 0.18s,
       transform 0.18s,
@@ -376,26 +500,6 @@
     cursor: not-allowed;
   }
 
-  /* 头像圆点（设计稿 .avatar） */
-  .dh-avatar {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    flex: none;
-    border-radius: 50%;
-    background: #1f2b3a;
-    color: var(--color-text-4);
-    font-size: 11px;
-    font-weight: 600;
-    border: none;
-    cursor: pointer;
-  }
-  .dh-avatar:hover {
-    background: #26364a;
-    color: var(--color-text-1);
-  }
-
   /* 筛选 chip（设计稿 .chip） */
   .dh-chip {
     display: inline-flex;
@@ -420,7 +524,7 @@
   }
   .dh-chip[data-on='true'] {
     background: var(--color-accent-soft);
-    border-color: rgba(45, 212, 191, 0.5);
+    border-color: var(--color-accent-line);
     color: var(--color-accent);
   }
   .dh-chip:disabled {
@@ -467,6 +571,10 @@
   }
 
   /* 提示条（设计稿 .banner） */
+  /* ⚠ 这是 flex 容器：里面的文字**必须包在一层元素里**。
+     直接写裸文本时，文本会被当成独立的 flex item，中间夹一个 <b> 就让一句话
+     变成「文字 / 加粗 / 文字」并排的三列（桌面上只是间隙变大不易察觉，
+     手机上立刻错位）。审计脚本 audit-mobile.mjs 有对应断言。 */
   .dh-banner {
     display: flex;
     align-items: center;
@@ -476,19 +584,19 @@
     font-size: 13px;
   }
   .dh-banner-info {
-    background: rgba(45, 212, 191, 0.07);
-    border: 1px solid rgba(45, 212, 191, 0.28);
-    color: #99f6e4;
+    background: var(--color-soft-accent);
+    border: 1px solid var(--color-line-accent-soft);
+    color: var(--color-accent-text);
   }
   .dh-banner-warn {
-    background: rgba(245, 165, 36, 0.07);
-    border: 1px solid rgba(245, 165, 36, 0.3);
-    color: #fcd34d;
+    background: var(--color-soft-warn);
+    border: 1px solid var(--color-line-warn);
+    color: var(--color-warn-text);
   }
   .dh-banner-err {
-    background: rgba(248, 113, 113, 0.07);
-    border: 1px solid rgba(248, 113, 113, 0.35);
-    color: #fca5a5;
+    background: var(--color-soft-err);
+    border: 1px solid var(--color-line-err);
+    color: var(--color-err-text);
   }
 
   /* 页头（设计稿 .phead） */
@@ -513,13 +621,14 @@
     align-items: center;
     gap: 12px;
     padding: 9px 0;
-    border-bottom: 1px solid #171f2a;
+    border-bottom: 1px solid var(--color-line-row);
   }
   .dh-tl:last-child {
     border-bottom: none;
   }
 
   /* 登录卡片（设计稿 .lglogo / .field / .eye） */
+  /* 登录页的品牌方块：里面放 logo 图形（方案 C · 航向罗盘），不再是字母 D */
   .dh-lglogo {
     width: 42px;
     height: 42px;
@@ -528,8 +637,6 @@
     color: var(--color-accent-ink);
     display: grid;
     place-items: center;
-    font-size: 20px;
-    font-weight: 700;
     margin: 0 auto;
     flex: none;
   }
@@ -539,19 +646,22 @@
     gap: 8px;
     border: 1px solid var(--color-line-3);
     border-radius: 10px;
-    padding: 9px 11px;
+    /* 纵向内边距放在里面的 input 上（见下）—— 否则点输入框上下那圈 padding
+       不会聚焦，手机上看着是输入框、点下去没反应。外观完全一致。 */
+    padding: 0 11px;
     background: var(--color-ink-800);
     transition:
       border-color 0.15s,
       box-shadow 0.15s;
   }
   .dh-field:focus-within {
-    border-color: rgba(45, 212, 191, 0.55);
-    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.08);
+    border-color: var(--color-accent-line);
+    box-shadow: 0 0 0 3px var(--color-accent-ring);
   }
   .dh-field input {
     flex: 1;
     min-width: 0;
+    padding: 9px 0;
     border: none;
     background: transparent;
     outline: none;
@@ -602,6 +712,111 @@
   .dh-seg button[data-on='true'] {
     background: var(--color-accent-soft);
     color: var(--color-accent);
+  }
+
+  /* ==================================================================
+     触屏 / 窄屏适配（< lg）
+     ------------------------------------------------------------------
+     实测口径：fake/audit-mobile.mjs（390 / 360 / 768 三档视口，逐页 + 弹窗）。
+     <main> 是唯一的滚动容器 —— 卡片里任何一行只要比它宽，就会把整块内容区
+     推成横向可滚。手机上表现为「右半边要手指往左拨才看得见」，而桌面端
+     完全看不出来。这里分四类收敛：
+
+       ① 卡片头 / 页头允许换行，不把同行元素顶出卡片；
+       ② 分段控件自身可横滚（容器详情有 5 个 tab，360 宽刚好放不下）；
+       ③ 表格保持「列不拆、外层横滚」，但收紧内边距让更多列一次可见；
+       ④ 可点区域抬到 32-36px（拇指友好）；纯视觉尺寸尽量不动。
+
+     断点取 < lg（1024）而不是 < md（768）：
+       平板竖屏 768、横屏 1024、安卓平板 800 —— 按 767 卡会把整片平板漏掉，
+       而平板同样是纯触屏。①②③ 在能用得上时才生效（flex-wrap 放得下就不换行），
+       对窄桌面窗口没有副作用；桌面端截图（≥1280）完全不受影响。
+
+     说明：表格的横向滚动是有意为之 —— 手机屏放不下 7 列，拆列比横滚更难读。
+     ================================================================== */
+  @media (max-width: 1023.98px) {
+    /* ① 卡片头 / 页头换行 */
+    .dh-card-head,
+    .dh-phead {
+      flex-wrap: wrap;
+      row-gap: 8px;
+    }
+
+    /* ② 分段控件自己横滚，不撑破卡片头 */
+    .dh-seg {
+      flex: none;
+      max-width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .dh-seg button {
+      padding: 8px 13px;
+    }
+
+    /* ③ 表格：列不拆，外层横滚；内边距收紧 */
+    .dh-table th {
+      padding: 8px 10px;
+    }
+    .dh-table td {
+      padding: 10px;
+    }
+
+    /* ④ 点按目标 ≥ 32px */
+    .dh-btn {
+      min-height: 36px;
+      padding: 8px 14px;
+    }
+    .dh-btn-sm {
+      min-height: 34px;
+      padding: 7px 12px;
+    }
+    .dh-chip {
+      min-height: 34px;
+      padding: 7px 13px;
+    }
+    .dh-iconbtn {
+      width: 34px;
+      height: 34px;
+    }
+    .dh-input,
+    .dh-select,
+    .dh-textarea {
+      min-height: 38px;
+    }
+
+    /* 开关：滑轨与滑块一起放大，比例不变（桌面 34x19 → 触屏 46x30） */
+    .dh-switch {
+      width: 46px;
+      height: 30px;
+    }
+    .dh-switch::after {
+      width: 24px;
+      height: 24px;
+      top: 3px;
+      left: 3px;
+    }
+    .dh-switch[data-on='true']::after {
+      left: 19px;
+    }
+
+    /* 眼睛按钮：撑开点按区，视觉位置不变 */
+    .dh-eye {
+      padding: 8px 7px;
+      margin: -8px 0;
+    }
+
+    /* 标记类：把零散的小图标 / 文字按钮的点击区抬到 32px。
+       只作用于 < md；桌面端这两个类名没有定义，等于透明。 */
+    .dh-tap {
+      min-width: 32px;
+      min-height: 32px;
+    }
+    .dh-tap-txt {
+      display: flex;
+      align-items: center;
+      min-width: 32px;
+      min-height: 32px;
+    }
   }
 }
 

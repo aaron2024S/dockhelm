@@ -98,6 +98,8 @@ export const api = {
   post: <T>(path: string, body?: unknown, query?: Options['query']) =>
     request<T>(path, { method: 'POST', body, query }),
   put: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body }),
+  /** 局部更新：只提交要改的字段，其余由后端保持原值 */
+  patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
   del: <T>(path: string, query?: Options['query']) => request<T>(path, { method: 'DELETE', query }),
   /** 原始文本（容器日志用） */
   text: async (path: string, query?: Options['query']): Promise<string> => {

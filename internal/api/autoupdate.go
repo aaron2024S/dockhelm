@@ -9,7 +9,7 @@ import (
 	"github.com/aaron2024s/dockhelm/internal/updater"
 )
 
-// AutoRunItem 一轮自动更新里单台容器的去向。
+// AutoRunItem 一轮自动更新里单个容器的去向。
 type AutoRunItem struct {
 	Name   string `json:"name"`
 	Image  string `json:"image"`
@@ -20,8 +20,8 @@ type AutoRunItem struct {
 // AutoRunSummary 描述「一轮巡检 + 自动更新」的完整结果。
 //
 // 刻意把「检测到什么」与「做了什么」放在同一份结构里：自动更新最容易引起的
-// 疑问是「它到底动没动我的容器」，把 24 台容器各自的去向逐台列出来，
-// 才能一眼看出被跳过的是哪几台、为什么跳过。
+// 疑问是「它到底动没动我的容器」，把 24 个容器各自的去向逐个列出来，
+// 才能一眼看出被跳过的是哪几个、为什么跳过。
 type AutoRunSummary struct {
 	StartedAt  string       `json:"startedAt"`
 	FinishedAt string       `json:"finishedAt"`
@@ -30,9 +30,9 @@ type AutoRunSummary struct {
 	DryRun bool `json:"dryRun"`
 	// Checked 本轮巡检覆盖的容器数。
 	Checked int `json:"checked"`
-	// Available 巡检查出的「有可用更新」的台数。
+	// Available 巡检查出的「有可用更新」的个数。
 	Available int `json:"available"`
-	// Updated / Failed 真正重建成功的台数 / 失败的台数。
+	// Updated / Failed 真正重建成功的个数 / 失败的个数。
 	Updated int `json:"updated"`
 	Failed  int `json:"failed"`
 	// ReclaimedMB 清理旧镜像回收的空间。
@@ -45,7 +45,7 @@ type AutoRunSummary struct {
 
 // hGetAutoUpdate 返回自动更新的配置、下一次巡检时间、候选预览与上一轮结果。
 //
-// 「候选预览」是本接口的重点：它把「如果现在执行，会动哪几台、跳过哪几台、
+// 「候选预览」是本接口的重点：它把「如果现在执行，会动哪几个、跳过哪几个、
 // 为什么跳过」算好给前端，用户不必等到容器真的被重启才发现自己被排除列表漏掉了。
 func (s *Server) hGetAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	cfg := s.readSettings()
@@ -162,13 +162,29 @@ func (s *Server) autoLoop(ctx context.Context) {
 			}
 			timer.Reset(s.nextInterval())
 		case <-timer.C:
-			cfg := s.readSettings()
-			if cfg.CheckIntervalHours > 0 {
-				s.runAutoCycle(ctx, "schedule", true)
+			if ok, execute := scheduledRun(s.readSettings()); ok {
+				s.runAutoCycle(ctx, "schedule", execute)
 			}
 			timer.Reset(s.nextInterval())
 		}
 	}
+}
+
+// scheduledRun 决定「定时循环到点时：跑不跑 / 跑的话动不动手」。
+//
+// 返回 ok=false 表示这一轮什么都不做；ok=true 时 execute 表示允许真的更新容器。
+//
+// 🚨 单独抽出来是因为这里**曾经把 execute 写死成 true**：定时循环会无视
+// 「检测到新版本后自动更新」这个总开关，在启动 2 分钟后真的去更新容器。
+// 2026-10-09 真机事故 —— 用户从没打开过自动更新，却在总览里看到一条
+// 「自动更新：更新 0 个容器，失败 1 个容器」，还连带停了一个容器。
+// 判断只有两行，但它是「未经许可绝不动用户的容器」这条底线的唯一落点，
+// 所以抽成纯函数并用测试钉住（见 autoupdate_test.go）。
+func scheduledRun(cfg Settings) (ok, execute bool) {
+	if cfg.CheckIntervalHours <= 0 {
+		return false, false
+	}
+	return true, cfg.AutoApply
 }
 
 // nextInterval 返回下一次巡检的间隔。关闭时给一个长兜底，
@@ -200,6 +216,12 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	}()
 
 	cfg := s.readSettings()
+	// 双保险：除「用户在界面上手动点立即执行」外，任何执行都必须以总开关打开为前提。
+	// 调用方（定时循环）已经判过一次，但那是一个容易在重构里被弄丢的判断 ——
+	// 「未经许可动了用户的容器」是最不能容忍的故障，这里再兜一次。
+	if execute && !cfg.AutoApply && trigger != "manual" {
+		execute = false
+	}
 	started := time.Now()
 	summary := &AutoRunSummary{
 		StartedAt: started.UTC().Format(time.RFC3339),
@@ -254,7 +276,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 		s.nt.Emit("update_available", map[string]string{
 			"container": "",
 			"result":    "检测到新版本",
-			"message":   "本轮巡检发现 " + itoa(summary.Available) + " 台容器有可用更新",
+			"message":   "本轮巡检发现 " + itoa(summary.Available) + " 个容器有可用更新",
 		})
 	}
 
@@ -313,9 +335,9 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	s.autoLast = summary
 	s.autoMu.Unlock()
 
-	msg := "自动更新：更新 " + itoa(summary.Updated) + " 台，失败 " + itoa(summary.Failed) + " 台"
+	msg := "自动更新：更新 " + itoa(summary.Updated) + " 个容器，失败 " + itoa(summary.Failed) + " 个容器"
 	if note != "" {
-		msg = "自动巡检：" + itoa(summary.Available) + " 台有可用更新（" + note + "）"
+		msg = "自动巡检：" + itoa(summary.Available) + " 个容器有可用更新（" + note + "）"
 	}
 	s.st.AddRunLog("auto_update", summary.Trigger, "done", msg, "")
 	s.bus.Publish("update", "auto_done", "success", map[string]any{
@@ -325,7 +347,7 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	})
 	if summary.Updated > 0 || summary.Failed > 0 {
 		s.nt.Emit("auto_update_done", map[string]string{
-			"container": itoa(summary.Updated + summary.Failed) + " 台",
+			"container": itoa(summary.Updated + summary.Failed) + " 个容器",
 			"result":    "自动更新完成",
 			"message":   msg,
 		})

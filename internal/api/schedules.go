@@ -66,8 +66,9 @@ func (s *Server) validateSchedule(in scheduleReq) (string, bool) {
 		return err.Error(), false
 	}
 	if a := scheduler.ActionMap[in.Action]; a.NeedsTargets && len(in.Targets) == 0 {
-		// 空 = 全部，这是允许的；但备份任务作用于全部容器通常不是本意，给个软提示在 UI 上做
-		_ = a
+		// 空目标**不再**等于「全部容器」：那会让一次误操作作用到整机所有容器，
+		// 而且界面上看不出来。必须明确勾选。
+		return "请至少选择一个容器（「不选」不再等于全部容器）", false
 	}
 	return "", true
 }
@@ -129,6 +130,43 @@ func (s *Server) hUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.sch.Reload(); err != nil {
 		writeErr(w, http.StatusInternalServerError, "任务已保存但调度器重载失败："+err.Error())
+		return
+	}
+	writeOK(w, cur)
+}
+
+type scheduleEnabledReq struct {
+	Enabled bool `json:"enabled"`
+}
+
+// hSetScheduleEnabled 只切换启用状态。
+//
+// 单独开一个口子，是因为「启用/停用」与「任务定义合不合法」是两件事：
+// 老版本存下来的任务可能是空目标（当时「不选 = 全部容器」），走 PUT 会带着整份定义
+// 去过新校验、连停用都停不掉。
+func (s *Server) hSetScheduleEnabled(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(pathParam(r, "id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "任务 ID 无效")
+		return
+	}
+	var in scheduleEnabledReq
+	if err := decodeBody(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		return
+	}
+	cur, err := s.st.GetSchedule(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	cur.Enabled = in.Enabled
+	if err := s.st.UpdateSchedule(*cur); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.sch.Reload(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "状态已保存但调度器重载失败："+err.Error())
 		return
 	}
 	writeOK(w, cur)

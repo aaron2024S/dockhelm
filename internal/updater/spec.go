@@ -171,6 +171,30 @@ func mapCopy(v any) map[string]any {
 	return dst
 }
 
+// EnsureCreateSpec 在真正调用 /containers/create 之前校验请求体，
+// 并把「能修的那种缺失」就地补好。更新与还原共用这一份，避免两处漂移。
+//
+// 返回 patched（本次补进去的镜像引用，可能为空）与 fail（失败原因，空表示可用）。
+//
+// 为什么值得单独做一步：请求体是从 inspect/快照这类**外部来源**拼出来的，
+// 缺字段是可能的；而缺字段的代价发生在很后面 —— 旧容器已经停掉、改了名，
+// 才发现创建请求根本发不出去，然后走回滚。这类判断没有任何理由拖到那一步。
+func EnsureCreateSpec(cfg, insp map[string]any) (patched, fail string) {
+	if len(cfg) == 0 {
+		return "", "读不到容器配置（没有 Config）"
+	}
+	if img, _ := cfg["Image"].(string); img != "" {
+		return "", ""
+	}
+	// Config.Image 极端情况下会缺。退回用顶层镜像 ID —— 那正是这个容器
+	// 此刻实际在跑的镜像，用它建出来的新容器与原来一致。
+	if id, _ := insp["Image"].(string); id != "" {
+		cfg["Image"] = id
+		return id, ""
+	}
+	return "", "既没有镜像引用也没有镜像 ID"
+}
+
 // NetworkNameSet 把网络列表转成集合（供 BuildCreateSpec 过滤已删除的网络）。
 func NetworkNameSet(nets []map[string]any) map[string]bool {
 	out := map[string]bool{}

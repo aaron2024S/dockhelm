@@ -115,20 +115,26 @@ function onEnter() {
       </div>
       <div class="text-[14px] font-semibold tracking-[.2px]">Dockhelm</div>
       <div class="text-[12px] text-text-4">登录与账户</div>
-      <div class="ml-auto">
-        <div class="dh-avatar" title="登录后可在这里进入账户设置">A</div>
-      </div>
     </header>
 
     <div class="relative flex flex-1 flex-col items-center justify-center gap-[14px] px-5 py-10">
       <!-- 顶部柔光，对应设计稿 .lgpane.soft -->
       <div
         class="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
-        style="background: radial-gradient(560px 260px at 50% 0%, rgba(45, 212, 191, 0.1), transparent 72%)"
+        style="background: radial-gradient(560px 260px at 50% 0%, var(--color-glow), transparent 72%)"
       />
 
       <div class="relative flex w-[312px] flex-col gap-[13px] rounded-[16px] border border-line-1 bg-ink-700 p-[22px]">
-        <div class="dh-lglogo">D</div>
+        <div class="dh-lglogo">
+          <svg viewBox="0 0 32 32" class="h-[23px] w-[23px]">
+            <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.5" />
+            <path
+              fill-rule="evenodd"
+              fill="currentColor"
+              d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+            />
+          </svg>
+        </div>
 
         <div class="text-center">
           <div class="text-[16px] font-semibold">{{ title }}</div>
@@ -181,7 +187,7 @@ function onEnter() {
                   @keyup.enter="onEnter"
                 />
               </div>
-              <div v-if="confirm && confirm !== password" class="mt-[5px] text-[11.5px] text-[#fca5a5]">
+              <div v-if="confirm && confirm !== password" class="mt-[5px] text-[11.5px] text-err-text">
                 两次输入不一致
               </div>
             </div>
@@ -217,7 +223,7 @@ function onEnter() {
             v-if="!isSetup"
             class="flex cursor-pointer items-center gap-2 text-[12px] text-text-3"
           >
-            <input v-model="keep" type="checkbox" class="h-[14px] w-[14px] accent-[#2dd4bf]" />
+            <input v-model="keep" type="checkbox" class="h-[14px] w-[14px] accent-accent" />
             保持登录（7 天，勾选延长到 30 天）
           </label>
 

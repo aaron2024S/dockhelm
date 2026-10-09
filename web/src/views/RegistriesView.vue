@@ -8,7 +8,6 @@ import {
   Info,
   Loader2,
   Plus,
-  RefreshCw,
   Rocket,
   Save,
   Trash2,
@@ -17,12 +16,14 @@ import {
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { MirrorConfig, RegistriesResponse, Settings } from '@/api/types'
+import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import SettingRow from '@/components/SettingRow.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
 const toast = useToastStore()
+const app = useAppStore()
 const data = ref<RegistriesResponse | null>(null)
 const loading = ref(true)
 const testing = ref(false)
@@ -32,13 +33,28 @@ const newNote = ref('')
 const copied = ref(false)
 const saving = ref(false)
 
-const mirrors = computed<MirrorConfig[]>(() => data.value?.settings.mirrors ?? [])
+const mirrors = computed<MirrorConfig[]>(() => data.value?.settings?.mirrors ?? [])
 const suggestions = computed<MirrorConfig[]>(() => data.value?.suggestions ?? [])
 const daemonMirrors = computed<string[]>(() => data.value?.daemonMirrors ?? [])
+
+/** 与后端 normalizeMirror 同口径：忽略大小写与结尾斜杠。 */
+function urlKey(u: string) {
+  return u.trim().toLowerCase().replace(/\/+$/, '')
+}
+
+/**
+ * 「我的加速源」里已经有的地址。
+ *
+ * 推荐区据此把那一行标成「已添加」，而不是整行抹掉 —— 否则添加一条就少一条，
+ * 全加完整个「推荐加速源」栏位会凭空消失。后端现在也始终返回完整的内置清单。
+ */
+const addedKeys = computed(() => new Set(mirrors.value.map((m) => urlKey(m.url))))
+const isAdded = (s: MirrorConfig) => addedKeys.value.has(urlKey(s.url))
+
 const pullMirror = computed({
-  get: () => data.value?.settings.pullMirror ?? '',
+  get: () => data.value?.settings?.pullMirror ?? '',
   set: (v: string) => {
-    if (data.value) data.value.settings.pullMirror = v
+    if (data.value?.settings) data.value.settings.pullMirror = v
   },
 })
 
@@ -56,12 +72,24 @@ async function load() {
 async function save() {
   if (!data.value) return
   saving.value = true
+  let registrySaved = false
   try {
     await api.put('/api/registries', { settings: data.value.settings })
+    registrySaved = true
+    // directFirst 属于全局设置。用 PATCH 只提交这一个键 ——
+    // 以前是整份 Settings PUT 回去，会把这个页面进页面之后在设置页改的东西一起还原。
+    if (policy.value) {
+      policy.value = await api.patch<Settings>('/api/settings', { directFirst: policy.value.directFirst })
+    }
+    void app.loadSettings()
     toast.success('已保存')
     await load()
   } catch (e) {
-    toast.error('保存失败', e instanceof Error ? e.message : String(e))
+    // 两段保存是分开的：说清哪一段成了、哪一段没成，别只丢一句「保存失败」
+    toast.error(
+      registrySaved ? '加速源已保存，但 directFirst 策略没保存成功' : '保存失败',
+      e instanceof Error ? e.message : String(e),
+    )
   } finally {
     saving.value = false
   }
@@ -70,31 +98,49 @@ async function save() {
 function addMirror() {
   const url = newUrl.value.trim()
   if (!url || !data.value) return
+  // 去重：列表用 url 当 key，允许重复会让 Vue 报重复 key、按索引删还会删错行
+  if (mirrors.value.some((m) => urlKey(m.url) === urlKey(url))) {
+    toast.error('这个地址已经在列表里了')
+    return
+  }
   data.value.settings.mirrors.push({ url, note: newNote.value.trim(), enabled: true })
   newUrl.value = ''
   newNote.value = ''
 }
 
 function addSuggestion(s: MirrorConfig) {
-  if (!data.value) return
+  if (!data.value || isAdded(s)) return
   data.value.settings.mirrors.push({ ...s, enabled: true })
-  data.value.suggestions = data.value.suggestions.filter((x) => x.url !== s.url)
 }
 
 function removeMirror(idx: number) {
   data.value?.settings.mirrors.splice(idx, 1)
 }
 
+/** 把测速结果按地址写回列表里对应的那一行。 */
+function applyResults(list: MirrorConfig[], results: MirrorConfig[]) {
+  for (const r of results) {
+    const hit = list.find((x) => urlKey(x.url) === urlKey(r.url))
+    if (!hit) continue
+    hit.latencyMs = r.latencyMs
+    hit.ok = r.ok
+    hit.err = r.err
+    hit.lastTested = r.lastTested
+  }
+}
+
 async function testOne(url: string) {
   testingUrl.value = url
   try {
     const res = await api.post<MirrorConfig>('/api/registries/test', { url })
+    // 只把结果写回本地，不整页重载 —— 重载会把还没点「保存」的添加/删除一起丢掉
+    applyResults(mirrors.value, [res])
+    applyResults(suggestions.value, [res])
     if (res.ok) {
       toast.success(`${res.url} 可用`, `延迟 ${res.latencyMs} ms`)
     } else {
       toast.error(`${res.url} 不可用`, res.err || '连接失败')
     }
-    await load()
   } catch (e) {
     toast.error('测速失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -106,12 +152,15 @@ async function testAll() {
   testing.value = true
   try {
     const urls = [
-      ...mirrors.value.map((m) => m.url),
-      ...suggestions.value.map((s) => s.url),
+      ...new Set([
+        ...mirrors.value.map((m) => m.url),
+        ...suggestions.value.map((s) => s.url),
+      ]),
     ]
-    await api.post('/api/registries/test-all', { urls })
-    toast.success('测速完成', '结果已按延迟排序并保存')
-    await load()
+    const res = await api.post<{ results: MirrorConfig[] }>('/api/registries/test-all', { urls })
+    applyResults(mirrors.value, res.results ?? [])
+    applyResults(suggestions.value, res.results ?? [])
+    toast.success('测速完成', '结果已写回各自那一行')
   } catch (e) {
     toast.error('批量测速失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -137,36 +186,29 @@ async function copySnippet() {
   }
 }
 
+/** 徽标配色：以「测没测过」为准（lastTested 为空 = 从未测过）。 */
 const latencyTone = (m: MirrorConfig) => {
-  if (m.ok === undefined) return 'dh-badge-plain'
+  if (!m.lastTested) return 'dh-badge-plain'
   if (!m.ok) return 'dh-badge-err'
   if ((m.latencyMs ?? 9999) < 300) return 'dh-badge-run'
   if ((m.latencyMs ?? 9999) < 1200) return 'dh-badge-warn'
   return 'dh-badge-plain'
 }
 
-/** 拉取与检测策略：与设置页写的是同一份数据，两处都能改。 */
+/**
+ * 本页只借 /api/settings 里的一个开关：directFirst（显式域名优先）。
+ *
+ * 「并发度」「检测频率」「检测后通知」这些旋钮已经完整存在于「设置 → 更新与检测」，
+ * 这里再放一份就是同一份配置的第二、第三个入口 —— 改了一处不知道另一处也会变，
+ * 所以本页不再重复提供，只保留与「加速源怎么用」直接相关的那一项。
+ */
 const policy = ref<Settings | null>(null)
-const savingPolicy = ref(false)
 
 async function loadPolicy() {
   try {
     policy.value = await api.get<Settings>('/api/settings')
   } catch {
     policy.value = null
-  }
-}
-
-async function savePolicy() {
-  if (!policy.value) return
-  savingPolicy.value = true
-  try {
-    policy.value = await api.put<Settings>('/api/settings', policy.value)
-    toast.success('已保存', '拉取与检测设置立即生效')
-  } catch (e) {
-    toast.error('保存失败', e instanceof Error ? e.message : String(e))
-  } finally {
-    savingPolicy.value = false
   }
 }
 
@@ -198,7 +240,7 @@ onMounted(() => {
       </div>
       <div class="dh-card-body flex flex-col gap-2.5">
         <div class="text-[12px] leading-relaxed text-text-4">{{ data?.explain }}</div>
-        <div v-if="data?.daemonError" class="text-[12px] text-[#fca5a5]">
+        <div v-if="data?.daemonError" class="text-[12px] text-err-text">
           无法读取守护进程信息：{{ data.daemonError }}
         </div>
         <div v-else-if="daemonMirrors.length" class="flex flex-wrap gap-1.5">
@@ -251,11 +293,11 @@ onMounted(() => {
           <div
             v-for="(m, i) in mirrors"
             :key="m.url"
-            class="flex flex-wrap items-center gap-2 border-b border-[#171f2a] px-3 py-2.5 last:border-b-0"
+            class="flex flex-wrap items-center gap-2 border-b border-line-row px-3 py-2.5 last:border-b-0"
           >
             <input
               type="checkbox"
-              class="h-[14px] w-[14px] accent-[#2dd4bf]"
+              class="h-[14px] w-[14px] accent-accent"
               :checked="m.enabled"
               @change="m.enabled = !m.enabled"
               title="启用这个加速源"
@@ -264,7 +306,7 @@ onMounted(() => {
               <div class="truncate font-mono text-[11.5px] text-text-2">{{ m.url }}</div>
               <div v-if="m.note" class="text-[11px] text-text-5">{{ m.note }}</div>
             </div>
-            <span v-if="m.ok !== undefined" class="dh-badge" :class="latencyTone(m)">
+            <span v-if="m.lastTested" class="dh-badge" :class="latencyTone(m)">
               <CheckCircle2 v-if="m.ok" class="h-3 w-3" />
               <XCircle v-else class="h-3 w-3" />
               {{ m.ok ? m.latencyMs + ' ms' : '不可用' }}
@@ -286,24 +328,32 @@ onMounted(() => {
             <Zap class="h-3.5 w-3.5 text-text-4" />
             <span>Dockhelm 自己的拉取策略</span>
           </div>
-          <div class="dh-card-body flex flex-col gap-3">
-            <div>
-              <label class="dh-label">拉取加速源</label>
-              <select v-model="pullMirror" class="dh-select">
-                <option value="">不指定（完全交给 Docker 守护进程）</option>
-                <option v-for="m in mirrors" :key="m.url" :value="m.url">{{ m.url }}</option>
-              </select>
-              <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-5">
-                保持「不指定」时，拉取行为与手动执行 <code class="text-text-3">docker pull</code> 完全一致。
-                如果你没法改 daemon.json，可以在这里指定一个加速源：Dockhelm 会用
-                <code class="text-text-3">&lt;加速站&gt;/&lt;仓库&gt;:&lt;标签&gt;</code> 拉取，
-                拉完再打回原始标签，compose 与其它工具仍然按原来的名字找得到镜像。
-                <br />
-                <b class="text-text-3">注意</b>：只对来自 Docker Hub 的镜像生效。
-              </div>
+        <div class="dh-card-body flex flex-col gap-3">
+          <div>
+            <label class="dh-label">拉取加速源</label>
+            <select v-model="pullMirror" class="dh-select">
+              <option value="">不指定（完全交给 Docker 守护进程）</option>
+              <option v-for="m in mirrors" :key="m.url" :value="m.url">{{ m.url }}</option>
+            </select>
+            <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-5">
+              保持「不指定」时，拉取行为与手动执行 <code class="text-text-3">docker pull</code> 完全一致。
+              如果你没法改 daemon.json，可以在这里指定一个加速源：Dockhelm 会用
+              <code class="text-text-3">&lt;加速站&gt;/&lt;仓库&gt;:&lt;标签&gt;</code> 拉取，
+              拉完再打回原始标签，compose 与其它工具仍然按原来的名字找得到镜像。
+              <br />
+              <b class="text-text-3">注意</b>：只对来自 Docker Hub 的镜像生效。
             </div>
-            <button class="dh-btn dh-btn-primary" :disabled="saving" @click="save">保存设置</button>
           </div>
+          <div v-if="policy" class="border-t border-line-1 pt-3">
+            <SettingRow title="显式域名优先，不套用加速" sub="ghcr.io、私有仓库等已经写明域名的镜像直连 —— 加速站通常只镜像 Docker Hub">
+              <ToggleSwitch v-model="policy.directFirst" label="显式域名优先" />
+            </SettingRow>
+          </div>
+          <button class="dh-btn dh-btn-primary" :disabled="saving" @click="save">
+            <Loader2 v-if="saving" class="h-3.5 w-3.5 dh-spin" />
+            <Save v-else class="h-3.5 w-3.5" />保存设置
+          </button>
+        </div>
         </div>
 
         <!-- daemon.json 片段 -->
@@ -334,88 +384,42 @@ onMounted(() => {
         <Rocket class="h-3.5 w-3.5 text-text-4" />
         <span>推荐加速源</span>
         <span class="ml-auto text-[11.5px] font-normal text-text-5">
-          点「添加」加入列表；这些只是起点，可用性请用测速确认
+          点「添加」加入「我的加速源」，已添加的会标记出来；这些只是起点，可用性请用测速确认
         </span>
       </div>
-      <div class="grid grid-cols-1 gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
+      <div id="mirror-suggest" class="grid grid-cols-1 gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
         <div
           v-for="s in suggestions"
           :key="s.url"
-          class="flex items-center gap-2 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2"
+          class="flex items-center gap-2 rounded-[10px] border px-3 py-2"
+          :class="isAdded(s) ? 'border-line-1 bg-ink-900 opacity-70' : 'border-line-1 bg-ink-800'"
         >
           <div class="min-w-0 flex-1">
             <div class="truncate font-mono text-[11.5px] text-text-2">{{ s.url }}</div>
             <div class="text-[11px] text-text-5">{{ s.note }}</div>
           </div>
-          <span v-if="s.ok !== undefined" class="dh-badge" :class="latencyTone(s)">
+          <span v-if="s.lastTested" class="dh-badge" :class="latencyTone(s)">
             {{ s.ok ? s.latencyMs + ' ms' : '不可用' }}
           </span>
-          <button class="dh-btn dh-btn-sm" @click="testOne(s.url)">
-            <Zap class="h-3 w-3" />
-          </button>
-          <button class="dh-btn dh-btn-sm" @click="addSuggestion(s)">
-            <Plus class="h-3 w-3" />添加
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 拉取与更新 ／ 检测 -->
-    <div v-if="policy" class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-      <div class="dh-card">
-        <div class="dh-card-head">
-          <Gauge class="h-3.5 w-3.5 text-text-4" />
-          <span>拉取与更新</span>
-          <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="savingPolicy" @click="savePolicy">
-            <Loader2 v-if="savingPolicy" class="h-3 w-3 dh-spin" />
-            <Save v-else class="h-3 w-3" />保存
-          </button>
-        </div>
-        <div class="flex flex-col gap-3 p-3.5">
-          <SettingRow title="显式域名优先，不套用加速" sub="ghcr.io、私有仓库等直连 —— 加速站通常只镜像 Docker Hub">
-            <ToggleSwitch v-model="policy.directFirst" label="显式域名优先" />
-          </SettingRow>
-          <SettingRow title="并发更新" sub="串行最稳，可调 1–8（越高越容易触发仓库限流）">
-            <select v-model.number="policy.concurrency" class="dh-select !w-[130px] !py-[5px] !text-[11.5px]">
-              <option :value="1">1（串行）</option>
-              <option :value="2">2（推荐）</option>
-              <option :value="3">3</option>
-              <option :value="4">4</option>
-              <option :value="6">6</option>
-              <option :value="8">8</option>
-            </select>
-          </SettingRow>
-          <SettingRow title="更新前保留原容器" sub="重建期间旧容器改名保留，失败时以原名与状态复活">
-            <span class="dh-badge dh-badge-plain">始终开启</span>
-          </SettingRow>
-        </div>
-      </div>
-
-      <div class="dh-card">
-        <div class="dh-card-head">
-          <RefreshCw class="h-3.5 w-3.5 text-text-4" />
-          <span>检测</span>
-        </div>
-        <div class="flex flex-col gap-3 p-3.5">
-          <SettingRow
-            title="检测频率"
-            :sub="policy.checkIntervalHours > 0 ? `每 ${policy.checkIntervalHours} 小时自动扫描一次` : '关闭后只在手动点「重新检测」时才检查'"
+          <button
+            class="dh-btn dh-btn-sm"
+            :disabled="testingUrl === s.url"
+            title="测这个加速源的延迟"
+            @click="testOne(s.url)"
           >
-            <select v-model.number="policy.checkIntervalHours" class="dh-select !w-[130px] !py-[5px] !text-[11.5px]">
-              <option :value="0">关闭</option>
-              <option :value="1">每 1 小时</option>
-              <option :value="3">每 3 小时</option>
-              <option :value="6">每 6 小时</option>
-              <option :value="12">每 12 小时</option>
-              <option :value="24">每 24 小时</option>
-            </select>
-          </SettingRow>
-          <SettingRow title="摘要来源" sub="由本机 Docker 守护进程解析，与 docker pull 同源">
-            <span class="dh-badge dh-badge-plain">推荐</span>
-          </SettingRow>
-          <SettingRow title="检测完成后通知" sub="支持企微 / Telegram / Bark / Webhook 等已配置渠道">
-            <ToggleSwitch v-model="policy.notifyOnCheck" label="检测完成后通知" />
-          </SettingRow>
+            <Zap class="h-3 w-3" :class="testingUrl === s.url ? 'dh-spin' : ''" />
+          </button>
+          <button
+            class="dh-btn dh-btn-sm"
+            :class="isAdded(s) ? '' : 'dh-btn-primary'"
+            :disabled="isAdded(s)"
+            :title="isAdded(s) ? '已经在「我的加速源」里了' : '加入「我的加速源」'"
+            @click="addSuggestion(s)"
+          >
+            <CheckCircle2 v-if="isAdded(s)" class="h-3 w-3" />
+            <Plus v-else class="h-3 w-3" />
+            {{ isAdded(s) ? '已添加' : '添加' }}
+          </button>
         </div>
       </div>
     </div>

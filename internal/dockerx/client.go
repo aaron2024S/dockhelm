@@ -383,16 +383,44 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force, removeVo
 
 // CreateContainer 创建容器。config / hostConfig 直接来自 Inspect 的对应字段，
 // 这样挂载、端口、环境、网络、重启策略等全部原样保留 —— 这是「忠实克隆」的关键。
+//
+// 🚨 请求体必须**摊平**：Config 的字段（Image / Cmd / Env / Labels…）与
+// HostConfig、NetworkingConfig 同级，**顶层没有 "Config" 这个键**。
+// 这不是风格问题，而是 Docker 的接口形状：
+//
+// 守护进程把请求体解进 types.ContainerCreateConfig，这个结构是
+//
+//	type ContainerCreateConfig struct {
+//		Name string
+//		*container.Config   // ← 内嵌指针，JSON 里被摊平
+//		HostConfig       *HostConfig
+//		NetworkingConfig *NetworkConfig
+//	}
+//
+// 内嵌指针只有在「顶层出现了它的某个字段」时才会被分配。把配置塞进 "Config"
+// 子对象，守护进程会把这个未知键**静默忽略**，于是 Config 保持 nil，回一个
+// 400 "config cannot be empty in order to create a container"（moby
+// daemon/create.go 里 `if opts.params.Config == nil` 的那条）。官方 SDK 的
+// configWrapper 同样是内嵌结构，所以它发出去的也是摊平体。
+//
+// 2026-10-09 真机踩过：此前发的是 {"Config":{...}}，只有本仓库自带的假守护进程
+// （压根不读请求体）会接受，真实 Docker 一律 400 —— 也就是说「重建容器」
+// （更新与还原）在真机上从来没成功过。
 func (c *Client) CreateContainer(ctx context.Context, name string, config, hostConfig map[string]any, networking map[string]any) (string, error) {
+	if len(config) == 0 {
+		// 交给守护进程只会换来一句难以理解的 400，这里先说清楚是谁的问题
+		return "", errors.New("容器配置为空，拒绝创建（Config 里至少要有 Image）")
+	}
 	q := url.Values{}
 	if name != "" {
 		q.Set("name", name)
 	}
-	body := map[string]any{
-		"HostConfig": hostConfig,
+	body := make(map[string]any, len(config)+2)
+	for k, v := range config {
+		body[k] = v
 	}
-	if config != nil {
-		body["Config"] = config
+	if hostConfig != nil {
+		body["HostConfig"] = hostConfig
 	}
 	if networking != nil {
 		body["NetworkingConfig"] = networking

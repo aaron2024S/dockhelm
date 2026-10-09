@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
@@ -213,5 +214,87 @@ func TestBuildCreateSpecVolumeWithoutNameIsDropped(t *testing.T) {
 	_, hc, _ := BuildCreateSpec(insp, nil)
 	if _, ok := hc["Mounts"]; ok {
 		t.Error("无法确定卷名的挂载应被丢弃")
+	}
+}
+
+// TestEnsureCreateSpec 校验「动手之前的那道闸」。
+func TestEnsureCreateSpec(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      map[string]any
+		insp     map[string]any
+		wantFail string // 非空表示期望失败，值会被当成子串匹配
+		wantImg  string // 期望被补上的镜像引用
+	}{
+		{
+			name: "配置齐全直接就过",
+			cfg:  map[string]any{"Image": "nginx:1.27-alpine"},
+			insp: map[string]any{"Image": "sha256:aaaa"},
+		},
+		{
+			name:     "完全没有配置",
+			cfg:      nil,
+			insp:     map[string]any{"Image": "sha256:aaaa"},
+			wantFail: "没有 Config",
+		},
+		{
+			name:     "空配置",
+			cfg:      map[string]any{},
+			insp:     map[string]any{},
+			wantFail: "没有 Config",
+		},
+		{
+			name:    "缺镜像引用时退回顶层镜像 ID",
+			cfg:     map[string]any{"Cmd": []any{"x"}},
+			insp:    map[string]any{"Image": "sha256:aaaa"},
+			wantImg: "sha256:aaaa",
+		},
+		{
+			name:     "既没有引用也没有 ID 才放弃",
+			cfg:      map[string]any{"Env": []any{"A=1"}},
+			insp:     map[string]any{},
+			wantFail: "镜像 ID",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patched, fail := EnsureCreateSpec(tc.cfg, tc.insp)
+			if tc.wantFail != "" {
+				if fail == "" {
+					t.Fatalf("期望失败（含 %q），却通过了", tc.wantFail)
+				}
+				if !strings.Contains(fail, tc.wantFail) {
+					t.Fatalf("失败原因里没有 %q：%s", tc.wantFail, fail)
+				}
+				return
+			}
+			if fail != "" {
+				t.Fatalf("不该失败：%s", fail)
+			}
+			if patched != tc.wantImg {
+				t.Fatalf("补上的镜像引用应为 %q，实际 %q", tc.wantImg, patched)
+			}
+			if tc.wantImg != "" {
+				if got, _ := tc.cfg["Image"].(string); got != tc.wantImg {
+					t.Fatalf("修补结果没写回 cfg：Image=%q", got)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildCreateSpecPassesEnsure 真实形状的 inspect 拼出来的请求体必须能过闸。
+// 这条把「拼装」与「校验」串起来：任何一边改动导致结果不可用都会被拦住。
+func TestBuildCreateSpecPassesEnsure(t *testing.T) {
+	insp := fakeInspect()
+	cfg, hostCfg, _ := BuildCreateSpec(insp, nil)
+	if _, fail := EnsureCreateSpec(cfg, insp); fail != "" {
+		t.Fatalf("从 inspect 拼出的请求体不该被判为不可用：%s", fail)
+	}
+	if img, _ := cfg["Image"].(string); img != "redis:alpine" {
+		t.Fatalf("Configuration.Image 应被保留，实际 %q", img)
+	}
+	if _, ok := hostCfg["Mounts"]; !ok {
+		t.Fatal("挂载应从顶层 Mounts 重建后写进 HostConfig")
 	}
 }

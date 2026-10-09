@@ -6,6 +6,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,6 +148,7 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/schedules/{id}", a(s.hUpdateSchedule))
 	m.HandleFunc("DELETE /api/schedules/{id}", a(s.hDeleteSchedule))
 	m.HandleFunc("POST /api/schedules/{id}/run", a(s.hRunSchedule))
+	m.HandleFunc("POST /api/schedules/{id}/enabled", a(s.hSetScheduleEnabled))
 	m.HandleFunc("GET /api/schedules/actions", a(s.hScheduleActions))
 
 	m.HandleFunc("GET /api/registries", a(s.hGetRegistries))
@@ -180,6 +182,8 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/settings", a(s.hGetSettings))
 	m.HandleFunc("PUT /api/settings", a(s.hSaveSettings))
+	// PATCH 只改请求体里出现过的键 —— 设置项分散在三个页面里，整份替换会互相覆盖
+	m.HandleFunc("PATCH /api/settings", a(s.hPatchSettings))
 	m.HandleFunc("GET /api/logs", a(s.hLogs))
 	m.HandleFunc("DELETE /api/logs", a(s.hClearLogs))
 
@@ -561,6 +565,61 @@ func (s *Server) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
 		return
 	}
+	s.persistSettings(in)
+	writeOK(w, s.readSettings())
+}
+
+// hPatchSettings 局部更新设置：只改请求体里**真正出现过**的那些键，其余保持原值。
+//
+// 为什么需要它：设置项被拆在三个页面里（设置页 / 镜像加速源页 / 备份与恢复页），
+// 而 PUT /api/settings 是「整份替换」—— 每页手里那份都是进页面时拉的快照，
+// 谁后保存谁就把别人期间的改动悄悄抹掉（在设置页把并发度改成 4，再去备份页
+// 保存保留策略，并发度就回到了旧值）。
+//
+// 用 map[string]json.RawMessage 才能区分「字段没出现」和「字段是零值」——
+// 结构体解码做不到这一点，这是 PUT 覆盖问题绕不开的一步。
+func (s *Server) hPatchSettings(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]json.RawMessage
+	if err := decodeBody(r, &raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		return
+	}
+	if len(raw) == 0 {
+		writeErr(w, http.StatusBadRequest, "请求体是空的，没有要修改的设置项")
+		return
+	}
+	// 以服务端当前值为底，把请求里出现的键盖上去
+	cur, err := json.Marshal(s.readSettings())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	merged := map[string]json.RawMessage{}
+	if err := json.Unmarshal(cur, &merged); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for k, v := range raw {
+		merged[k] = v
+	}
+	body, err := json.Marshal(merged)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var next Settings
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields() // 键名写错要报错，不能悄悄忽略
+	if err := dec.Decode(&next); err != nil {
+		writeErr(w, http.StatusBadRequest, "设置项无法识别："+err.Error())
+		return
+	}
+	s.persistSettings(next)
+	writeOK(w, s.readSettings())
+}
+
+// persistSettings 校验 + 落盘 + 推给常驻对象。PUT 与 PATCH 共用这一份写入口。
+func (s *Server) persistSettings(in Settings) {
 	if in.Concurrency < 1 || in.Concurrency > 8 {
 		in.Concurrency = 2
 	}
@@ -596,7 +655,6 @@ func (s *Server) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 	s.applyPolicy(in)
 	// 检测频率可能刚被改过，唤醒后台循环按新间隔重新计时。
 	s.wakeAutoLoop()
-	writeOK(w, s.readSettings())
 }
 
 // normalizeInterval 把检测间隔收敛到允许的取值上，防止存进一个

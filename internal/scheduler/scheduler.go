@@ -26,7 +26,8 @@ type Action struct {
 	Key         string `json:"key"`
 	Label       string `json:"label"`
 	Description string `json:"description"`
-	// NeedsTargets 是否需要指定容器（false 表示作用于全部或与容器无关）
+	// NeedsTargets 是否必须明确指定容器。
+	// true 的动作在创建/编辑时至少要勾一个容器 —— 空目标**不再**表示「全部容器」。
 	NeedsTargets bool `json:"needsTargets"`
 }
 
@@ -37,7 +38,7 @@ var Actions = []Action{
 	{Key: "restart", Label: "重启容器", Description: "等于 docker restart，容器不存在时跳过", NeedsTargets: true},
 	{Key: "update", Label: "检查并更新", Description: "拉取镜像；只有镜像真的变了才会停容器重建", NeedsTargets: true},
 	{Key: "backup", Label: "备份配置快照", Description: "为容器写一份 docker inspect 配置快照", NeedsTargets: true},
-	{Key: "prune_images", Label: "清理悬空镜像", Description: "删除没有被任何容器引用的悬空镜像层", NeedsTargets: false},
+	{Key: "prune_images", Label: "清理未使用镜像", Description: "删除没有被任何容器引用的未使用镜像层", NeedsTargets: false},
 }
 
 // ActionMap 索引。
@@ -216,10 +217,18 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) (string, bool) 
 	case "prune_images":
 		freed, err := r.dc.PruneImages(ctx)
 		if err != nil {
-			return "清理悬空镜像失败：" + err.Error(), false
+			return "清理未使用镜像失败：" + err.Error(), false
 		}
-		return fmt.Sprintf("已清理悬空镜像，释放 %.1f MB", float64(freed)/1024/1024), true
-	case "backup":
+		return fmt.Sprintf("已清理未使用镜像，释放 %.1f MB", float64(freed)/1024/1024), true
+	}
+
+	// 其余动作都必须有明确目标。空目标曾经等于「全部容器」，已于 0.2.x 取消 ——
+	// 老版本存下来的任务会走到这里，给一句说得清的话，而不是含糊的「没有匹配到任何容器」。
+	if len(sc.Targets) == 0 {
+		return "任务没有选择任何容器，已跳过（「不选」不再等于全部容器，请编辑任务并勾选目标）", false
+	}
+
+	if sc.Action == "backup" {
 		targets, err := r.resolveTargets(ctx, sc.Targets)
 		if err != nil {
 			return err.Error(), false
@@ -307,7 +316,11 @@ type target struct {
 	running bool
 }
 
-// resolveTargets 把「容器名列表」解析成实际存在的目标；空列表 = 全部（排除 Dockhelm 自身与用户排除项）。
+// resolveTargets 把「容器名列表」解析成实际存在的目标。
+//
+// 空列表 = 没有目标（返回空切片）。**曾经**空列表等于「全部容器（排除自身与排除项）」，
+// 但那样一次误操作就会作用到整机，界面上还看不出来，已取消这个语义；调用方在更上层
+// 直接拦住空目标。
 func (r *Runner) resolveTargets(ctx context.Context, names []string) ([]target, error) {
 	list, err := r.dc.ListContainers(ctx)
 	if err != nil {
@@ -317,8 +330,10 @@ func (r *Runner) resolveTargets(ctx context.Context, names []string) ([]target, 
 	if r.exclude != nil {
 		ex = r.exclude()
 	}
+	if len(names) == 0 {
+		return nil, nil
+	}
 	byName := map[string]target{}
-	all := []target{}
 	for _, c := range list {
 		n := c.Name()
 		if r.up.IsSelf(n) || ex[n] {
@@ -328,10 +343,6 @@ func (r *Runner) resolveTargets(ctx context.Context, names []string) ([]target, 
 		byName[n] = t
 		byName[c.ID] = t
 		byName[c.ID[:12]] = t
-		all = append(all, t)
-	}
-	if len(names) == 0 {
-		return all, nil
 	}
 	out := []target{}
 	missing := []string{}

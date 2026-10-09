@@ -6,7 +6,7 @@
 // 语义上刻意与 dockerCopilot 的 autoupdateplan 对齐，但有一处刻意的差别：
 // dockerCopilot 先判「未检测到更新」再判排除，于是被排除的容器在预览里
 // 一律显示成「未检测到更新」，看不出是用户主动排除的。这里把保护 / 排除
-// 提到前面判，预览里能直接看出「这台是你自己排除掉的」。
+// 提到前面判，预览里能直接看出「这个容器是你自己排除掉的」。
 package autoupdate
 
 import (
@@ -28,7 +28,7 @@ type Container struct {
 	HasUpdate bool
 }
 
-// Candidate 单台容器的筛选结论，直接序列化给前端做候选预览。
+// Candidate 单个容器的筛选结论，直接序列化给前端做候选预览。
 type Candidate struct {
 	Name       string `json:"name"`
 	Image      string `json:"image"`

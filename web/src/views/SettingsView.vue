@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import {
   Ban,
   KeyRound,
@@ -22,7 +21,7 @@ import type { ContainerView, RunLog, Settings } from '@/api/types'
 import { formatDateTime, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
-import { version } from '@/config'
+import Modal from '@/components/Modal.vue'
 import SettingRow from '@/components/SettingRow.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
@@ -61,6 +60,10 @@ const confirmPw = ref('')
 const showOld = ref(false)
 const showNew = ref(false)
 const changing = ref(false)
+/** 「清空运行记录」的二次确认 —— 其余破坏性操作都有确认框，这个以前点了就清。 */
+const confirmClearLogs = ref(false)
+/** 清空请求进行中 —— 防连点。 */
+const clearingLogs = ref(false)
 
 const recentLogins = computed<{ ts: string; ip: string; ok: boolean }[]>(
   () => (account.value?.recentLogins as { ts: string; ip: string; ok: boolean }[]) ?? [],
@@ -96,7 +99,26 @@ async function load() {
 async function save() {
   saving.value = true
   try {
-    settings.value = await api.put<Settings>('/api/settings', settings.value)
+    // 只提交本页真正在编辑的字段（PATCH）。
+    //
+    // 全局设置被拆在三个页面里：本页、镜像加速源页（directFirst）、备份与恢复页
+    // （backupKeep*/backupMax*）。以前这里把整份 Settings PUT 回去，那份快照是
+    // 进页面时拉的 —— 期间在备份页改过的保留策略会被静默还原。PATCH 后后端只改
+    // 出现的键，其余保持原值。
+    const s = settings.value
+    settings.value = await api.patch<Settings>('/api/settings', {
+      exclude: s.exclude,
+      panelURL: s.panelURL,
+      concurrency: s.concurrency,
+      logRetention: s.logRetention,
+      checkOnStart: s.checkOnStart,
+      checkIntervalHours: s.checkIntervalHours,
+      notifyOnCheck: s.notifyOnCheck,
+      autoApply: s.autoApply,
+      pullOnce: s.pullOnce,
+      backupBefore: s.backupBefore,
+      cleanupAfter: s.cleanupAfter,
+    })
     await app.loadSettings()
     toast.success('设置已保存', '并发度改动会在下一次批量更新时生效')
   } catch (e) {
@@ -148,12 +170,17 @@ async function doLogout() {
 }
 
 async function clearLogs() {
+  if (clearingLogs.value) return
+  clearingLogs.value = true
+  confirmClearLogs.value = false
   try {
     await api.del('/api/logs')
     logs.value = []
     toast.success('运行记录已清空')
   } catch (e) {
     toast.error('清空失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    clearingLogs.value = false
   }
 }
 
@@ -164,7 +191,7 @@ onMounted(() => void load())
   <div class="flex flex-col gap-3.5 p-[18px]">
     <div class="dh-phead">
       <div class="dh-h1">设置</div>
-      <div class="dh-sub">更新行为、计划任务与账户安全</div>
+      <div class="dh-sub">更新与检测、排除列表与账户安全</div>
     </div>
 
     <!-- 更新与检测 -->
@@ -212,9 +239,9 @@ onMounted(() => void load())
         </div>
 
         <!-- 自动更新：回答「检测到有更新会不会自己动手」 -->
-        <div class="rounded-[10px] border p-3" :class="settings.autoApply ? 'border-[rgba(245,165,36,.35)] bg-[#1a1611]' : 'border-line-1 bg-ink-800'">
+        <div class="rounded-[10px] border p-3" :class="settings.autoApply ? 'border-line-warn bg-soft-warn' : 'border-line-1 bg-ink-800'">
           <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
-            <Zap class="h-3.5 w-3.5" :class="settings.autoApply ? 'text-[#fbbf24]' : 'text-text-4'" />自动更新
+            <Zap class="h-3.5 w-3.5" :class="settings.autoApply ? 'text-warn-text' : 'text-text-4'" />自动更新
           </div>
           <div class="flex flex-col gap-2.5">
             <SettingRow
@@ -229,12 +256,12 @@ onMounted(() => void load())
             </SettingRow>
             <div
               v-if="settings.autoApply"
-              class="flex items-start gap-2 rounded-[8px] border border-[rgba(245,165,36,.3)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[#fcd34d]"
+              class="flex items-start gap-2 rounded-[8px] border border-line-warn px-2.5 py-2 text-[11.5px] leading-relaxed text-warn-text"
             >
               <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none" />
               <span>
                 自动更新会<b>真的重启容器</b>。建议保持「更新前自动备份容器配置」开启，并确认排除列表里
-                放好了数据库、反向代理这类不能随便重启的服务。更新中心页可以先看「本轮会更新哪几台」再决定。
+                放好了数据库、反向代理这类不能随便重启的服务。更新中心页可以先看「本轮会更新哪几个」再决定。
               </span>
             </div>
           </div>
@@ -249,7 +276,7 @@ onMounted(() => void load())
             <SettingRow title="仅在镜像真正变化时重启容器" sub="比对更新前后的镜像 ID，一致就完全不动它">
               <span class="dh-badge dh-badge-plain">始终开启</span>
             </SettingRow>
-            <SettingRow title="同一镜像的多个容器只拉取一次" sub="4 台共用 nginx:alpine 时，下载 1 次、重建 4 台">
+            <SettingRow title="同一镜像的多个容器只拉取一次" sub="4 个容器共用 nginx:alpine 时，下载 1 次、重建 4 个">
               <ToggleSwitch v-model="settings.pullOnce" label="同一镜像只拉取一次" />
             </SettingRow>
             <SettingRow title="更新前自动备份容器配置" sub="失败可一键回滚到更新前">
@@ -286,10 +313,10 @@ onMounted(() => void load())
         </div>
 
         <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
-          <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-[#fbbf24]" />
+          <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-warn-text" />
           <span>
             这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及下面的排除列表。
-            计划任务里的「全部容器」也会自动跳过它们。
+            计划任务也只会作用于你在任务里<b class="text-text-3">明确勾选</b>的容器（「不选」不代表全部）。
           </span>
         </div>
       </div>
@@ -327,11 +354,11 @@ onMounted(() => void load())
             class="inline-flex items-center gap-1.5 rounded-full border border-line-3 px-2.5 py-[3px] font-mono text-[11.5px] text-text-3"
           >
             {{ n }}
-            <button class="text-text-5 hover:text-[#fca5a5]" @click="removeExclude(n)">×</button>
+            <button class="dh-tap text-text-5 hover:text-err-text" @click="removeExclude(n)">×</button>
           </span>
         </div>
         <div class="text-[11px] text-text-5">
-          计划任务里的「全部容器」会自动跳过排除项与 Dockhelm 自身。
+          加进这里的容器不会被自动更新，也不会被任何计划任务作用到（计划任务必须逐个勾选容器）。
         </div>
       </div>
     </div>
@@ -404,10 +431,10 @@ onMounted(() => void load())
                   />
                 </div>
               </div>
-              <div v-if="pwError" class="text-[11.5px] text-[#fca5a5]">{{ pwError }}</div>
+              <div v-if="pwError" class="text-[11.5px] text-err-text">{{ pwError }}</div>
               <div class="dh-banner dh-banner-info !gap-2.5 !py-[9px] !pl-3 !pr-3 !text-[12px]">
                 <span class="h-[13px] w-[13px] flex-none rounded-[4px] bg-current opacity-50" />
-                改密成功后其他设备上的登录会立即失效，需重新登录。
+                <span class="min-w-0 flex-1">改密成功后其他设备上的登录会立即失效，需重新登录。</span>
               </div>
               <div class="flex justify-end">
                 <button
@@ -462,7 +489,11 @@ onMounted(() => void load())
             <button class="dh-btn dh-btn-sm" :disabled="loading" @click="load">
               <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />
             </button>
-            <button class="dh-btn dh-btn-sm dh-btn-danger" :disabled="!logs.length" @click="clearLogs">
+            <button
+              class="dh-btn dh-btn-sm dh-btn-danger"
+              :disabled="!logs.length || clearingLogs"
+              @click="confirmClearLogs = true"
+            >
               <Trash2 class="h-3 w-3" />清空
             </button>
           </div>
@@ -498,12 +529,22 @@ onMounted(() => void load())
         </div>
       </div>
     </div>
+    <!-- 清空确认：会真删记录，必须二次确认 -->
+    <Modal
+      :open="confirmClearLogs"
+      title="清空运行记录"
+      width="430px"
+      :busy="clearingLogs"
+      @close="confirmClearLogs = false"
+    >
+      <div class="text-[12.5px] leading-relaxed text-text-3">清空后全部更新 / 巡检 / 备份的<b class="text-err-text">执行记录</b>会立刻消失，不可恢复。容器、镜像与快照本身都不受影响。</div>
+      <template #footer>
+        <button class="dh-btn" :disabled="clearingLogs" @click="confirmClearLogs = false">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="clearingLogs" @click="clearLogs">
+          <Trash2 class="h-3.5 w-3.5" />{{ clearingLogs ? '清空中…' : '确认清空' }}
+        </button>
+      </template>
+    </Modal>
 
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-1 text-[11.5px] text-text-6">
-      <span>Dockhelm v{{ version }}</span>
-      <RouterLink to="/about" class="hover:text-accent">关于 Dockhelm</RouterLink>
-      <RouterLink to="/notify" class="hover:text-accent">通知设置</RouterLink>
-      <span class="ml-auto">配置都在数据目录的 JSON 里，随时可以直接拷贝。</span>
-    </div>
   </div>
 </template>

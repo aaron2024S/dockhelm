@@ -89,11 +89,15 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 		}
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", ts, i))
 	}
+	// 磁盘上的真实标识（可能带 -1 后缀）。json 文件名、卷目录名、返回的 TS
+	// 三者必须同源 —— 以前卷目录固定用 ts，于是同一秒的第二份快照会把第一份的
+	// 卷 tar 整个覆盖掉（真正丢数据），而且返回的 TS 还指向不存在的文件名。
+	slot := strings.TrimSuffix(filepath.Base(p), ".json")
 
 	// 卷数据：先打包再写 json，这样 json 里记的 Packed/Bytes 一定是真的
 	var volumes VolumesMeta
 	if opt.WithVolumes {
-		volumes = s.PackVolumes(ctx, insp, filepath.Join(dir, ts+".volumes"))
+		volumes = s.PackVolumes(ctx, insp, filepath.Join(dir, slot+".volumes"))
 	}
 
 	meta := map[string]any{
@@ -119,7 +123,7 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 	}
 	item := &SnapshotItem{
 		Container: name,
-		TS:        ts,
+		TS:        slot,
 		Path:      p,
 		Size:      total,
 		Image:     imageRef(insp),
@@ -187,6 +191,12 @@ func (s *Service) List() ([]SnapshotItem, error) {
 				Size:      info.Size(),
 				Created:   info.ModTime().UTC().Format(time.RFC3339),
 			}
+			// 快照自带的时间比文件 mtime 可靠：数据目录一旦被复制 / 同步 / 从压缩包
+			// 里解出来，mtime 就变成「复制那一刻」了，而快照里记的才是真正拍下来的时刻。
+			// 优先级：_dockhelm.snapshotAt（RFC3339，权威）> 文件名里的时间戳（本地时区）> mtime。
+			if t, ok := parseSnapshotTS(it.TS); ok {
+				it.Created = t.UTC().Format(time.RFC3339)
+			}
 			if doc, err := readSnapshot(full); err == nil {
 				if insp, ok := doc["inspect"].(map[string]any); ok {
 					it.Image = imageRef(insp)
@@ -195,6 +205,11 @@ func (s *Service) List() ([]SnapshotItem, error) {
 				if meta, ok := doc["_dockhelm"].(map[string]any); ok {
 					if r, ok := meta["reason"].(string); ok {
 						it.Reason = r
+					}
+					if sa, ok := meta["snapshotAt"].(string); ok {
+						if t, err := time.Parse(time.RFC3339, sa); err == nil {
+							it.Created = t.UTC().Format(time.RFC3339)
+						}
 					}
 					// 卷数据块存在且有任意一项 Packed ⇒ 这份快照含数据
 					if vm, ok := meta["volumes"].(map[string]any); ok {
@@ -231,6 +246,16 @@ func (s *Service) List() ([]SnapshotItem, error) {
 		return out[i].TS > out[j].TS
 	})
 	return out, nil
+}
+
+// parseSnapshotTS 把快照文件名里的时间戳（20060102-150405）解析成时间。
+// 写快照用的是 time.Now().Format(...)，即**本地时区**，这里必须按本地解析。
+func parseSnapshotTS(ts string) (time.Time, bool) {
+	t, err := time.ParseInLocation("20060102-150405", ts, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // Delete 删除一份快照（连同它的卷数据一起删）。
@@ -416,6 +441,21 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 		}
 	}
 
+	// 创建请求体先备好并校验 —— **必须在停当前容器之前**。
+	// 否则「快照里少了 Config」这种事会变成「容器停了、改了名，创建失败，再回滚」。
+	var nets map[string]bool
+	if list, err := s.dc.ListNetworks(ctx); err == nil {
+		nets = updater.NetworkNameSet(list)
+	}
+	cfg, hostCfg, netCfg := updater.BuildCreateSpec(snap, nets)
+	if patched, fail := updater.EnsureCreateSpec(cfg, snap); fail != "" {
+		res.Message = "快照里" + fail + "，拒绝还原，容器保持原样"
+		step("✗ %s", res.Message)
+		return res
+	} else if patched != "" {
+		step("快照没有记录镜像引用，改用镜像 ID %s", shortID(patched))
+	}
+
 	cur, curErr := s.dc.Inspect(ctx, container)
 	wasRunning := false
 	curID := ""
@@ -444,12 +484,6 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 	} else {
 		step("当前不存在同名容器，将直接创建")
 	}
-
-	var nets map[string]bool
-	if list, err := s.dc.ListNetworks(ctx); err == nil {
-		nets = updater.NetworkNameSet(list)
-	}
-	cfg, hostCfg, netCfg := updater.BuildCreateSpec(snap, nets)
 
 	newID, err := s.dc.CreateContainer(ctx, container, cfg, hostCfg, netCfg)
 	if err != nil {
@@ -540,7 +574,9 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 		total += it.Size
 	}
 	limitBytes := int64(opt.MaxTotalMB) * 1024 * 1024
-	remove := map[string]bool{}
+	// 值存整条记录，不只是「要不要删」——删除时要连带清掉 <ts>.volumes 目录，
+	// 并按整份快照（含卷数据）的体积计释放量，光有路径算不出来。
+	remove := map[string]SnapshotItem{}
 
 	// protected 判定：更新前快照在开了开关时不参与任何维度的清理。
 	protected := func(it SnapshotItem) bool {
@@ -555,12 +591,15 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 				continue // 受保护的快照不占「保留份数」的额度，也不被天数清理
 			}
 			if opt.KeepPerContainer > 0 && kept >= opt.KeepPerContainer {
-				remove[it.Path] = true
+				remove[it.Path] = it
 				continue
 			}
 			if !cutoff.IsZero() {
-				if t, err := time.Parse("20060102-150405", it.TS); err == nil && t.Before(cutoff) {
-					remove[it.Path] = true
+				// 快照文件名是**本地时区**的 20060102-150405（写的时候用的 time.Now()），
+				// 必须用 parseSnapshotTS 按本地解析。以前这里用 time.Parse（UTC），
+				// 东八区下等于把每份快照都当成「晚了 8 小时」，保留期变相被拉长。
+				if t, ok := parseSnapshotTS(it.TS); ok && t.Before(cutoff) {
+					remove[it.Path] = it
 					continue
 				}
 			}
@@ -572,18 +611,28 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 	copy(sorted, items)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS < sorted[j].TS })
 	for _, it := range sorted {
-		if opt.MaxTotalMB > 0 && total > limitBytes && !remove[it.Path] && !protected(it) {
-			remove[it.Path] = true
-			total -= it.Size
-		}
-	}
-	for p := range remove {
-		if fi, err := os.Stat(p); err == nil {
-			if err := os.Remove(p); err == nil {
-				res.Removed++
-				res.FreedBytes += fi.Size()
+		if opt.MaxTotalMB > 0 && total > limitBytes && !protected(it) {
+			if _, already := remove[it.Path]; !already {
+				remove[it.Path] = it
+				total -= it.Size
 			}
 		}
+	}
+	for p, it := range remove {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			continue
+		}
+		res.Removed++
+		// it.Size 已经含卷数据的体积（List 会把 <ts>.volumes 里的文件算进去），
+		// 这里不要再单独累加一次，否则释放量会翻倍。
+		res.FreedBytes += it.Size
+		// 卷数据目录必须一起删。Delete() 一直是这么做的，Prune 以前漏了 ——
+		// 结果是几 GB 的卷 tar 变成孤儿：列表里看不见（json 没了）、
+		// 也不会被任何一次清理碰到，磁盘只涨不落。
+		_ = os.RemoveAll(filepath.Join(filepath.Dir(p), it.TS+".volumes"))
 	}
 	// 顺手清掉空目录
 	for name := range byContainer {

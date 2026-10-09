@@ -13,6 +13,7 @@ const images = ref<ImageView[]>([])
 const totalSize = ref(0)
 const loading = ref(false)
 const pruning = ref(false)
+const removing = ref(false)
 const keyword = ref('')
 const onlyDangling = ref(false)
 const removeTarget = ref<ImageView | null>(null)
@@ -49,7 +50,7 @@ async function prune() {
   pruning.value = true
   try {
     const res = await api.post<{ freedBytes: number }>('/api/images/prune')
-    toast.success('已清理悬空镜像', `释放 ${formatBytes(res.freedBytes)}`)
+    toast.success('已清理未使用镜像', `释放 ${formatBytes(res.freedBytes)}`)
     await load()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))
@@ -60,7 +61,8 @@ async function prune() {
 
 async function confirmRemove() {
   const img = removeTarget.value
-  if (!img) return
+  if (!img || removing.value) return
+  removing.value = true
   try {
     await api.del(`/api/images/${encodeURIComponent(img.id)}`, { force: true })
     toast.success('镜像已删除')
@@ -68,6 +70,8 @@ async function confirmRemove() {
     await load()
   } catch (e) {
     toast.error('删除失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    removing.value = false
   }
 }
 
@@ -80,7 +84,7 @@ onMounted(() => void load())
       <div class="dh-h1">镜像</div>
       <div class="dh-sub">
         {{ images.length }} 个 · 占用 {{ formatBytes(totalSize) }} ·
-        悬空 {{ danglingCount }} 个（可回收 {{ formatBytes(danglingSize) }}）
+        未使用 {{ danglingCount }} 个（可回收 {{ formatBytes(danglingSize) }}）
       </div>
       <div class="ml-auto flex gap-2">
         <button class="dh-btn" :disabled="loading" @click="load">
@@ -88,7 +92,7 @@ onMounted(() => void load())
         </button>
         <button class="dh-btn dh-btn-primary" :disabled="pruning || !danglingCount" @click="prune">
           <Sparkles class="h-3.5 w-3.5" :class="pruning ? 'dh-spin' : ''" />
-          清理悬空镜像
+          清理未使用镜像
         </button>
       </div>
     </div>
@@ -100,8 +104,8 @@ onMounted(() => void load())
       </div>
 
       <label class="flex cursor-pointer items-center gap-2 text-[12px] text-text-3">
-        <input v-model="onlyDangling" type="checkbox" class="h-[14px] w-[14px] accent-[#2dd4bf]" />
-        只看悬空镜像 ({{ danglingCount }})
+        <input v-model="onlyDangling" type="checkbox" class="h-[14px] w-[14px] accent-accent" />
+        只看未使用镜像 ({{ danglingCount }})
       </label>
     </div>
 
@@ -115,7 +119,7 @@ onMounted(() => void load())
         v-if="!filtered.length"
         :icon="Layers"
         :title="loading ? '正在载入…' : '没有匹配的镜像'"
-        description="镜像会随着容器更新不断积累，定期清理悬空镜像可以回收空间。"
+        description="镜像会随着容器更新不断积累，定期清理未使用镜像可以回收空间。"
       />
       <div v-else class="overflow-x-auto">
         <table class="dh-table">
@@ -141,7 +145,7 @@ onMounted(() => void load())
                     {{ t }}
                   </span>
                 </div>
-                <span v-else class="dh-badge dh-badge-plain">悬空镜像</span>
+                <span v-else class="dh-badge dh-badge-plain">未使用镜像</span>
                 <div v-if="img.digests.length" class="mt-1 font-mono text-[10.5px] text-text-6">
                   {{ img.digests[0] }}
                 </div>
@@ -174,15 +178,18 @@ onMounted(() => void load())
       title="删除镜像"
       :subtitle="removeTarget?.tags.join(', ') || removeTarget?.shortId"
       width="440px"
+      :busy="removing"
       @close="removeTarget = null"
     >
-      <div class="rounded-[10px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-3 py-2.5 text-[12px] leading-relaxed text-[#fca5a5]">
+      <div class="rounded-[10px] border border-line-err bg-soft-err px-3 py-2.5 text-[12px] leading-relaxed text-err-text">
         删除镜像本身不会删除容器，但如果这个镜像还在被容器使用，容器下次启动时会失败。
-        如果只是想回收空间，用「清理悬空镜像」更安全。
+        如果只是想回收空间，用「清理未使用镜像」更安全。
       </div>
       <template #footer>
-        <button class="dh-btn" @click="removeTarget = null">取消</button>
-        <button class="dh-btn dh-btn-danger" @click="confirmRemove">确认删除</button>
+        <button class="dh-btn" :disabled="removing" @click="removeTarget = null">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
+          {{ removing ? '删除中…' : '确认删除' }}
+        </button>
       </template>
     </Modal>
   </div>

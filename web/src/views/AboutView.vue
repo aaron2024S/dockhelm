@@ -20,6 +20,7 @@ import { api } from '@/api/client'
 import type { AboutResponse } from '@/api/types'
 import { formatBytes, formatDuration } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
+import { version } from '@/config'
 
 const toast = useToastStore()
 const data = ref<AboutResponse | null>(null)
@@ -27,6 +28,16 @@ const loading = ref(true)
 
 const about = computed(() => data.value?.about)
 const runtime = computed(() => (data.value?.runtime ?? {}) as Record<string, any>)
+
+/**
+ * 版本号：优先用后端 /api/about 报的运行时版本，取不到时回落到前端编译期那份。
+ *
+ * 「关于」页是全站**唯一**显示版本号的地方（设置页底部那行小字已移除）——
+ * 版本有多个显示处就一定会漂移，所以只在关于页集中显示。
+ * 回落值来自 web/src/config.ts，与 internal/version/version.go 的一致性由
+ * scripts/check-version.sh 在构建前拦住。
+ */
+const ver = computed(() => about.value?.version || version)
 
 const uptimeSeconds = computed(() => Number(runtime.value.uptimeSeconds ?? 0))
 
@@ -55,7 +66,7 @@ async function copyCommit() {
 /** 功能清单：关于页要能在没连 Docker 的时候也把「这软件能干什么」讲清楚。 */
 const features = [
   { icon: Boxes, title: '容器管理', desc: '启停、重启、重命名、日志、实时资源占用、环境变量与挂载一览' },
-  { icon: Layers, title: '镜像管理', desc: '列表、清理悬空镜像、一键删除；显示体积与被引用情况' },
+  { icon: Layers, title: '镜像管理', desc: '列表、清理未使用镜像、一键删除；显示体积与被引用情况' },
   { icon: Zap, title: '更新中心', desc: '先拉取再比对镜像 ID，镜像没变就完全不动容器；失败自动回滚' },
   { icon: CalendarClock, title: '计划任务', desc: '标准 cron 表达式，定时启停 / 重启 / 更新 / 备份容器' },
   { icon: Rocket, title: '加速源', desc: '显示守护进程真实生效的镜像站、批量测速、生成 daemon.json 片段' },
@@ -83,7 +94,7 @@ onMounted(() => void load())
     <div class="dh-phead">
       <div class="dh-h1">关于</div>
       <div class="dh-sub">
-        Dockhelm v{{ about?.version ?? '—' }} · 自托管 Docker 容器管理面板
+        Dockhelm v{{ ver }} · 自托管 Docker 容器管理面板
       </div>
       <div class="ml-auto flex gap-2">
         <button class="dh-btn" :disabled="loading" @click="load">
@@ -94,25 +105,31 @@ onMounted(() => void load())
 
     <!-- 头部 -->
     <div class="dh-card overflow-hidden">
+      <!-- 窄屏下 stack：横排时 logo 会被竖直居中在一大段文字旁边，
+           视觉上「飘」在中间；lg 以上恢复成原来的横排。 -->
       <div
-        class="flex flex-wrap items-center gap-4 p-5"
-        style="background: radial-gradient(620px 200px at 12% 0%, rgba(45, 212, 191, 0.1), transparent 70%)"
+        class="flex flex-col items-start gap-4 p-5 lg:flex-row lg:items-center"
+        style="background: radial-gradient(620px 200px at 12% 0%, var(--color-glow), transparent 70%)"
       >
         <div class="grid h-[58px] w-[58px] flex-none place-items-center rounded-[17px] bg-accent text-accent-ink">
-          <svg viewBox="0 0 32 32" class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="2.4">
-            <path d="M16 7l7 4v10l-7 4-7-4V11z" stroke-linejoin="round" />
-            <path d="M16 15v10M9 11l7 4 7-4" stroke-linejoin="round" />
+          <svg viewBox="0 0 32 32" class="h-7 w-7">
+            <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.5" />
+            <path
+              fill-rule="evenodd"
+              fill="currentColor"
+              d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+            />
           </svg>
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2.5">
             <span class="text-[20px] font-semibold tracking-[-0.2px]">{{ about?.name ?? 'Dockhelm' }}</span>
-            <span class="dh-badge dh-badge-accent">v{{ about?.version ?? '—' }}</span>
+            <span class="dh-badge dh-badge-accent">v{{ ver }}</span>
             <span class="dh-badge dh-badge-plain">{{ about?.license }}</span>
             <button
               v-if="about?.commitShort"
               type="button"
-              class="dh-badge dh-badge-plain cursor-pointer"
+              class="dh-tap dh-badge dh-badge-plain cursor-pointer"
               title="点击复制完整提交号"
               @click="copyCommit"
             >
@@ -147,7 +164,7 @@ onMounted(() => void load())
       <div class="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-line-1 p-4 lg:grid-cols-4">
         <div>
           <div class="text-[11.5px] text-text-5">版本</div>
-          <div class="mt-0.5 text-[13px] font-medium">{{ about?.version ?? '—' }}</div>
+          <div class="mt-0.5 text-[13px] font-medium">{{ ver }}</div>
         </div>
         <div>
           <div class="text-[11.5px] text-text-5">作者</div>
@@ -212,16 +229,16 @@ onMounted(() => void load())
         </div>
         <div class="grid grid-cols-2 gap-x-5 gap-y-2.5 p-3.5 text-[12px]">
           <div class="text-text-5">数据目录</div>
-          <div class="truncate font-mono text-[11.5px]" :title="String(runtime.dataDir ?? '')">
+          <div class="break-all font-mono text-[11.5px]">
             {{ runtime.dataDir ?? '—' }}
           </div>
           <div class="text-text-5">监听地址</div>
-          <div class="truncate font-mono text-[11.5px]">
+          <div class="break-all font-mono text-[11.5px]">
             {{ runtime.listen ?? '—' }}
             <span v-if="runtime.listenSource" class="text-text-5">（来自 {{ runtime.listenSource }}）</span>
           </div>
           <div class="text-text-5">Docker 地址</div>
-          <div class="truncate font-mono text-[11.5px]">{{ runtime.dockerHost ?? '—' }}</div>
+          <div class="break-all font-mono text-[11.5px]">{{ runtime.dockerHost ?? '—' }}</div>
           <div class="text-text-5">Docker 版本</div>
           <div class="text-text-2">
             {{ runtime.dockerVersion ?? '未连接' }}
@@ -252,7 +269,7 @@ onMounted(() => void load())
           <div
             v-for="s in stack"
             :key="s.label"
-            class="flex gap-4 border-b border-[#171f2a] py-2 text-[12px] last:border-b-0"
+            class="flex gap-4 border-b border-line-row py-2 text-[12px] last:border-b-0"
           >
             <div class="w-[76px] flex-none text-text-5">{{ s.label }}</div>
             <div class="min-w-0 flex-1 text-text-2">{{ s.value }}</div>

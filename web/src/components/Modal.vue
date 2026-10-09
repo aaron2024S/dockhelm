@@ -8,8 +8,14 @@ withDefaults(
     subtitle?: string
     width?: string
     closeOnBackdrop?: boolean
+    /**
+     * 提交中：屏蔽「点遮罩关闭」和右上角 × 关闭。
+     * 以前删除/还原/清理这类会真动数据的弹窗，请求还没回来也能被关掉 ——
+     * 关掉后结果无从得知，用户会以为没执行而再点一次。
+     */
+    busy?: boolean
   }>(),
-  { title: '', subtitle: '', width: '520px', closeOnBackdrop: true },
+  { title: '', subtitle: '', width: '520px', closeOnBackdrop: true, busy: false },
 )
 
 const emit = defineEmits<{ close: [] }>()
@@ -26,10 +32,10 @@ const emit = defineEmits<{ close: [] }>()
       <div
         v-if="open"
         class="fixed inset-0 z-[70] grid place-items-center overflow-y-auto bg-black/60 p-4 backdrop-blur-[2px]"
-        @click.self="closeOnBackdrop && emit('close')"
+        @click.self="closeOnBackdrop && !busy && emit('close')"
       >
         <div
-          class="dh-card w-full shadow-[0_20px_60px_rgba(0,0,0,.5)]"
+          class="dh-card w-full shadow-[var(--shadow-modal)]"
           :style="{ maxWidth: width }"
           role="dialog"
           aria-modal="true"
@@ -43,7 +49,8 @@ const emit = defineEmits<{ close: [] }>()
             </div>
             <button
               type="button"
-              class="grid h-6 w-6 flex-none place-items-center rounded-md text-text-5 transition-colors hover:bg-ink-650 hover:text-text-1"
+              :disabled="busy"
+              class="dh-tap grid h-6 w-6 flex-none place-items-center rounded-md text-text-5 transition-colors hover:bg-ink-650 hover:text-text-1 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
               @click="emit('close')"
             >
               <X class="h-3.5 w-3.5" />

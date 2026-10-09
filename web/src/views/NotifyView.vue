@@ -41,6 +41,11 @@ const settings = ref<NotifySettings | null>(null)
 const history = ref<NotifyRecord[]>([])
 const loading = ref(true)
 const saving = ref(false)
+const removing = ref(false)
+/** 「清空推送历史」的二次确认（其余破坏性操作都有确认框）。 */
+const confirmClearHistory = ref(false)
+/** 清空请求进行中 —— 防连点。 */
+const clearingHistory = ref(false)
 const testingId = ref<number | null>(null)
 
 const showEditor = ref(false)
@@ -171,7 +176,8 @@ async function testChannel(c: Channel) {
 
 async function confirmRemove() {
   const c = removeTarget.value
-  if (!c) return
+  if (!c || removing.value) return
+  removing.value = true
   try {
     await api.del(`/api/notify/channels/${c.id}`)
     toast.success('渠道已删除')
@@ -179,6 +185,8 @@ async function confirmRemove() {
     await load()
   } catch (e) {
     toast.error('删除失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    removing.value = false
   }
 }
 
@@ -233,14 +241,20 @@ async function loadHistory() {
 }
 
 async function clearHistory() {
+  if (clearingHistory.value) return
+  clearingHistory.value = true
+  confirmClearHistory.value = false
   try {
     await api.del('/api/notify/history')
     history.value = []
     toast.success('推送历史已清空')
   } catch (e) {
     toast.error('清空失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    clearingHistory.value = false
   }
 }
+
 
 const levelBadge = (lv: string) =>
   lv === 'urgent' ? 'dh-badge-err' : 'dh-badge-plain'
@@ -287,7 +301,11 @@ onMounted(() => void load())
         </template>
         <template v-if="tab === 'history'">
           <button class="dh-btn dh-btn-sm" @click="loadHistory">刷新</button>
-          <button class="dh-btn dh-btn-sm dh-btn-danger" :disabled="!history.length" @click="clearHistory">
+          <button
+            class="dh-btn dh-btn-sm dh-btn-danger"
+            :disabled="!history.length || clearingHistory"
+            @click="confirmClearHistory = true"
+          >
             <Trash2 class="h-3 w-3" />清空
           </button>
         </template>
@@ -316,7 +334,7 @@ onMounted(() => void load())
           <div
             v-for="c in channels"
             :key="c.id"
-            class="flex flex-wrap items-center gap-2.5 border-b border-[#171f2a] px-3.5 py-3 last:border-b-0"
+            class="flex flex-wrap items-center gap-2.5 border-b border-line-row px-3.5 py-3 last:border-b-0"
           >
             <UiSwitch
               :model-value="c.enabled"
@@ -448,7 +466,7 @@ onMounted(() => void load())
           <div
             v-for="e in g.items"
             :key="e.event"
-            class="flex flex-wrap items-center gap-3 border-b border-[#171f2a] px-3.5 py-2.5 last:border-b-0"
+            class="flex flex-wrap items-center gap-3 border-b border-line-row px-3.5 py-2.5 last:border-b-0"
           >
             <UiSwitch
               :model-value="eventRows[e.event]?.enabled ?? false"
@@ -513,7 +531,7 @@ onMounted(() => void load())
                 </td>
                 <td class="max-w-[420px]">
                   <div class="truncate text-[12px] text-text-2" :title="h.title">{{ h.title }}</div>
-                  <div v-if="!h.ok && h.errmsg" class="mt-0.5 truncate text-[11px] text-[#fca5a5]" :title="h.errmsg">
+                  <div v-if="!h.ok && h.errmsg" class="mt-0.5 truncate text-[11px] text-err-text" :title="h.errmsg">
                     {{ h.errmsg }}
                   </div>
                 </td>
@@ -529,6 +547,7 @@ onMounted(() => void load())
       :open="showEditor"
       :title="editingChannel?.id ? '编辑渠道' : '添加通知渠道'"
       width="620px"
+      :busy="saving"
       @close="showEditor = false"
     >
       <div v-if="editingChannel" class="flex flex-col gap-3.5">
@@ -558,7 +577,7 @@ onMounted(() => void load())
           <div v-for="f in currentPreset?.fields ?? []" :key="f.key">
             <label class="dh-label">
               {{ f.label }}
-              <span v-if="f.required" class="text-[#fca5a5]">*</span>
+              <span v-if="f.required" class="text-err-text">*</span>
             </label>
             <textarea
               v-if="f.type === 'textarea'"
@@ -572,7 +591,7 @@ onMounted(() => void load())
               :value="String(editingChannel.config[f.key] ?? '')"
               :type="f.type === 'password' ? 'password' : 'text'"
               class="dh-input"
-              :class="needField(f.key) ? '!border-[rgba(248,113,113,.5)]' : ''"
+              :class="needField(f.key) ? '!border-line-err' : ''"
               :placeholder="f.placeholder"
               @input="editingChannel.config[f.key] = ($event.target as HTMLInputElement).value"
             />
@@ -626,13 +645,33 @@ onMounted(() => void load())
       title="删除渠道"
       :subtitle="removeTarget?.name"
       width="400px"
+      :busy="removing"
       @close="removeTarget = null"
     >
       <div class="text-[12.5px] text-text-3">删除后该渠道不再接收任何通知。</div>
       <template #footer>
-        <button class="dh-btn" @click="removeTarget = null">取消</button>
-        <button class="dh-btn dh-btn-danger" @click="confirmRemove">确认删除</button>
+        <button class="dh-btn" :disabled="removing" @click="removeTarget = null">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
+          {{ removing ? '删除中…' : '确认删除' }}
+        </button>
       </template>
     </Modal>
+    <!-- 清空确认：会真删记录，必须二次确认 -->
+    <Modal
+      :open="confirmClearHistory"
+      title="清空推送历史"
+      width="430px"
+      :busy="clearingHistory"
+      @close="confirmClearHistory = false"
+    >
+      <div class="text-[12.5px] leading-relaxed text-text-3">清空后所有渠道的<b class="text-err-text">推送记录</b>会立刻消失，不可恢复。已配置的通知渠道与事件订阅不受影响。</div>
+      <template #footer>
+        <button class="dh-btn" :disabled="clearingHistory" @click="confirmClearHistory = false">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="clearingHistory" @click="clearHistory">
+          <Trash2 class="h-3.5 w-3.5" />{{ clearingHistory ? '清空中…' : '确认清空' }}
+        </button>
+      </template>
+    </Modal>
+
   </div>
 </template>

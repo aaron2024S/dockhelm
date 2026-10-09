@@ -11,11 +11,10 @@ const icons = {
 } as const
 
 const tones = {
-  success: 'border-[rgba(52,211,153,.4)] text-[#4ade80]',
-  error: 'border-[rgba(248,113,113,.42)] text-[#fca5a5]',
-  info: 'border-[rgba(45,212,191,.4)] text-accent',
-} as const
-</script>
+  success: 'border-line-ok text-run-text',
+  error: 'border-line-err text-err-text',
+  info: 'border-accent-line text-accent',
+} as const</script>
 
 <template>
   <div class="pointer-events-none fixed bottom-5 right-5 z-[80] flex w-[330px] flex-col gap-2">
@@ -28,7 +27,7 @@ const tones = {
       <div
         v-for="item in toast.items"
         :key="item.id"
-        class="pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-ink-700/97 px-3.5 py-3 shadow-[0_10px_30px_rgba(0,0,0,.45)] backdrop-blur"
+        class="pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-ink-700/97 px-3.5 py-3 shadow-[var(--shadow-toast)] backdrop-blur"
         :class="tones[item.kind]"
       >
         <component :is="icons[item.kind]" class="mt-[1px] h-4 w-4 flex-none" />
@@ -40,7 +39,8 @@ const tones = {
         </div>
         <button
           type="button"
-          class="flex-none text-text-5 transition-colors hover:text-text-1"
+          class="dh-tap -m-1.5 flex-none rounded-md p-1.5 text-text-5 transition-colors hover:bg-ink-650 hover:text-text-1"
+          aria-label="关闭提示"
           @click="toast.dismiss(item.id)"
         >
           <X class="h-3.5 w-3.5" />

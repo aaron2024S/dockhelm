@@ -35,6 +35,8 @@ const removing = ref(false)
 const selected = ref<Set<string>>(new Set())
 const checking = ref(false)
 const bulkBusy = ref(false)
+/** 提交更新任务中 —— 防连点（连点两次会发出两次批量更新请求）。 */
+const applying = ref(false)
 
 const filtered = computed(() => {
   let list = containers.value
@@ -64,13 +66,29 @@ const updatableSelected = computed(() =>
   containers.value.filter((c) => selected.value.has(c.name) && !c.self && !c.excluded).map((c) => c.name),
 )
 
+/**
+ * 「更新 N 个容器」按钮真正要更新的那一批。
+ *
+ * 以前按钮文案数的是 `counts.update`（所有 hasUpdate 的容器），实际提交时却过滤掉
+ * self/excluded —— 于是会出现「显示 3 个、点下去直接 return」这种计数与行为不一致。
+ * 现在文案与提交用同一个来源。
+ */
+const updatableAll = computed(() => containers.value.filter((c) => c.hasUpdate && !c.self && !c.excluded))
+
+/** 筛选后的列表是否已全选 —— 复选框的选中态要与之同步（以前恒为 false）。 */
+const allSelected = computed(
+  () => filtered.value.length > 0 && filtered.value.every((c) => selected.value.has(c.name)),
+)
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     const res = await api.get<{ containers: ContainerView[] }>('/api/containers')
     containers.value = res.containers ?? []
   } catch (e) {
-    toast.error('读取容器失败', e instanceof Error ? e.message : String(e))
+    // SSE 触发的静默刷新失败不弹提示：守护进程短暂不可达时会刷屏。
+    // 手动点「刷新」失败才需要明确告诉用户。
+    if (!silent) toast.error('读取容器失败', e instanceof Error ? e.message : String(e))
   } finally {
     loading.value = false
   }
@@ -109,13 +127,16 @@ async function updateOne(c: ContainerView) {
 
 async function updateSelected() {
   const names = updatableSelected.value
-  if (!names.length) return
+  if (!names.length || applying.value) return
+  applying.value = true
   try {
     await api.post('/api/updates/apply', { names })
     toast.info(`已提交 ${names.length} 个容器的更新`, '镜像未变化的容器会被自动跳过')
     selected.value = new Set()
   } catch (e) {
     toast.error('提交失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    applying.value = false
   }
 }
 
@@ -134,26 +155,42 @@ async function checkAll() {
 }
 
 async function updateAll() {
-  const names = containers.value.filter((c) => c.hasUpdate && !c.self && !c.excluded).map((c) => c.name)
-  if (!names.length) return
+  const names = updatableAll.value.map((c) => c.name)
+  if (!names.length || applying.value) return
+  applying.value = true
   try {
     await api.post('/api/updates/apply', { names })
     toast.info(`已提交 ${names.length} 个容器的更新`, '镜像未变化的容器会被自动跳过')
   } catch (e) {
     toast.error('提交失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    applying.value = false
   }
 }
 
+/**
+ * 批量启停/重启：一次会动很多容器，必须二次确认。
+ * 其余破坏性操作（删容器、删镜像、删快照、删计划）都有确认框，这几个以前点了就执行。
+ */
 async function bulkAct(action: 'start' | 'stop' | 'restart') {
   const names = containers.value
     .filter((c) => selected.value.has(c.name) && !c.self)
     .map((c) => c.name)
   if (!names.length) return
+  bulkPending.value = { action, names }
+}
+
+const bulkPending = ref<{ action: 'start' | 'stop' | 'restart'; names: string[] } | null>(null)
+
+async function confirmBulkAct() {
+  const p = bulkPending.value
+  if (!p) return
+  bulkPending.value = null
   bulkBusy.value = true
   let ok = 0
-  for (const name of names) {
+  for (const name of p.names) {
     try {
-      await api.post(`/api/containers/${encodeURIComponent(name)}/action`, { action })
+      await api.post(`/api/containers/${encodeURIComponent(name)}/action`, { action: p.action })
       ok += 1
     } catch {
       // 单个失败不中断整批
@@ -161,7 +198,10 @@ async function bulkAct(action: 'start' | 'stop' | 'restart') {
   }
   bulkBusy.value = false
   selected.value = new Set()
-  toast.success(`已${labelOf(action)} ${ok}/${names.length} 台`, ok < names.length ? '部分容器操作失败，详见日志' : undefined)
+  toast.success(
+    `已${labelOf(p.action)} ${ok}/${p.names.length} 个`,
+    ok < p.names.length ? '部分容器操作失败，详见日志' : undefined,
+  )
   await load(true)
 }
 
@@ -193,10 +233,16 @@ function toggleSelect(name: string) {
 }
 
 function toggleAll() {
-  if (selected.value.size === filtered.value.length) {
-    selected.value = new Set()
+  // 基于「筛选后的清单」逐项判断，别拿 selected.size 与 filtered.length 比数量：
+  // 选中集合里可能残留着已被筛选隐藏的名字，两者相等时会误清空全选。
+  if (allSelected.value) {
+    const next = new Set(selected.value)
+    for (const c of filtered.value) next.delete(c.name)
+    selected.value = next
   } else {
-    selected.value = new Set(filtered.value.map((c) => c.name))
+    const next = new Set(selected.value)
+    for (const c of filtered.value) next.add(c.name)
+    selected.value = next
   }
 }
 
@@ -256,8 +302,12 @@ function closeMenu() {
         <button class="dh-btn" :disabled="checking" @click="checkAll">
           <Download class="h-3.5 w-3.5" :class="checking ? 'dh-spin' : ''" />检测更新
         </button>
-        <button class="dh-btn dh-btn-primary" :disabled="!counts.update" @click="updateAll">
-          更新 {{ counts.update }} 台有更新的容器
+        <button
+          class="dh-btn dh-btn-primary"
+          :disabled="!updatableAll.length || applying"
+          @click="updateAll"
+        >
+          {{ applying ? '提交中…' : `更新 ${updatableAll.length} 个容器` }}
         </button>
       </div>
     </div>
@@ -269,18 +319,28 @@ function closeMenu() {
       </div>
 
       <div v-if="selected.size" class="ml-auto flex flex-wrap items-center gap-2">
-        <span class="text-[12px] text-text-4">已选 {{ selected.size }} 台</span>
-        <button class="dh-btn dh-btn-sm" @click="toggleAll">全选本页</button>
+        <span class="text-[12px] text-text-4">已选 {{ selected.size }} 个</span>
+        <button class="dh-btn dh-btn-sm" @click="toggleAll">
+          {{ allSelected ? '取消全选' : '全选本页' }}
+        </button>
         <button class="dh-btn dh-btn-sm" :disabled="bulkBusy" @click="bulkAct('restart')">重启</button>
         <button class="dh-btn dh-btn-sm" :disabled="bulkBusy" @click="bulkAct('stop')">停止</button>
-        <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="!updatableSelected.length" @click="updateSelected">
+        <button
+          class="dh-btn dh-btn-sm dh-btn-primary"
+          :disabled="!updatableSelected.length || applying"
+          @click="updateSelected"
+        >
           更新选中
         </button>
       </div>
     </div>
 
     <div class="dh-banner dh-banner-warn">
-      批量更新前会先核对镜像摘要：<b>只有镜像真的变了才会重启容器</b>，未变化的容器会原样跳过。
+      <!-- 整句必须包在同一层里：.dh-banner 是 flex 容器，裸文本会被拆成独立格子，
+           中间夹一个 <b> 就会排成三列（"文字 / 加粗 / 文字"并排）。 -->
+      <span class="min-w-0 flex-1">
+        批量更新前会先核对镜像摘要：<b>只有镜像真的变了才会重启容器</b>，未变化的容器会原样跳过。
+      </span>
     </div>
 
     <div v-if="loading && !containers.length" class="dh-card grid h-[240px] place-items-center">
@@ -301,30 +361,31 @@ function closeMenu() {
         :key="c.id"
         class="flex flex-col gap-2.5 rounded-[14px] border bg-ink-700 p-3 transition-colors"
         :class="[
-          c.hasUpdate ? 'border-[rgba(245,165,36,.42)]' : 'border-line-1 hover:border-line-4',
-          selected.has(c.name) ? '!border-[rgba(45,212,191,.5)] bg-[#12201f]' : '',
+          c.hasUpdate ? 'border-line-warn' : 'border-line-1 hover:border-line-4',
+          selected.has(c.name) ? '!border-accent-line bg-accent-soft' : '',
         ]"
       >
         <div class="flex items-start gap-2.5">
           <label class="mt-[3px] flex-none cursor-pointer">
             <input
               type="checkbox"
-              class="h-[14px] w-[14px] accent-[#2dd4bf]"
+              class="h-[14px] w-[14px] accent-accent"
               :checked="selected.has(c.name)"
               @change="toggleSelect(c.name)"
             />
           </label>
           <div
-            class="grid h-[34px] w-[34px] flex-none place-items-center rounded-[10px] bg-line-2 text-[13px] font-semibold text-[#5eead4]"
+            class="grid h-[34px] w-[34px] flex-none place-items-center rounded-[10px] bg-line-2 text-[13px] font-semibold text-accent-text"
           >
             {{ c.name.slice(0, 2).toUpperCase() }}
           </div>
           <div class="min-w-0 flex-1">
             <RouterLink
               :to="`/containers/${encodeURIComponent(c.name)}`"
-              class="block truncate text-[13px] font-semibold hover:text-accent"
+              class="dh-tap-txt block min-w-0 text-[13px] font-semibold hover:text-accent"
+              :title="c.name"
             >
-              {{ c.name }}
+              <span class="truncate">{{ c.name }}</span>
             </RouterLink>
             <div class="truncate font-mono text-[11.5px] text-text-5" :title="c.image">
               {{ shortImage(c.image) }}
@@ -332,14 +393,14 @@ function closeMenu() {
           </div>
           <div class="relative flex-none">
             <button
-              class="grid h-6 w-6 place-items-center rounded-md text-text-5 hover:bg-ink-650 hover:text-text-1"
+              class="dh-tap grid h-6 w-6 place-items-center rounded-md text-text-5 hover:bg-ink-650 hover:text-text-1"
               @click.stop="menuFor = menuFor === c.name ? '' : c.name"
             >
               <MoreVertical class="h-3.5 w-3.5" />
             </button>
             <div
               v-if="menuFor === c.name"
-              class="absolute right-0 top-7 z-20 w-[150px] overflow-hidden rounded-[10px] border border-line-3 bg-ink-750 py-1 shadow-[0_12px_30px_rgba(0,0,0,.5)]"
+              class="absolute right-0 top-7 z-20 w-[150px] overflow-hidden rounded-[10px] border border-line-3 bg-ink-750 py-1 shadow-[var(--shadow-pop)]"
               @click.stop
             >
               <button class="block w-full px-3 py-1.5 text-left text-[12px] text-text-2 hover:bg-ink-650" @click="act(c, 'restart')">
@@ -349,7 +410,7 @@ function closeMenu() {
                 检查并更新
               </button>
               <button
-                class="block w-full px-3 py-1.5 text-left text-[12px] text-[#fca5a5] hover:bg-ink-650"
+                class="block w-full px-3 py-1.5 text-left text-[12px] text-err-text hover:bg-ink-650"
                 @click="removeTarget = c; menuFor = ''"
               >
                 删除容器…
@@ -416,13 +477,48 @@ function closeMenu() {
       <label class="flex cursor-pointer items-center gap-2">
         <input
           type="checkbox"
-          class="h-[14px] w-[14px] accent-[#2dd4bf]"
-          :checked="false"
+          class="h-[14px] w-[14px] accent-accent"
+          :checked="allSelected"
           @change="toggleAll"
         />
-        全选当前列表（{{ filtered.length }} 台）
+        全选当前列表（{{ filtered.length }} 个）
       </label>
     </div>
+
+    <!-- 批量启停/重启确认：一次会动多个容器，必须二次确认 -->
+    <Modal
+      :open="!!bulkPending"
+      :title="`批量${bulkPending ? labelOf(bulkPending.action) : ''}容器`"
+      :subtitle="
+        bulkPending ? `即将对 ${bulkPending.names.length} 个容器执行${labelOf(bulkPending.action)}` : ''
+      "
+      width="470px"
+      :busy="bulkBusy"
+      @close="bulkPending = null"
+    >
+      <div class="flex flex-col gap-3">
+        <div class="dh-banner dh-banner-warn">
+          <span class="min-w-0 flex-1">
+            批量操作会逐个执行，<b>单个容器失败不会中断其余容器</b>，结束后可在运行记录里查看结果。
+          </span>
+        </div>
+        <div class="max-h-[200px] overflow-auto rounded-[10px] border border-line-2 bg-ink-800 p-2.5">
+          <div
+            v-for="n in bulkPending?.names ?? []"
+            :key="n"
+            class="font-mono text-[11.5px] leading-relaxed text-text-3"
+          >
+            {{ n }}
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <button class="dh-btn" :disabled="bulkBusy" @click="bulkPending = null">取消</button>
+        <button class="dh-btn dh-btn-primary" :disabled="bulkBusy" @click="confirmBulkAct">
+          {{ bulkBusy ? '执行中…' : `确认${bulkPending ? labelOf(bulkPending.action) : ''}` }}
+        </button>
+      </template>
+    </Modal>
 
     <!-- 删除确认 -->
     <Modal
@@ -430,16 +526,17 @@ function closeMenu() {
       title="删除容器"
       :subtitle="removeTarget ? `即将删除 ${removeTarget.name}` : ''"
       width="470px"
+      :busy="removing"
       @close="removeTarget = null; removeVolumes = false"
     >
       <div class="flex flex-col gap-3">
-        <div class="rounded-[10px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-3 py-2.5 text-[12px] leading-relaxed text-[#fca5a5]">
+        <div class="rounded-[10px] border border-line-err bg-soft-err px-3 py-2.5 text-[12px] leading-relaxed text-err-text">
           此操作不可撤销。删除容器不会删除它的镜像，但容器自身的可写层数据会一并消失。
         </div>
         <label class="flex cursor-pointer items-start gap-2.5 text-[12.5px] text-text-2">
-          <input v-model="removeVolumes" type="checkbox" class="mt-[3px] h-[14px] w-[14px] accent-[#f87171]" />
+          <input v-model="removeVolumes" type="checkbox" class="mt-[3px] h-[14px] w-[14px] accent-err" />
           <span>
-            同时删除该容器的<b class="text-[#fca5a5]">匿名卷</b>
+            同时删除该容器的<b class="text-err-text">匿名卷</b>
             <br />
             <span class="text-[11.5px] text-text-5">
               勾选后 docker 会连匿名卷一起删掉，卷里的数据将无法找回。命名卷不会被删除。
@@ -448,7 +545,13 @@ function closeMenu() {
         </label>
       </div>
       <template #footer>
-        <button class="dh-btn" @click="removeTarget = null; removeVolumes = false">取消</button>
+        <button
+          class="dh-btn"
+          :disabled="removing"
+          @click="removeTarget = null; removeVolumes = false"
+        >
+          取消
+        </button>
         <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
           <Trash2 class="h-3.5 w-3.5" />{{ removing ? '删除中…' : '确认删除' }}
         </button>

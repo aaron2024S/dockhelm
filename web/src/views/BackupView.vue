@@ -18,6 +18,7 @@ import {
 import { api } from '@/api/client'
 import type { BackupStats, ContainerView, DiffEntry, ProjectInfo, RestoreResult, Settings, SnapshotItem } from '@/api/types'
 import { formatBytes, relativeTime } from '@/utils/format'
+import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
@@ -43,6 +44,7 @@ interface VolumesMeta {
 }
 
 const toast = useToastStore()
+const app = useAppStore()
 const tab = ref<'snapshots' | 'projects'>('snapshots')
 const backups = ref<SnapshotItem[]>([])
 const stats = ref<BackupStats | null>(null)
@@ -61,6 +63,9 @@ const diff = ref<DiffEntry[]>([])
 const diffLoading = ref(false)
 const restoreResult = ref<RestoreResult | null>(null)
 const restoring = ref(false)
+const removing = ref(false)
+/** 「清理过期快照」确认框 —— 这一步会真删文件，必须二次确认。 */
+const confirmPrune = ref(false)
 const showRestore = ref(false)
 const volMeta = ref<VolumesMeta | null>(null)
 const withVolumes = ref(false)
@@ -73,15 +78,11 @@ const pruneDays = ref(30)
 const policy = ref<Settings | null>(null)
 const savingPolicy = ref(false)
 
-const grouped = computed(() => {
-  const map = new Map<string, SnapshotItem[]>()
-  for (const b of backups.value) {
-    const list = map.get(b.container) ?? []
-    list.push(b)
-    map.set(b.container, list)
-  }
-  return [...map.entries()]
-})
+/**
+ * 列表按快照时间倒序平铺成一张表 —— 一份快照恰好一行。
+ * 时间戳本身是可字典序排序的（20060102-150405），直接比字符串即可。
+ */
+const rows = computed(() => [...backups.value].sort((a, b) => b.ts.localeCompare(a.ts)))
 
 async function load() {
   loading.value = true
@@ -135,7 +136,15 @@ async function doSnapshot() {
   }
 }
 
+/**
+ * 差异请求的序号。快速连点两行不同快照的「还原…」时，先发的请求可能后返回，
+ * 把 A 快照的差异盖到 B 快照的弹窗上 —— 而用户正是看着这份差异去决定要不要还原的，
+ * 看错代价太大。回调里只接受「当前这一次」的结果。
+ */
+let diffReq = 0
+
 async function openRestore(item: SnapshotItem) {
+  const req = ++diffReq
   restoreTarget.value = item
   restoreResult.value = null
   showRestore.value = true
@@ -148,12 +157,14 @@ async function openRestore(item: SnapshotItem) {
       container: item.container,
       ts: item.ts,
     })
+    if (req !== diffReq) return // 已经有更新的目标了，这次结果作废
     diff.value = res.diff ?? []
     volMeta.value = res.volumes ?? null
   } catch (e) {
+    if (req !== diffReq) return
     toast.error('无法比对差异', e instanceof Error ? e.message : String(e))
   } finally {
-    diffLoading.value = false
+    if (req === diffReq) diffLoading.value = false
   }
 }
 
@@ -236,7 +247,8 @@ async function doImport() {
 
 async function confirmRemove() {
   const item = removeTarget.value
-  if (!item) return
+  if (!item || removing.value) return
+  removing.value = true
   try {
     await api.del(`/api/backups/${encodeURIComponent(item.container)}/${encodeURIComponent(item.ts)}`)
     toast.success('快照已删除')
@@ -244,10 +256,13 @@ async function confirmRemove() {
     await load()
   } catch (e) {
     toast.error('删除失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    removing.value = false
   }
 }
 
 async function doPrune() {
+  confirmPrune.value = false
   busy.value = 'prune'
   try {
     // 不带参数 ⇒ 后端用设置页里的保留策略，与每天自动清理完全一致
@@ -277,9 +292,18 @@ async function savePolicy() {
   if (!policy.value) return
   savingPolicy.value = true
   try {
-    policy.value = await api.put<Settings>('/api/settings', policy.value)
+    // 只提交本页负责的四个字段（PATCH）。以前是把整份 Settings PUT 回去 ——
+    // 那份快照是进页面时拉的，期间在设置页改过并发度/检测周期就会被悄悄还原。
+    policy.value = await api.patch<Settings>('/api/settings', {
+      backupKeepPerContainer: policy.value.backupKeepPerContainer,
+      backupMaxAgeDays: policy.value.backupMaxAgeDays,
+      backupMaxTotalMB: policy.value.backupMaxTotalMB,
+      backupKeepPreUpdate: policy.value.backupKeepPreUpdate,
+    })
     pruneKeep.value = policy.value.backupKeepPerContainer
     pruneDays.value = policy.value.backupMaxAgeDays
+    // 同步全局副本，避免设置页还显示旧值
+    void app.loadSettings()
     toast.success('保留策略已保存', '每天自动清理与「清理过期」都会按它执行')
   } catch (e) {
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
@@ -368,7 +392,7 @@ onMounted(async () => {
               : '宿主机的 /var/lib/docker/volumes 没有映射进来，卷数据打不了包'
           "
         >
-          <input v-model="snapshotWithVolumes" type="checkbox" class="h-[13px] w-[13px] accent-[#f5a524]" />
+          <input v-model="snapshotWithVolumes" type="checkbox" class="h-[13px] w-[13px] accent-warn" />
           含卷数据
         </label>
         <button class="dh-btn dh-btn-primary" :disabled="!snapshotTarget || busy === 'snapshot'" @click="doSnapshot">
@@ -380,7 +404,7 @@ onMounted(async () => {
         <button class="dh-btn dh-btn-sm" @click="openImport">
           <Upload class="h-3 w-3" />导入备份包
         </button>
-        <button v-if="tab === 'snapshots'" class="dh-btn dh-btn-sm" :disabled="busy === 'prune'" @click="doPrune">
+        <button v-if="tab === 'snapshots'" class="dh-btn dh-btn-sm" :disabled="busy === 'prune'" @click="confirmPrune = true">
           <Trash2 class="h-3 w-3" />清理过期
         </button>
         <button class="dh-btn dh-btn-sm" :disabled="loading" @click="load">
@@ -399,7 +423,11 @@ onMounted(async () => {
       <div class="dh-card p-3.5">
         <div class="text-[12px] text-text-4">占用空间</div>
         <div class="mt-1.5 text-[20px] font-semibold leading-none">{{ formatBytes(stats?.sizeBytes) }}</div>
-        <div class="mt-1 text-[11px] text-text-5">位于 {{ stats?.dir }}</div>
+        <div class="mt-1 text-[11px] text-text-5" :title="String(stats?.dir ?? '')">
+          <!-- 路径里没有空格，浏览器默认不换行也不断词 —— 会顶破这张卡、
+               再连带把整个内容区撑成横向可滚（手机上就是「右边被推出去」）。 -->
+          <span class="break-all">位于 {{ stats?.dir }}</span>
+        </div>
       </div>
       <div class="dh-card p-3.5">
         <div class="text-[12px] text-text-4">Docker 数据根目录</div>
@@ -521,7 +549,7 @@ onMounted(async () => {
         </div>
         <div class="border-t border-line-1" />
         <div class="flex items-start gap-2.5">
-          <span class="mt-[3px] h-[15px] w-[15px] flex-none rounded-[5px] bg-[#fbbf24] opacity-60" />
+          <span class="mt-[3px] h-[15px] w-[15px] flex-none rounded-[5px] bg-warn opacity-60" />
           <div class="text-[11.5px] leading-relaxed text-text-4">
             <b class="text-text-3">bind mount</b> 的数据在宿主机目录上，容器内默认看不见 ——
             Dockhelm 只能把路径记进快照，没法替你打包那份数据；
@@ -553,7 +581,9 @@ onMounted(async () => {
       <div class="dh-card-head">
         <Archive class="h-3.5 w-3.5 text-text-4" />
         <span>配置快照</span>
-        <span class="ml-auto text-[11.5px] font-normal text-text-5">{{ backups.length }} 份</span>
+        <span class="ml-auto text-[11.5px] font-normal text-text-5">
+          {{ backups.length }} 份 · 覆盖 {{ stats?.containers ?? 0 }} 个容器
+        </span>
       </div>
 
       <EmptyState
@@ -563,40 +593,73 @@ onMounted(async () => {
         description="更新容器时 Dockhelm 会自动写一份快照（用于失败回滚），你也可以在这里手动备份。"
       />
 
-      <div v-else class="flex flex-col">
-        <template v-for="[name, list] in grouped" :key="name">
-          <div class="flex items-center gap-2 border-b border-line-1 bg-ink-750 px-3.5 py-2">
-            <span class="text-[12.5px] font-medium">{{ name }}</span>
-            <span class="dh-badge dh-badge-plain">{{ list.length }} 份</span>
-          </div>
-          <div
-            v-for="item in list"
-            :key="item.ts"
-            class="flex flex-wrap items-center gap-2.5 border-b border-[#171f2a] px-3.5 py-2.5 last:border-b-0"
-          >
-            <div class="min-w-[150px] flex-1">
-              <div class="font-mono text-[11.5px] text-text-2">{{ item.ts }}</div>
-              <div class="text-[11px] text-text-5">
-                {{ relativeTime(item.created) }} · {{ formatBytes(item.size) }}
-              </div>
-            </div>
-            <div class="min-w-[160px] flex-1 truncate font-mono text-[11px] text-text-4" :title="item.image">
-              {{ item.image }}
-            </div>
-            <span class="dh-badge" :class="reasonTone(item.reason)">{{ reasonLabel(item.reason) }}</span>
-            <span class="dh-badge" :class="item.running ? 'dh-badge-run' : 'dh-badge-stop'">
-              {{ item.running ? '当时运行中' : '当时已停止' }}
-            </span>
-            <div class="flex gap-1.5">
-              <button class="dh-btn dh-btn-sm" @click="openRestore(item)">
-                <RotateCcw class="h-3 w-3" />还原…
-              </button>
-              <button class="dh-btn dh-btn-sm dh-btn-danger" @click="removeTarget = item">
-                <Trash2 class="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        </template>
+      <!--
+        平铺成一张表：一份快照一行。早前按容器名做分组小标题 + 数据行，
+        结果每个容器都占掉两行（标题一行、快照一行），几十份快照扫起来很累，
+        容器名也只出现在小标题上 —— 现在把容器名收进行内，一份快照就是一行。
+      -->
+      <div v-else class="overflow-x-auto">
+        <table class="dh-table">
+          <thead>
+            <tr>
+              <th>容器</th>
+              <th class="w-[130px]">快照时间</th>
+              <th class="w-[80px]">来源</th>
+              <th class="w-[110px]">内容</th>
+              <th class="w-[80px]">大小</th>
+              <th class="w-[90px]">快照时状态</th>
+              <th class="w-[130px]" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in rows" :key="item.container + '/' + item.ts">
+              <td>
+                <div class="text-[12.5px] font-medium text-text-1">{{ item.container }}</div>
+                <div class="max-w-[220px] truncate font-mono text-[10.5px] text-text-6" :title="item.image">
+                  {{ item.image || '—' }}
+                </div>
+              </td>
+              <td>
+                <div class="text-[12px] text-text-3">{{ relativeTime(item.created) }}</div>
+                <div class="font-mono text-[10.5px] text-text-6">{{ item.ts }}</div>
+              </td>
+              <td>
+                <span class="dh-badge" :class="reasonTone(item.reason)">{{ reasonLabel(item.reason) }}</span>
+              </td>
+              <td>
+                <span class="dh-badge" :class="item.withData ? 'dh-badge-accent' : 'dh-badge-plain'">
+                  {{ item.withData ? '配置 + 卷数据' : '仅配置' }}
+                </span>
+              </td>
+              <td class="font-mono text-[11.5px] text-text-4">{{ formatBytes(item.size) }}</td>
+              <!--
+                这个字段记录的是拍下这份快照那一刻容器的状态（数据来自快照里存的
+                inspect），是历史值；容器**现在**是否在运行是另一回事 —— 本页还原
+                弹窗的差异表里「当前值」那一列才是真当前状态。列头写「快照时状态」
+                就是把这个限定词提到表头，格子里只留「运行中 / 已停止」。
+              -->
+              <td>
+                <span
+                  class="dh-badge whitespace-nowrap"
+                  :class="item.running ? 'dh-badge-run' : 'dh-badge-stop'"
+                  title="拍下这份快照时容器是运行中还是已停止。容器现在是否在运行请看容器页"
+                >
+                  {{ item.running ? '运行中' : '已停止' }}
+                </span>
+              </td>
+              <td>
+                <div class="flex justify-end gap-1.5">
+                  <button class="dh-btn dh-btn-sm" @click="openRestore(item)">
+                    <RotateCcw class="h-3 w-3" />还原…
+                  </button>
+                  <button class="dh-btn dh-btn-sm dh-btn-danger" @click="removeTarget = item">
+                    <Trash2 class="h-3 w-3" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -656,9 +719,9 @@ onMounted(async () => {
 
           <div
             v-if="p.unreadable.length"
-            class="mt-2.5 flex flex-col gap-1.5 rounded-[9px] border border-[rgba(245,165,36,.3)] bg-[rgba(245,165,36,.06)] px-2.5 py-2"
+            class="mt-2.5 flex flex-col gap-1.5 rounded-[9px] border border-line-warn bg-soft-warn px-2.5 py-2"
           >
-            <div class="flex items-center gap-2 text-[11.5px] text-[#fcd34d]">
+            <div class="flex items-center gap-2 text-[11.5px] text-warn-text">
               <AlertTriangle class="h-3.5 w-3.5" />
               以下文件<b>知道路径但在 Dockhelm 容器里看不见</b>，请自行备份：
             </div>
@@ -687,6 +750,7 @@ onMounted(async () => {
       title="还原容器配置"
       :subtitle="restoreTarget ? `${restoreTarget.container} · ${restoreTarget.ts}` : ''"
       width="660px"
+      :busy="restoring"
       @close="showRestore = false; restoreResult = null"
     >
       <div v-if="restoreResult" class="flex flex-col gap-3">
@@ -694,8 +758,8 @@ onMounted(async () => {
           class="flex items-center gap-2 rounded-[10px] border px-3 py-2.5 text-[12.5px]"
           :class="
             restoreResult.ok
-              ? 'border-[rgba(52,211,153,.4)] bg-[rgba(52,211,153,.08)] text-[#4ade80]'
-              : 'border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.08)] text-[#fca5a5]'
+              ? 'border-line-ok bg-soft-ok text-run-text'
+              : 'border-line-err bg-soft-err text-err-text'
           "
         >
           <component :is="restoreResult.ok ? CheckCircle2 : AlertTriangle" class="h-4 w-4 flex-none" />
@@ -709,7 +773,7 @@ onMounted(async () => {
       </div>
 
       <div v-else class="flex flex-col gap-3">
-        <div class="flex items-start gap-2.5 rounded-[10px] border border-[rgba(245,165,36,.3)] bg-[rgba(245,165,36,.07)] px-3 py-2.5 text-[12px] leading-relaxed text-[#fcd34d]">
+        <div class="flex items-start gap-2.5 rounded-[10px] border border-line-warn bg-soft-warn px-3 py-2.5 text-[12px] leading-relaxed text-warn-text">
           <AlertTriangle class="mt-[2px] h-4 w-4 flex-none" />
           <div>
             还原会用快照里的配置创建一个<b>新的同名容器</b>，当前容器会被停止并改名成
@@ -742,10 +806,10 @@ onMounted(async () => {
               <tbody>
                 <tr v-for="d in diff" :key="d.field">
                   <td class="text-[12px] text-text-3">{{ d.field }}</td>
-                  <td class="max-w-[220px] whitespace-pre-wrap break-all font-mono text-[11px] text-[#5eead4]">
+                  <td class="max-w-[220px] whitespace-pre-wrap break-all font-mono text-[11px] text-accent-text">
                     {{ d.snapshot || '（空）' }}
                   </td>
-                  <td class="max-w-[220px] whitespace-pre-wrap break-all font-mono text-[11px] text-[#fbbf24]">
+                  <td class="max-w-[220px] whitespace-pre-wrap break-all font-mono text-[11px] text-warn-text">
                     {{ d.current || '（空）' }}
                   </td>
                 </tr>
@@ -769,11 +833,11 @@ onMounted(async () => {
             <input
               v-model="withVolumes"
               type="checkbox"
-              class="mt-[3px] h-[14px] w-[14px] accent-[#f5a524]"
+              class="mt-[3px] h-[14px] w-[14px] accent-warn"
               :disabled="!packedVolumes.length"
             />
             <span class="text-[12.5px]">
-              <b :class="packedVolumes.length ? 'text-[#fcd34d]' : 'text-text-4'">
+              <b :class="packedVolumes.length ? 'text-warn-text' : 'text-text-4'">
                 含卷数据（覆盖现有文件）
               </b>
               <div class="mt-[2px] text-[11px] leading-relaxed text-text-5">
@@ -802,7 +866,7 @@ onMounted(async () => {
 
           <div
             v-if="withVolumes && packedVolumes.length"
-            class="mt-2.5 flex items-start gap-2 rounded-[9px] border border-[rgba(248,113,113,.35)] bg-[rgba(248,113,113,.07)] px-3 py-2 text-[11.5px] leading-relaxed text-[#fca5a5]"
+            class="mt-2.5 flex items-start gap-2 rounded-[9px] border border-line-err bg-soft-err px-3 py-2 text-[11.5px] leading-relaxed text-err-text"
           >
             <AlertTriangle class="mt-[1px] h-3.5 w-3.5 flex-none" />
             <span>已勾选「含卷数据」：还原过程中会把这些卷里的现有文件覆盖成快照里的版本，无法撤销。</span>
@@ -821,7 +885,14 @@ onMounted(async () => {
     </Modal>
 
     <!-- 导入备份包 -->
-    <Modal :open="showImport" title="导入备份包" subtitle="粘贴一份快照 JSON" width="640px" @close="showImport = false">
+    <Modal
+      :open="showImport"
+      title="导入备份包"
+      subtitle="粘贴一份快照 JSON"
+      width="640px"
+      :busy="importing"
+      @close="showImport = false"
+    >
       <div class="flex flex-col gap-3">
         <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
           <Download class="mt-[2px] h-3.5 w-3.5 flex-none" />
@@ -878,14 +949,52 @@ onMounted(async () => {
       title="删除快照"
       :subtitle="removeTarget ? `${removeTarget.container} · ${removeTarget.ts}` : ''"
       width="400px"
+      :busy="removing"
       @close="removeTarget = null"
     >
       <div class="text-[12.5px] text-text-3">
         删除后这份配置快照就无法再用于还原。已经运行中的容器不受影响。
       </div>
       <template #footer>
-        <button class="dh-btn" @click="removeTarget = null">取消</button>
-        <button class="dh-btn dh-btn-danger" @click="confirmRemove">确认删除</button>
+        <button class="dh-btn" :disabled="removing" @click="removeTarget = null">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
+          <Loader2 v-if="removing" class="h-3.5 w-3.5 dh-spin" />
+          <Trash2 v-else class="h-3.5 w-3.5" />{{ removing ? '删除中…' : '确认删除' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!-- 清理过期：会真删文件，必须二次确认（其余破坏性操作都有确认，这里以前是点了就删） -->
+    <Modal
+      :open="confirmPrune"
+      title="清理过期快照"
+      width="460px"
+      :busy="busy === 'prune'"
+      @close="confirmPrune = false"
+    >
+      <div class="flex flex-col gap-3">
+        <div class="flex items-start gap-2.5 rounded-[10px] border border-line-warn bg-soft-warn px-3 py-2.5 text-[12.5px] leading-relaxed text-warn-text">
+          <AlertTriangle class="mt-[2px] h-4 w-4 flex-none" />
+          <div>
+            会按下面的保留策略<b>直接删除快照文件</b>，连同打包进去的卷数据一起，<b>不可恢复</b>。
+            「更新前快照永不自动清理」打开时，那部分不会被碰到。
+          </div>
+        </div>
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[12px] leading-relaxed text-text-3">
+          当前策略：每个容器保留最近
+          <b>{{ policy?.backupKeepPerContainer ? policy.backupKeepPerContainer + ' 份' : '不限' }}</b>
+          · 快照保留 {{ policy?.backupMaxAgeDays ? policy.backupMaxAgeDays + ' 天' : '不限' }}
+          · 总容量上限 {{ policy?.backupMaxTotalMB ? policy.backupMaxTotalMB + ' MB' : '不限' }}
+          <div class="mt-1 text-[11.5px] text-text-5">要改策略请在上面的「保留策略」卡里改并保存。</div>
+        </div>
+        <div class="text-[12px] text-text-4">当前共 {{ backups.length }} 份快照，占用 {{ formatBytes(stats?.sizeBytes) }}。</div>
+      </div>
+      <template #footer>
+        <button class="dh-btn" :disabled="busy === 'prune'" @click="confirmPrune = false">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="busy === 'prune'" @click="doPrune">
+          <Loader2 v-if="busy === 'prune'" class="h-3.5 w-3.5 dh-spin" />
+          <Trash2 v-else class="h-3.5 w-3.5" />确认清理
+        </button>
       </template>
     </Modal>
 

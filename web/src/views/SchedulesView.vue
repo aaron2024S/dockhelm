@@ -19,6 +19,7 @@ const running = ref<number | null>(null)
 const removeTarget = ref<Schedule | null>(null)
 const saveError = ref('')
 const saving = ref(false)
+const removing = ref(false)
 let closeStream: (() => void) | null = null
 
 /** 表单当前是在「新建」还是「编辑」——两者共用同一张内联卡片。 */
@@ -131,6 +132,36 @@ function applyCron(cron: string) {
 }
 
 const actionMeta = computed(() => actions.value.find((a) => a.key === form.value.action))
+/** 这个动作是否必须明确挑容器（清理悬空镜像这类全局动作不需要）。 */
+const needsTargets = computed(() => actionMeta.value?.needsTargets !== false)
+
+/**
+ * 组装提交给后端的任务体。
+ *
+ * 后端 scheduleReq 开了 DisallowUnknownFields，**只**接受 name / cron / action / targets / enabled
+ * 这五个键。早先这里把整条 Schedule（带 id、lastRun、lastStatus…）一起提交，后端直接回
+ * `json: unknown field "id"` —— 新建和编辑都提交不了。
+ */
+function toPayload(enabled: boolean) {
+  return {
+    name: form.value.name.trim(),
+    cron: composedCron.value,
+    action: form.value.action,
+    targets: needsTargets.value ? [...form.value.targets] : [],
+    enabled,
+  }
+}
+
+/** 这些容器永远不会被计划任务作用到，勾了也没用。 */
+function blockedTarget(c: ContainerView) {
+  return !!c.self || excluded.value.includes(c.name)
+}
+
+function blockedReason(c: ContainerView) {
+  if (c.self) return '这是 Dockhelm 自己，任何计划任务都不会作用到它'
+  if (excluded.value.includes(c.name)) return '在设置页的排除列表里，任何计划任务都会跳过它'
+  return '选中这个容器'
+}
 
 async function load() {
   loading.value = true
@@ -185,29 +216,18 @@ async function save() {
     saveError.value = '请填写任务名称'
     return
   }
-  if (actionMeta.value?.needsTargets === false) {
-    form.value.targets = []
+  if (needsTargets.value && !form.value.targets.length) {
+    saveError.value = '请至少选择一个容器 ——「不选」不再等于全部容器'
+    return
   }
   saveError.value = ''
   saving.value = true
-  const payload = {
-    id: editingId.value,
-    name: form.value.name.trim(),
-    cron: composedCron.value,
-    action: form.value.action,
-    targets: form.value.targets,
-    enabled: form.value.enabled,
-    lastRun: '',
-    lastStatus: '',
-    lastMessage: '',
-    createdAt: '',
-  }
   try {
     if (editingId.value) {
-      await api.put(`/api/schedules/${editingId.value}`, payload)
+      await api.put(`/api/schedules/${editingId.value}`, toPayload(form.value.enabled))
       toast.success('任务已更新')
     } else {
-      await api.post('/api/schedules', payload)
+      await api.post('/api/schedules', toPayload(form.value.enabled))
       toast.success('任务已创建')
     }
     resetForm()
@@ -221,7 +241,9 @@ async function save() {
 
 async function toggleEnabled(s: Schedule) {
   try {
-    await api.put(`/api/schedules/${s.id}`, { ...s, enabled: !s.enabled })
+    // 单独的口子：启用状态与任务定义无关，不该把整份定义再提交一遍去过校验
+    // （老的空目标任务那样会连停用都被挡住）。
+    await api.post(`/api/schedules/${s.id}/enabled`, { enabled: !s.enabled })
     await load()
   } catch (e) {
     toast.error('更新失败', e instanceof Error ? e.message : String(e))
@@ -244,7 +266,8 @@ async function runNow(s: Schedule) {
 
 async function confirmRemove() {
   const s = removeTarget.value
-  if (!s) return
+  if (!s || removing.value) return
+  removing.value = true
   try {
     await api.del(`/api/schedules/${s.id}`)
     toast.success('任务已删除')
@@ -253,6 +276,8 @@ async function confirmRemove() {
     await load()
   } catch (e) {
     toast.error('删除失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    removing.value = false
   }
 }
 
@@ -292,10 +317,16 @@ const upcoming = computed(() => {
     .slice(0, 6)
 })
 
-/** 目标列：全部容器时把全局排除列表也摊开说清。 */
+/**
+ * 目标列。
+ *
+ * 空目标**不再**等于「全部容器」——清理类动作本来就不需要目标，写「不适用」；
+ * 其余动作的空目标是历史遗留（旧语义留下的），明确说清它不会执行。
+ */
 function targetsText(s: Schedule) {
-  if (!s.targets?.length) return ['全部容器']
-  return s.targets
+  if (s.targets?.length) return s.targets
+  if (s.action === 'prune_images') return ['不适用（全局动作）']
+  return ['未指定 —— 任务不会执行']
 }
 
 // —— 执行历史 ——
@@ -379,9 +410,8 @@ onUnmounted(() => closeStream?.())
                 </div>
               </td>
               <td class="text-[11.5px] text-text-5">
-                <div class="line-clamp-2">{{ targetsText(s).join('、') }}</div>
-                <div v-if="!s.targets?.length && excluded.length" class="text-[11px] text-[#fca5a5]">
-                  − {{ excluded.join(', ') }}
+                <div class="line-clamp-2" :class="!s.targets?.length && s.action !== 'prune_images' ? 'text-err-text' : ''">
+                  {{ targetsText(s).join('、') }}
                 </div>
               </td>
               <td>
@@ -393,7 +423,7 @@ onUnmounted(() => closeStream?.())
               </td>
               <td class="text-[11.5px] text-text-5">
                 <div>{{ s.lastRun ? formatDayTime(s.lastRun) : '—' }}</div>
-                <div v-if="s.lastStatus" :class="s.lastStatus === 'failed' ? 'text-[#fca5a5]' : 'text-[#4ade80]'">
+                <div v-if="s.lastStatus" :class="s.lastStatus === 'failed' ? 'text-err-text' : 'text-run-text'">
                   {{ statusBadge(s).text }}<template v-if="s.lastStatus === 'success' && s.targets?.length">
                     {{ ' ' + s.targets.length }}</template>
                 </div>
@@ -441,10 +471,10 @@ onUnmounted(() => closeStream?.())
             <input v-model="form.name" class="dh-input" placeholder="例如：夜间重启下载器" />
           </div>
 
-          <div v-if="actionMeta?.needsTargets !== false">
+          <div v-if="needsTargets">
             <label class="dh-label">
               选择容器
-              <span class="text-text-6">（不选 = 全部容器，自动排除 Dockhelm 自身与排除列表）</span>
+              <span class="text-text-6">（必选；Dockhelm 自身与排除列表里的容器选不了）</span>
             </label>
             <div class="dh-scroll flex max-h-[132px] flex-wrap gap-1.5 overflow-auto rounded-[10px] border border-line-1 bg-ink-800 p-2">
               <button
@@ -453,15 +483,19 @@ onUnmounted(() => closeStream?.())
                 type="button"
                 class="dh-chip"
                 :data-on="form.targets.includes(c.name)"
+                :disabled="blockedTarget(c)"
+                :title="blockedReason(c)"
                 @click="toggleTarget(c.name)"
               >
                 {{ c.name }}
                 <span v-if="c.self" class="text-[10px] text-text-5">自身</span>
+                <span v-else-if="excluded.includes(c.name)" class="text-[10px] text-text-5">已排除</span>
               </button>
               <div v-if="!containers.length" class="p-1 text-[11.5px] text-text-5">读不到容器列表</div>
             </div>
-            <div class="mt-1 text-[11px] text-text-5">
-              已选 {{ form.targets.length }} 个{{ form.targets.length ? '' : '（等于全部容器）' }}
+            <div class="mt-1 text-[11px]" :class="form.targets.length ? 'text-text-5' : 'text-err-text'">
+              <template v-if="form.targets.length">已选 {{ form.targets.length }} 个</template>
+              <template v-else>还没选容器 —— 至少要选一个，任务才会执行</template>
             </div>
           </div>
 
@@ -529,7 +563,7 @@ onUnmounted(() => closeStream?.())
         </div>
         <div v-else class="dh-card-body flex flex-col gap-2.5">
           <div v-for="u in upcoming" :key="u.s.id" class="flex items-center gap-2.5">
-            <span class="w-[74px] flex-none font-mono text-[11.5px] text-[#5eead4]">
+            <span class="w-[74px] flex-none font-mono text-[11.5px] text-accent-text">
               {{ formatDayTime(u.t) }}
             </span>
             <span class="min-w-0 flex-1 truncate text-[12.5px]">{{ u.s.name }}</span>
@@ -547,12 +581,15 @@ onUnmounted(() => closeStream?.())
       title="删除计划任务"
       :subtitle="removeTarget?.name"
       width="400px"
+      :busy="removing"
       @close="removeTarget = null"
     >
       <div class="text-[12.5px] text-text-3">删除后该任务不再自动执行，已有的执行记录仍然保留。</div>
       <template #footer>
-        <button class="dh-btn" @click="removeTarget = null">取消</button>
-        <button class="dh-btn dh-btn-danger" @click="confirmRemove">确认删除</button>
+        <button class="dh-btn" :disabled="removing" @click="removeTarget = null">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
+          {{ removing ? '删除中…' : '确认删除' }}
+        </button>
       </template>
     </Modal>
 
