@@ -388,24 +388,24 @@ onUnmounted(() => closeStream?.())
         description="在下面的「新建任务」里挑几个容器、选个时间和动作，就能定时启停或更新它们。"
       />
       <div v-else class="overflow-x-auto">
-        <table class="dh-table">
+        <table class="dh-table dh-table-fixed dh-sched-table">
           <thead>
             <tr>
-              <th>任务名称</th>
-              <th class="w-[150px]">目标</th>
-              <th class="w-[110px]">动作</th>
-              <th class="w-[170px]">计划</th>
-              <th class="w-[150px]">上次执行</th>
-              <th class="w-[150px]">下次执行</th>
-              <th class="w-[90px] text-right">启用</th>
-              <th class="w-[140px]" />
+              <th class="w-[21%]">任务名称</th>
+              <th class="w-[11%]">目标</th>
+              <th class="w-[8%]">动作</th>
+              <th class="w-[13%]">计划</th>
+              <th class="w-[11%]">上次执行</th>
+              <th class="w-[13%]">下次执行</th>
+              <th class="w-[7%] text-right">启用</th>
+              <th class="w-[16%] text-right">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="s in schedules" :key="s.id" :class="s.enabled ? '' : 'opacity-55'">
               <td>
                 <div class="text-[13px] font-semibold">{{ s.name }}</div>
-                <div v-if="s.lastMessage" class="mt-0.5 max-w-[280px] truncate text-[11.5px] text-text-5" :title="s.lastMessage">
+                <div v-if="s.lastMessage" class="mt-0.5 truncate text-[11.5px] text-text-5" :title="s.lastMessage">
                   {{ s.lastMessage }}
                 </div>
               </td>

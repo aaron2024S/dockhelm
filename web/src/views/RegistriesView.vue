@@ -5,22 +5,23 @@ import {
   CheckCircle2,
   Copy,
   Gauge,
+  GripVertical,
   Info,
   Loader2,
   Plus,
   Rocket,
   Save,
-  Trash2,
-  XCircle,
   Zap,
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
-import type { MirrorConfig, RegistriesResponse, Settings } from '@/api/types'
+import type { MirrorConfig, RegistriesResponse, RegistrySettings, Settings } from '@/api/types'
+import { formatDayTime } from '@/utils/format'
 import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import SettingRow from '@/components/SettingRow.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
+import UiSwitch from '@/components/UiSwitch.vue'
 
 const toast = useToastStore()
 const app = useAppStore()
@@ -53,6 +54,7 @@ async function load() {
   loading.value = true
   try {
     data.value = await api.get<RegistriesResponse>('/api/registries')
+    savedSig.value = sigOf(data.value.settings)
   } catch (e) {
     toast.error('读取加速源配置失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -119,6 +121,93 @@ async function addPresets() {
 function removeMirror(idx: number) {
   data.value?.settings.mirrors.splice(idx, 1)
 }
+
+/* ---------------------------------------------------------------------------
+   拖动排序：顺序就是这个列表的优先级（daemonSnippet 按数组顺序生成），
+   所以「拖一下就变顺序」比抄来抄去地址直观得多。
+
+   用 pointer 事件而不是 HTML5 dragstart：后者在触屏上根本不触发，
+   而这一页用户多半是拿手机开的。手柄上写了 touch-action:none，
+   拖动时不会连带把页面滚起来。
+--------------------------------------------------------------------------- */
+const dragFrom = ref(-1)
+const dragOver = ref(-1)
+let dragMoved = false
+
+function moveMirror(from: number, to: number) {
+  const list = data.value?.settings.mirrors
+  if (!list) return
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return
+  const [row] = list.splice(from, 1)
+  if (!row) return
+  list.splice(to, 0, row)
+  dragFrom.value = to
+  dragOver.value = to
+  dragMoved = true
+}
+
+function startDrag(i: number, ev: PointerEvent) {
+  if (mirrors.value.length < 2) return
+  ev.preventDefault()
+  dragFrom.value = i
+  dragOver.value = i
+  dragMoved = false
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
+}
+
+/** 指针越过某行中线就把它换过去（实时换位，拖动时看到的就是最终顺序）。 */
+function onDragMove(ev: PointerEvent) {
+  const from = dragFrom.value
+  if (from < 0) return
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-mirror-row]'))
+  for (let k = 0; k < rows.length; k++) {
+    if (k === from) continue
+    const el = rows[k]
+    if (!el) continue
+    const rect = el.getBoundingClientRect()
+    const mid = rect.top + rect.height / 2
+    if (k < from && ev.clientY < mid) return moveMirror(from, k)
+    if (k > from && ev.clientY > mid) return moveMirror(from, k)
+  }
+}
+
+function endDrag() {
+  dragFrom.value = -1
+  dragOver.value = -1
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', endDrag)
+  window.removeEventListener('pointercancel', endDrag)
+  if (dragMoved) toast.success('顺序已调整', '点「保存」后生效')
+  dragMoved = false
+}
+
+/** 键盘等价操作：手柄聚焦后用 ↑ ↓ 换位（列表里有 5、6 条时很顺手）。 */
+function onGripKey(i: number, ev: KeyboardEvent) {
+  if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return
+  ev.preventDefault()
+  const to = ev.key === 'ArrowUp' ? i - 1 : i + 1
+  if (to < 0 || to >= mirrors.value.length) return
+  moveMirror(i, to)
+  toast.success('顺序已调整', '点「保存」后生效')
+  dragMoved = false
+}
+
+/**
+ * 保存基线。只比对「用户能改的字段」——
+ * 测速结果（延迟 / 报错）是点一下就会写回列表的，不能因此把页面标成「有未保存的改动」。
+ */
+const savedSig = ref('')
+function sigOf(s: RegistrySettings | undefined): string {
+  if (!s) return ''
+  return JSON.stringify({
+    mirrors: s.mirrors.map((m) => [m.url, m.note, m.enabled]),
+    pullMirror: s.pullMirror,
+    insecure: s.insecure,
+  })
+}
+const dirty = computed(() => !!data.value && sigOf(data.value.settings) !== savedSig.value)
 
 /** 把测速结果按地址写回列表里对应的那一行。 */
 function applyResults(list: MirrorConfig[], results: MirrorConfig[]) {
@@ -191,6 +280,38 @@ const latencyTone = (m: MirrorConfig) => {
   return 'dh-badge-plain'
 }
 
+/** 连通性徽标文案：正常时给延迟，失败时给人话。 */
+function connText(m: MirrorConfig): string {
+  if (!m.lastTested) return '未测速'
+  if (m.ok) return `正常 · ${m.latencyMs ?? 0} ms`
+  return shortErr(m.err)
+}
+
+/**
+ * 把探测失败的原因压成一句话。
+ *
+ * 后端直出的是 Go 的网络错误原文（可能带完整 URL、几十个字），
+ * 塞进徽标里既难看也读不懂 —— 这里归成「域名解析失败 / 403 拒绝访问」这类结论。
+ */
+function shortErr(err?: string): string {
+  const s = (err ?? '').trim()
+  if (!s) return '连接失败'
+  if (/no such host|server misbehaving|lookup .* on /i.test(s)) return '域名解析失败'
+  if (/deadline exceeded|timed out|timeout/i.test(s)) return '连接超时'
+  if (/connection refused/i.test(s)) return '拒绝连接'
+  if (/certificate|x509|tls:/i.test(s)) return '证书错误'
+  if (/connection reset|unexpected EOF/i.test(s)) return '连接被重置'
+  const http = s.match(/HTTP\s*(\d{3})/)
+  if (http) {
+    const code = Number(http[1])
+    if (code === 401 || code === 403) return `${code} 拒绝访问`
+    if (code === 404) return '404 未找到'
+    if (code >= 500) return `${code} 服务异常`
+    return `HTTP ${code}`
+  }
+  return s.length > 18 ? `${s.slice(0, 18)}…` : s
+}
+
 /**
  * 本页只借 /api/settings 里的一个开关：directFirst（显式域名优先）。
  *
@@ -256,12 +377,13 @@ onMounted(() => {
     </div>
 
     <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-      <!-- 我的加速源列表 -->
-      <div class="dh-card">
+      <!-- 我的加速源列表：整行铺满 —— 表格化之后列需要宽度，挤在半栏里会被压扁 -->
+      <div class="dh-card xl:col-span-2">
         <div class="dh-card-head">
           <Rocket class="h-3.5 w-3.5 text-text-4" />
           <span>我的加速源</span>
-          <div class="ml-auto flex gap-2">
+          <div class="ml-auto flex items-center gap-2">
+            <span v-if="dirty" class="text-[11.5px] text-warn-text">有未保存的改动</span>
             <button class="dh-btn dh-btn-sm" :disabled="testing" @click="testAll">
               <Gauge class="h-3 w-3" :class="testing ? 'dh-spin' : ''" />批量测速
             </button>
@@ -291,49 +413,83 @@ onMounted(() => {
           :action-label="!loading && presets.length ? '加入预置的常用加速站' : ''"
           @action="addPresets"
         />
-        <div v-else class="flex flex-col">
-          <div
-            v-for="(m, i) in mirrors"
-            :key="m.url"
-            class="flex flex-wrap items-center gap-2 border-b border-line-row px-3 py-2.5 last:border-b-0"
-          >
-            <input
-              type="checkbox"
-              class="h-[14px] w-[14px] accent-accent"
-              :checked="m.enabled"
-              @change="m.enabled = !m.enabled"
-              title="启用这个加速源"
-            />
-            <div class="min-w-0 flex-1">
-              <div class="truncate font-mono text-[11.5px] text-text-2">{{ m.url }}</div>
-              <div class="flex items-center gap-1.5 text-[11px] text-text-5">
-                <!-- 「预置」只是个来源标记：表示这条是随应用自带的，删掉与删自建条目没区别 -->
-                <span v-if="m.builtin" class="dh-badge dh-badge-plain flex-none">预置</span>
-                <span v-if="m.note" class="truncate">{{ m.note }}</span>
-              </div>
-            </div>
-            <span v-if="m.lastTested" class="dh-badge" :class="latencyTone(m)">
-              <CheckCircle2 v-if="m.ok" class="h-3 w-3" />
-              <XCircle v-else class="h-3 w-3" />
-              {{ m.ok ? m.latencyMs + ' ms' : '不可用' }}
-            </span>
-            <button class="dh-btn dh-btn-sm" :disabled="testingUrl === m.url" @click="testOne(m.url)">
-              <Zap class="h-3 w-3" :class="testingUrl === m.url ? 'dh-spin' : ''" />测速
-            </button>
-            <button class="dh-btn dh-btn-sm dh-btn-danger" @click="removeMirror(i)">
-              <Trash2 class="h-3 w-3" />
-            </button>
+        <div v-else class="overflow-x-auto">
+          <table class="dh-table dh-table-fixed">
+            <thead>
+              <tr>
+                <th class="w-[38px]" />
+                <th>加速源地址</th>
+                <th class="w-[175px]">连通性</th>
+                <th class="w-[130px]">上次测速</th>
+                <th class="w-[70px] text-right">启用</th>
+                <th class="w-[130px] text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(m, i) in mirrors"
+                :key="m.url"
+                data-mirror-row
+                :class="{
+                  'dh-drag-row': dragFrom === i,
+                  'dh-drag-over': dragOver === i && dragFrom >= 0 && dragFrom !== i,
+                }"
+              >
+                <td class="!px-2">
+                  <button
+                    type="button"
+                    class="dh-grip"
+                    :aria-label="`拖动调整 ${m.url} 的优先级，也可用上下方向键`"
+                    title="拖动调整优先级（也可用 ↑ ↓）"
+                    @pointerdown="startDrag(i, $event)"
+                    @keydown="onGripKey(i, $event)"
+                  >
+                    <GripVertical class="h-3.5 w-3.5" />
+                  </button>
+                </td>
+                <td>
+                  <div class="truncate font-mono text-[12px] text-text-2" :title="m.url">{{ m.url }}</div>
+                  <div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-5">
+                    <!-- 「预置」只是个来源标记：表示这条是随应用自带的，删掉与删自建条目没区别 -->
+                    <span v-if="m.builtin" class="dh-badge dh-badge-plain flex-none">预置</span>
+                    <span v-if="m.note" class="truncate">{{ m.note }}</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="dh-badge" :class="latencyTone(m)">{{ connText(m) }}</span>
+                </td>
+                <td class="text-[11.5px] text-text-5">
+                  {{ m.lastTested ? formatDayTime(m.lastTested) : '—' }}
+                </td>
+                <td class="text-right">
+                  <UiSwitch
+                    :model-value="m.enabled"
+                    :label="`启用 ${m.url}`"
+                    @update:model-value="(v: boolean) => (m.enabled = v)"
+                  />
+                </td>
+                <td class="text-right whitespace-nowrap">
+                  <button class="dh-link" :disabled="testingUrl === m.url" @click="testOne(m.url)">
+                    {{ testingUrl === m.url ? '测速中…' : '测速' }}
+                  </button>
+                  <span class="mx-1.5 text-text-6">·</span>
+                  <button class="dh-link dh-link-danger" @click="removeMirror(i)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="border-t border-line-row px-4 py-2 text-[11px] text-text-6">
+            拖动左侧把手调整优先级：从上到下依次尝试，前面失败会自动顺延下一个。
           </div>
         </div>
       </div>
 
-      <div class="flex flex-col gap-3.5">
-        <!-- 拉取策略 -->
-        <div class="dh-card">
-          <div class="dh-card-head">
-            <Zap class="h-3.5 w-3.5 text-text-4" />
-            <span>Dockhelm 自己的拉取策略</span>
-          </div>
+      <!-- 拉取策略 -->
+      <div class="dh-card">
+        <div class="dh-card-head">
+          <Zap class="h-3.5 w-3.5 text-text-4" />
+          <span>Dockhelm 自己的拉取策略</span>
+        </div>
         <div class="dh-card-body flex flex-col gap-3">
           <div>
             <label class="dh-label">拉取加速源</label>
@@ -376,12 +532,11 @@ onMounted(() => {
             <div class="text-[11.5px] leading-relaxed text-text-5">
               把这段贴进 NAS 上的 <code class="text-text-3">/etc/docker/daemon.json</code>（群晖在
               Docker 套件的设置里，或 Container Manager 的「注册表镜像」），重启 Docker 服务后生效。
-              内容是上表里<b class="text-text-3">勾选启用</b>的加速源。
+              内容是上表里<b class="text-text-3">已启用</b>的加速源，顺序与上表一致。
             </div>
             <pre class="mt-2.5 overflow-x-auto rounded-[9px] border border-line-3 bg-ink-800 px-3 py-2.5 font-mono text-[11.5px] leading-[1.8] text-text-2">{{ data?.snippet }}</pre>
           </div>
         </div>
-      </div>
     </div>
 
     <!--

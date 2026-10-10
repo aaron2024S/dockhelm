@@ -421,6 +421,78 @@ html.light {
     background: var(--color-accent-row);
   }
 
+  /* 列宽按比例分、屏幕变窄时整表横滑，而不是把每一列挤扁 */
+  .dh-table-fixed {
+    table-layout: fixed;
+    min-width: 860px;
+  }
+  /* 固定布局下，单元格不写 overflow 的话，里面的 truncate 是不生效的 */
+  .dh-table-fixed td {
+    overflow: hidden;
+  }
+  /* 计划任务列多、右侧还有三个操作按钮，给宽一点再横滑 */
+  .dh-sched-table {
+    min-width: 900px;
+  }
+
+  /* 拖拽排序手柄（加速源优先级）。
+     touch-action:none 是必须的 —— 手机上手指按住手柄往上下拖时，
+     浏览器默认会把手势当成页面滚动，pointermove 就断在半路了。 */
+  .dh-grip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-6);
+    cursor: grab;
+    touch-action: none;
+  }
+  .dh-grip:hover {
+    color: var(--color-accent);
+    background: var(--color-ink-800);
+  }
+  .dh-grip:active {
+    cursor: grabbing;
+  }
+  .dh-drag-row {
+    background: var(--color-accent-row);
+  }
+  .dh-drag-row td {
+    opacity: 0.7;
+  }
+  /* 落点提示：目标行顶部一条插入线 */
+  .dh-drag-over td {
+    box-shadow: inset 0 2px 0 var(--color-accent);
+  }
+
+  /* 表格里的文字链操作（比一排小按钮轻，贴近设计稿） */
+  .dh-link {
+    padding: 0;
+    border: none;
+    background: transparent;
+    font-size: 11.5px;
+    color: var(--color-text-3);
+    cursor: pointer;
+  }
+  .dh-link:hover:not(:disabled) {
+    color: var(--color-accent);
+  }
+  .dh-link:disabled {
+    color: var(--color-text-6);
+    cursor: default;
+  }
+  .dh-link-danger {
+    color: var(--color-err-text);
+  }
+  .dh-link-danger:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
   /* 开关 */
   .dh-switch {
     position: relative;
