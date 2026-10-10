@@ -200,13 +200,14 @@ function barFillClass(name: string): string {
   }
 }
 function barEdgeClass(name: string): string {
+  // 右缘用渐变淡出而不是实色边线：之前是 2px 全饱和竖线，横贯整张卡片太生硬
   switch (doneOf(name)) {
     case 'updated':
-      return 'bg-run/70'
+      return 'bg-gradient-to-l from-run/40 to-transparent'
     case 'failed':
-      return 'bg-err'
+      return 'bg-gradient-to-l from-err/40 to-transparent'
     default:
-      return 'bg-accent'
+      return 'bg-gradient-to-l from-accent/40 to-transparent'
   }
 }
 function progressTextClass(name: string): string {
@@ -571,7 +572,8 @@ function closeMenu() {
           :class="barFillClass(c.name)"
           :style="{ width: pctOf(c.name) + '%' }"
         >
-          <div class="absolute inset-y-0 right-0 w-[2px]" :class="barEdgeClass(c.name)" />
+          <!-- 右缘 12px 渐变柔光（原为 2px 实线，太生硬） -->
+          <div class="absolute inset-y-0 right-0 w-3" :class="barEdgeClass(c.name)" />
         </div>
 
         <div class="flex items-start gap-2.5">
