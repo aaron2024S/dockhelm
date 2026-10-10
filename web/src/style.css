@@ -666,6 +666,13 @@ html.light {
   .dh-tl:last-child {
     border-bottom: none;
   }
+  /* 手机上横向预算紧张：时间列 + 两枚徽标 + 4 个间距已占掉大半，
+     间距收紧一档，剩下的靠中间「对象名 / 消息」的 truncate 自行收缩。 */
+  @media (max-width: 767px) {
+    .dh-tl {
+      gap: 8px;
+    }
+  }
 
   /* 登录卡片（设计稿 .lglogo / .field / .eye） */
   /* 登录页的品牌方块：里面放 logo 图形（方案 C · 航向罗盘），不再是字母 D */

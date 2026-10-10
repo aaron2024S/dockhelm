@@ -430,11 +430,13 @@ onUnmounted(() => {
       <div v-if="!recentRows.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
       <div v-else class="dh-card-body flex flex-col py-1">
         <div v-for="l in recentRows" :key="l.id" class="dh-tl">
-          <div class="w-[86px] flex-none text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
+          <!-- 时间列：桌面上留足「昨天 HH:mm / 日期」的宽度；手机收紧到 72px，
+               别把行尾的结果徽标挤出卡片（360px 视口下 86px 必溢出）。 -->
+          <div class="w-[86px] max-md:w-[72px] flex-none whitespace-nowrap text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
           <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ runKindLabel(l.kind) }}</span>
           <span
             v-if="refShown(l)"
-            class="max-w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3"
+            class="max-w-[110px] min-w-0 truncate font-mono text-[11.5px] text-text-3"
             :title="l.ref"
           >{{ l.ref }}</span>
           <span class="min-w-0 flex-1 truncate text-[12.5px] text-text-2" :title="l.message">
