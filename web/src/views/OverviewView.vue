@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { AlertTriangle, ArrowRight } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
@@ -142,6 +142,43 @@ const nextRun = computed(() => {
 const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 15))
 
 /**
+ * 窄屏「最近执行记录」横滑状态。
+ *
+ * 行的宽度是桌面档位（不被压缩），窄屏放不下就整块左右滑 ⇒ 需要一个「右缘还有内容」
+ * 的视觉提示，以及首次使用的一行文字提示。两者都在滑到底 / 滑过一次后自动收起，
+ * 不做无谓的常驻噪音。宽屏下内容不溢出，这两个提示根本不会出现。
+ */
+const recentScrollEl = ref<HTMLElement | null>(null)
+/** 内容比容器宽（真的能横滑）。 */
+const recentOverflow = ref(false)
+/** 已经滑到最右。 */
+const recentAtEnd = ref(true)
+/** 已经离开最左端（右滑过）—— 左缘渐隐靠它出现/消失。 */
+const recentScrolled = ref(false)
+/** 用户滑过一次之后就不再提示。 */
+const recentTouched = ref(false)
+
+function syncRecentScroll() {
+  const el = recentScrollEl.value
+  if (!el) {
+    recentOverflow.value = false
+    recentAtEnd.value = true
+    recentScrolled.value = false
+    return
+  }
+  recentOverflow.value = el.scrollWidth > el.clientWidth + 1
+  recentAtEnd.value = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
+  recentScrolled.value = el.scrollLeft > 2
+}
+function onRecentScroll() {
+  if ((recentScrollEl.value?.scrollLeft ?? 0) > 4) recentTouched.value = true
+  syncRecentScroll()
+}
+
+// 数据换一批（含首次加载）后重算：等 DOM 落地再量（flush: 'post'）。
+watch(recentRows, syncRecentScroll, { flush: 'post' })
+
+/**
  * 总览行要不要显示对象列（ref 里存的是容器/计划任务/快照名）。
  * 此前只显示 message，更新类记录就只剩一串镜像 ID，看不出更新的是哪个容器。
  * auto_check 的 ref 是 schedule|manual（徽标已表达）、image 的 ref 是镜像 ID、
@@ -212,10 +249,14 @@ onMounted(() => {
       later(() => void load(), 800)
     }
   })
+  // 横滑提示要跟着窗口尺寸重算（旋转屏幕 / 拖窗口都会改变是否溢出）
+  window.addEventListener('resize', syncRecentScroll)
+  void nextTick(syncRecentScroll)
 })
 
 onUnmounted(() => {
   closeStream?.()
+  window.removeEventListener('resize', syncRecentScroll)
   if (usageTimer !== undefined) window.clearInterval(usageTimer)
   timers.forEach((t) => window.clearTimeout(t))
   timers = []
@@ -428,22 +469,52 @@ onUnmounted(() => {
         <span class="ml-auto text-[12px] font-normal text-text-4">最近 {{ recentRows.length }} 条</span>
       </div>
       <div v-if="!recentRows.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
-      <div v-else class="dh-card-body flex flex-col py-1">
-        <div v-for="l in recentRows" :key="l.id" class="dh-tl">
-          <!-- 时间列：桌面上留足「昨天 HH:mm / 日期」的宽度；手机收紧到 72px，
-               别把行尾的结果徽标挤出卡片（360px 视口下 86px 必溢出）。 -->
-          <div class="w-[86px] max-md:w-[72px] flex-none whitespace-nowrap text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
-          <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ runKindLabel(l.kind) }}</span>
-          <span
-            v-if="refShown(l)"
-            class="max-w-[110px] min-w-0 truncate font-mono text-[11.5px] text-text-3"
-            :title="l.ref"
-          >{{ l.ref }}</span>
-          <span class="min-w-0 flex-1 truncate text-[12.5px] text-text-2" :title="l.message">
-            {{ l.message }}
-          </span>
-          <span class="dh-badge flex-none" :class="resultBadge(l).cls">{{ resultBadge(l).text }}</span>
+      <div v-else class="dh-card-body relative py-1">
+        <!-- 窄屏这一行信息量太大，硬挤会把行尾徽标顶出卡片、压小又局促 ⇒ 整块左右滑动：
+             行宽保持桌面档位，滑出去看对象名与消息全文。
+             手机上再用 CSS order 把「结果徽标」提到类型徽标后面 —— 时间/类型/结果三样
+             不用滑动就能看全，剩下的当作细节滑出来。 -->
+        <div ref="recentScrollEl" class="dh-xscroll" @scroll.passive="onRecentScroll">
+          <div class="flex flex-col max-md:min-w-[600px]">
+            <div v-for="l in recentRows" :key="l.id" class="dh-tl">
+              <div class="w-[86px] flex-none text-[11.5px] text-text-5 max-md:order-1">
+                {{ logTime(l.ts) }}
+              </div>
+              <span class="dh-badge flex-none max-md:order-2" :class="kindClass(l.kind, l.status)">
+                {{ runKindLabel(l.kind) }}
+              </span>
+              <span class="dh-badge flex-none max-md:order-3" :class="resultBadge(l).cls">
+                {{ resultBadge(l).text }}
+              </span>
+              <span
+                v-if="refShown(l)"
+                class="max-w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3 max-md:order-4"
+                :title="l.ref"
+              >{{ l.ref }}</span>
+              <span
+                class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-5"
+                :title="l.message"
+              >
+                {{ l.message }}
+              </span>
+            </div>
+          </div>
         </div>
+        <!-- 右缘渐隐：表示右边还有内容；滑到底就收掉。左缘同理（滑回去后消失）。 -->
+        <div
+          v-if="recentOverflow && !recentAtEnd"
+          class="dh-xfade pointer-events-none absolute inset-y-0 right-0 w-9 md:hidden"
+        />
+        <div
+          v-if="recentOverflow && recentScrolled"
+          class="dh-xfade-l pointer-events-none absolute inset-y-0 left-0 w-9 md:hidden"
+        />
+      </div>
+      <div
+        v-if="recentOverflow && !recentTouched"
+        class="px-3.5 pb-2 text-[11px] text-text-5 md:hidden"
+      >
+        ← 左右滑动查看完整内容
       </div>
     </div>
   </div>

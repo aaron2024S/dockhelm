@@ -666,13 +666,6 @@ html.light {
   .dh-tl:last-child {
     border-bottom: none;
   }
-  /* 手机上横向预算紧张：时间列 + 两枚徽标 + 4 个间距已占掉大半，
-     间距收紧一档，剩下的靠中间「对象名 / 消息」的 truncate 自行收缩。 */
-  @media (max-width: 767px) {
-    .dh-tl {
-      gap: 8px;
-    }
-  }
 
   /* 登录卡片（设计稿 .lglogo / .field / .eye） */
   /* 登录页的品牌方块：里面放 logo 图形（方案 C · 航向罗盘），不再是字母 D */
@@ -870,6 +863,27 @@ html.light {
 @layer utilities {
   .dh-scroll {
     overflow: auto;
+  }
+  /* 窄屏「最近执行记录」：整块左右滑动。
+     行宽保持桌面档位（不压缩、不挤），滑出可视区即可看到对象名与消息全文。
+     滚动条不占位也不显示 —— 由右缘的 .dh-xfade 渐隐表示「还有内容」。 */
+  .dh-xscroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .dh-xscroll::-webkit-scrollbar {
+    display: none;
+  }
+  /* 横滑容器右缘的底色渐隐（底色 = 卡片底色，亮/暗主题自动跟随） */
+  .dh-xfade {
+    background: linear-gradient(to left, var(--color-ink-700), transparent);
+  }
+  /* 滑过之后左缘的对称渐隐，提示「还能滑回去」 */
+  .dh-xfade-l {
+    background: linear-gradient(to right, var(--color-ink-700), transparent);
   }
   .dh-fade-enter-active,
   .dh-fade-leave-active {
