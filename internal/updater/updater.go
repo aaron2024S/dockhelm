@@ -624,7 +624,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 
 	// ---- 2. 核心判定：镜像没变 ⇒ 到此为止 ----
 	if res.NewImageID != "" && res.NewImageID == res.OldImageID && !force {
-		u.status(res, ResultUpToDate, "镜像已是最新，容器保持原样（未停止、未重建）")
+		u.status(res, ResultUpToDate, "镜像已是最新")
 		u.step(res, "镜像 ID 未变化（%s），跳过重建", dockerx.ShortID(res.OldImageID))
 		u.log("update", name, "up_to_date", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
@@ -637,7 +637,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 		return res
 	}
 	if pr.UpToDate && !force && !fromCache {
-		u.status(res, ResultUpToDate, "守护进程报告镜像已是最新，容器保持原样")
+		u.status(res, ResultUpToDate, "镜像已是最新")
 		u.log("update", name, "up_to_date", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
@@ -676,19 +676,16 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	}
 	res.NewImageID = newID
 	u.status(res, ResultUpdated, "更新成功"+map[bool]string{true: "", false: "（原容器为停止状态，保持停止）"}[wasRunning])
-	// 运行记录的人类可读性：开头必须是镜像引用（用户看得懂的东西），
-	// 镜像 ID 只作括号补充 —— 同 tag 连续两次更新只能靠它区分，单独拎出来就是一串乱码。
-	u.log("update", name, "success",
-		"已更新到 "+res.Image+"（新镜像 ID "+dockerx.ShortID(newID)+"）",
-		strings.Join(res.Steps, "\n"))
+	// 运行记录只留「哪个容器更新了」：容器名在记录的对象列里，消息写「已更新」即可。
+	// 镜像引用/镜像 ID 对用户没有意义（同 tag 反复更新时 ID 每次都变，更是纯噪音），
+	// 完整过程仍在 detail 里。
+	u.log("update", name, "success", "已更新", strings.Join(res.Steps, "\n"))
 
 	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
 	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)
 
 	u.notify.Emit("update_success", map[string]string{
-		"container": name, "image": res.Image,
-		"result": "更新成功",
-		"message": "已更新到 " + res.Image + "（新镜像 ID " + dockerx.ShortID(newID) + "）",
+		"container": name, "image": res.Image, "result": "更新成功",
 	})
 	res.Duration = time.Since(started).Milliseconds()
 	return res

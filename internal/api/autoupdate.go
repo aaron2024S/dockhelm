@@ -370,7 +370,7 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	// 动作名已经由徽标表达，消息里不再重复前缀。
 	//
 	// 只有**纯巡检**才写运行记录：真更新的轮次里 updater 对每个容器各写了一条
-	// （「已更新到 <镜像引用>（新镜像 ID abc123）」/「镜像已是最新，容器保持原样」），再写一条汇总就是
+	// （「已更新」/「镜像已是最新，容器保持原样」），再写一条汇总就是
 	// 同一次更新的第二行记录 —— 总览页看起来像执行了两遍。
 	if note != "" {
 		s.st.AddRunLog("auto_check", summary.Trigger, "done",

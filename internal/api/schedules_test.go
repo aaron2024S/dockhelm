@@ -72,6 +72,11 @@ func TestValidateScheduleNeedsTargets(t *testing.T) {
 			if !tc.wantOK && !strings.Contains(msg, tc.wantMsg) {
 				t.Fatalf("拒绝理由 = %q，期望包含 %q", msg, tc.wantMsg)
 			}
+			// 「不选」曾是历史语义（空目标 = 全部容器），早期文案里带着一长串解释，
+			// 界面上一行小字挤满还看不全。现在只说结论。
+			if strings.Contains(msg, "不选") {
+				t.Fatalf("拒绝理由不应再带「不选」的解释：%q", msg)
+			}
 		})
 	}
 }

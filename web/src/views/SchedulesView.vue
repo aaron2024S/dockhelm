@@ -217,7 +217,7 @@ async function save() {
     return
   }
   if (needsTargets.value && !form.value.targets.length) {
-    saveError.value = '请至少选择一个容器 ——「不选」不再等于全部容器'
+    saveError.value = '请至少选择一个容器'
     return
   }
   saveError.value = ''

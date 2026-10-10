@@ -68,7 +68,7 @@ func (s *Server) validateSchedule(in scheduleReq) (string, bool) {
 	if a := scheduler.ActionMap[in.Action]; a.NeedsTargets && len(in.Targets) == 0 {
 		// 空目标**不再**等于「全部容器」：那会让一次误操作作用到整机所有容器，
 		// 而且界面上看不出来。必须明确勾选。
-		return "请至少选择一个容器（「不选」不再等于全部容器）", false
+		return "请至少选择一个容器", false
 	}
 	return "", true
 }

@@ -226,7 +226,7 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) (string, bool) 
 	// 其余动作都必须有明确目标。空目标曾经等于「全部容器」，已于 0.2.x 取消 ——
 	// 老版本存下来的任务会走到这里，给一句说得清的话，而不是含糊的「没有匹配到任何容器」。
 	if len(sc.Targets) == 0 {
-		return "任务没有选择任何容器，已跳过（「不选」不再等于全部容器，请编辑任务并勾选目标）", false
+		return "任务没有选择任何容器，已跳过", false
 	}
 
 	if sc.Action == "backup" {
