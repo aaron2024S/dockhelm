@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
+	"github.com/aaron2024s/dockhelm/internal/intent"
 	"github.com/aaron2024s/dockhelm/internal/updater"
 )
 
@@ -434,7 +435,12 @@ func (s *Server) hContainerAction(w http.ResponseWriter, r *http.Request) {
 	if in.Action == "kill" {
 		timeout = nil
 	}
+	// 用户在界面上点的停止/重启/强杀不是「容器意外退出」，先登记豁免
+	if in.Action == "stop" || in.Action == "restart" || in.Action == "kill" {
+		intent.Mark(name)
+	}
 	if err := s.dc.ContainerAction(ctx, name, in.Action, timeout); err != nil {
+		intent.Release(name) // 没停成、不会有 die 事件，撤销豁免
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}

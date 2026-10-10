@@ -16,6 +16,7 @@ import (
 	"github.com/aaron2024s/dockhelm/internal/backup"
 	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
+	"github.com/aaron2024s/dockhelm/internal/intent"
 	"github.com/aaron2024s/dockhelm/internal/notify"
 	"github.com/aaron2024s/dockhelm/internal/store"
 	"github.com/aaron2024s/dockhelm/internal/updater"
@@ -277,14 +278,19 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) (string, bool) 
 				continue
 			}
 			timeout := 30
+			// 任务发起的停止不是「容器意外退出」，别让事件观察记一条失败
+			intent.Mark(t.name)
 			if err := r.dc.ContainerAction(ctx, t.id, "stop", &timeout); err != nil {
+				intent.Release(t.name) // 没停成、不会有 die 事件，撤销豁免
 				failed = append(failed, fmt.Sprintf("%s(%v)", t.name, err))
 			} else {
 				done++
 			}
 		case "restart":
 			timeout := 30
+			intent.Mark(t.name)
 			if err := r.dc.ContainerAction(ctx, t.id, "restart", &timeout); err != nil {
+				intent.Release(t.name)
 				failed = append(failed, fmt.Sprintf("%s(%v)", t.name, err))
 			} else {
 				done++

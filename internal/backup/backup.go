@@ -19,6 +19,7 @@ import (
 
 	"github.com/aaron2024s/dockhelm/internal/config"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
+	"github.com/aaron2024s/dockhelm/internal/intent"
 	"github.com/aaron2024s/dockhelm/internal/notify"
 	"github.com/aaron2024s/dockhelm/internal/store"
 	"github.com/aaron2024s/dockhelm/internal/updater"
@@ -493,6 +494,9 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 		wasRunning = isRunning(cur)
 		if wasRunning {
 			t := 30
+			// 这次退出是还原流程自己发起的，别让事件观察记成「容器意外退出」
+			intent.Mark(container)
+			defer intent.Release(container)
 			if err := s.dc.ContainerAction(ctx, curID, "stop", &t); err != nil {
 				res.Message = "停止当前容器失败：" + err.Error()
 				step("✗ %s", res.Message)

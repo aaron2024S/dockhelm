@@ -25,6 +25,7 @@ import (
 
 	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
+	"github.com/aaron2024s/dockhelm/internal/intent"
 )
 
 // Notifier 通知钩子（用接口避免与 notify 包循环依赖）。
@@ -781,6 +782,9 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	if wasRunning {
 		u.status(res, ResultStopped, "正在停止旧容器…")
 		timeout := 30
+		// 这次退出是更新流程自己发起的，别让事件观察记成「容器意外退出」（退出码 137）
+		intent.Mark(name)
+		defer intent.Release(name)
 		if err := u.dc.ContainerAction(ctx, oldID, "stop", &timeout); err != nil {
 			return "", "停止旧容器失败：" + err.Error(), true
 		}
@@ -813,13 +817,13 @@ func (u *Updater) recreate(ctx context.Context, insp map[string]any, name string
 	// 8. 启动（原本停止的容器保持停止）
 	if wasRunning {
 		if err := u.dc.ContainerAction(ctx, newID, "start", nil); err != nil {
-			u.discardContainer(ctx, newID)
+			u.discardContainer(ctx, name, newID)
 			return "", "启动新容器失败：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, autoRemoveOn, res)
 		}
 		u.step(res, "新容器已启动，开始健康检查")
 		// 9. 健康判定
 		if err := u.waitHealthy(ctx, newID, insp); err != nil {
-			u.discardContainer(ctx, newID)
+			u.discardContainer(ctx, name, newID)
 			return "", "新容器健康检查未通过：" + err.Error(), u.rollback(ctx, oldID, bakName, name, wasRunning, autoRemoveOn, res)
 		}
 		u.step(res, "健康检查通过")
@@ -873,7 +877,9 @@ func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 // discardContainer 清掉一个不该留下的容器（用独立 ctx，别被调用方的取消带走）。
-func (u *Updater) discardContainer(ctx context.Context, id string) {
+// name 用于登记退出豁免：这次停止也是 dockhelm 发起的。
+func (u *Updater) discardContainer(ctx context.Context, name, id string) {
+	intent.Mark(name)
 	cctx, cancel := cleanupCtx(ctx)
 	defer cancel()
 	_ = u.dc.ContainerAction(cctx, id, "stop", nil)

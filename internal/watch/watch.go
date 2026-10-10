@@ -13,6 +13,7 @@ import (
 
 	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
+	"github.com/aaron2024s/dockhelm/internal/intent"
 	"github.com/aaron2024s/dockhelm/internal/notify"
 	"github.com/aaron2024s/dockhelm/internal/store"
 )
@@ -84,6 +85,12 @@ func (w *Watcher) handle(ev dockerx.Event) {
 		if n == 0 {
 			return
 		}
+		// dockhelm 自己发起的停止（更新 / 还原 / 计划任务 / 手动停）不是「意外退出」
+		// —— stop 宽限期一到 Docker 发 SIGKILL，退出码就是 137。没登记的 die
+		// （docker CLI、OOM、程序崩溃）照常告警。
+		if intent.Consume(name) {
+			return
+		}
 		w.recordDie(name)
 		image := ev.Actor.Attributes["image"]
 		w.nt.Emit("container_died", map[string]string{
@@ -95,6 +102,10 @@ func (w *Watcher) handle(ev dockerx.Event) {
 
 	case strings.HasPrefix(ev.Action, "health_status"):
 		if strings.Contains(ev.Action, "unhealthy") {
+			// 更新 / 重启后的头几分钟新容器短暂 unhealthy 是常态，等它自己变回来
+			if intent.Active(name) {
+				return
+			}
 			image := ev.Actor.Attributes["image"]
 			w.nt.Emit("health_failed", map[string]string{
 				"container": name, "image": image,
