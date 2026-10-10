@@ -18,7 +18,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { AboutResponse } from '@/api/types'
-import { formatBytes, formatDuration } from '@/utils/format'
+import { formatDuration } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { version } from '@/config'
 
@@ -275,51 +275,6 @@ onMounted(() => void load())
             <div class="min-w-0 flex-1 text-text-2">{{ s.value }}</div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- 设计取向 -->
-    <div class="dh-card">
-      <div class="dh-card-head">
-        <ShieldCheck class="h-3.5 w-3.5 text-text-4" />
-        <span>设计取向</span>
-      </div>
-      <div class="grid grid-cols-1 gap-3 p-3.5 lg:grid-cols-2">
-        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
-          <div class="text-[12.5px] font-medium text-text-1">检测与拉取必须同源</div>
-          <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-4">
-            检测走 Docker 守护进程自己解析的仓库端点，拉取走守护进程的 ImagePull。
-            检测失败一律标记为「无法判定」，绝不退化成「有新版本」——
-            这正是同类工具出现「检测说有更新、拉取说已是最新」永久误报的根因。
-          </div>
-        </div>
-        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
-          <div class="text-[12.5px] font-medium text-text-1">镜像没变就不碰容器</div>
-          <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-4">
-            更新流程是先拉取、再比对容器使用的镜像 ID。一致就直接返回，
-            <b class="text-text-3">容器不会被停止、不会被重建</b>。只有镜像真的变化时才会走
-            「停旧 → 改名保留 → 建新 → 健康检查 → 失败自动回滚」。
-          </div>
-        </div>
-        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
-          <div class="text-[12.5px] font-medium text-text-1">看得见才叫能备份</div>
-          <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-4">
-            绑定挂载的数据在宿主机目录上，Dockhelm 默认看不见它。界面上会明确标注
-            「知道路径但看不见」，绝不假装备份成功 —— 只记路径，并告诉你去挂载哪个目录。
-          </div>
-        </div>
-        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
-          <div class="text-[12.5px] font-medium text-text-1">少依赖，容易自托管</div>
-          <div class="mt-1.5 text-[11.5px] leading-relaxed text-text-4">
-            整个后端只有两个第三方依赖（cron 与 bcrypt），HTTP 用标准库，持久化用原子写入的 JSON。
-            因此可以 CGO_ENABLED=0 交叉编译 amd64 / arm64，也不需要外部数据库。
-          </div>
-        </div>
-      </div>
-      <div class="border-t border-line-1 px-4 py-3 text-[11.5px] leading-relaxed text-text-5">
-        Dockhelm 会挂载 <code class="text-text-3">/var/run/docker.sock</code>，这等价于宿主机的 root 权限。
-        请务必设置登录密码，并且只在可信的内网中暴露端口。配置存储占用：
-        {{ formatBytes(1024) }} 量级的小文件，随时可以直接拷贝。
       </div>
     </div>
   </div>
