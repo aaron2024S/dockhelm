@@ -164,7 +164,7 @@ func (s *Server) hApplyUpdates(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 		defer cancel()
-		results := s.up.UpdateMany(ctx, names, in.Force)
+		results := s.up.UpdateMany(ctx, names, in.Force, "manual")
 
 		// 更新完把缓存里的状态刷成最新
 		rows := []updater.CheckResult{}

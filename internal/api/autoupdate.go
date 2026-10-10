@@ -318,7 +318,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 
 	// ---- 4. 执行 ----
 	names := autoupdate.Names(cands)
-	rows := s.up.UpdateMany(cctx, names, false)
+	rows := s.up.UpdateMany(cctx, names, false, "auto")
 
 	byName := map[string]AutoRunItem{}
 	for _, it := range summary.Containers {
@@ -381,12 +381,15 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 		"updated": summary.Updated,
 		"failed":  summary.Failed,
 	})
+	// 汇总通知由 UpdateMany 统一发一条（batch_update_done / batch_update_failed）。
+	// 这里曾再发一条 auto_update_done，内容与那条汇总几乎一样 —— 一轮 4 台失败 2 台
+	// 的自动更新会发出两条汇总 + 两条例失败共 4 条推送（2026-10-10 用户投诉），
+	// 现在只保留 SSE 广播，通知不再重复。
 	if summary.Updated > 0 || summary.Failed > 0 {
-		s.nt.Emit("auto_update_done", map[string]string{
-			"container": itoa(summary.Updated+summary.Failed) + " 个容器",
-			"result":    "自动更新完成",
-			"message": "自动更新：更新 " + itoa(summary.Updated) + " 个容器，失败 " +
-				itoa(summary.Failed) + " 个容器",
+		s.bus.Publish("update", "auto_summary", "success", map[string]any{
+			"trigger": summary.Trigger,
+			"updated": summary.Updated,
+			"failed":  summary.Failed,
 		})
 	}
 }

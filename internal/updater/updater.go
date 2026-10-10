@@ -130,6 +130,12 @@ type Updater struct {
 	// 漏到下一次，那会让「刚推了新版本却检测不到」变成偶发问题。
 	batchMu   sync.Mutex
 	batchPull map[string]*dockerx.PullResult
+
+	// inBatch 标记「正在跑多容器批量」。批量里每个容器的成败由批次末尾的
+	// 一条汇总通知统一报告，Update 里逐容器的 update_success/update_failed
+	// 必须闭嘴 —— 否则一台失败容器能发出两条推送、四个容器一轮就是六条，
+	// 用户要的是一条。单容器批次（len==1）不置位，维持原有的逐条通知。
+	inBatch atomic.Bool
 }
 
 // New 创建更新引擎。
@@ -326,6 +332,16 @@ func (u *Updater) lockForContainer(ctx context.Context, nameOrID string) (*sync.
 		key = nameOrID // 理论上不会发生；真发生了至少保证不与别人共享锁
 	}
 	return u.lockFor(key), nil
+}
+
+// emitResult 投递单个容器的更新结果通知。
+// 批量更新期间不投：那部分信息由批次末尾的一条汇总统一承载，
+// 否则一台失败容器会产生「逐条 + 汇总」两份重复推送。
+func (u *Updater) emitResult(event string, vars map[string]string) {
+	if u.inBatch.Load() {
+		return
+	}
+	u.notify.Emit(event, vars)
 }
 
 // IsSelf 判断是否是 Dockhelm 自身。
@@ -608,7 +624,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	if err != nil {
 		u.status(res, ResultFailed, "拉取失败："+err.Error())
 		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
-		u.notify.Emit("update_failed", map[string]string{
+		u.emitResult("update_failed", map[string]string{
 			"container": name, "image": res.Image, "result": "拉取失败", "message": err.Error(),
 		})
 		res.Duration = time.Since(started).Milliseconds()
@@ -666,7 +682,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 			u.status(res, ResultBroken, failMsg+"（回滚失败，请手工处理）")
 		}
 		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
-		u.notify.Emit("update_failed", map[string]string{
+		u.emitResult("update_failed", map[string]string{
 			"container": name, "image": res.Image,
 			"result":  map[bool]string{true: "已回滚", false: "回滚失败"}[rb],
 			"message": failMsg,
@@ -684,7 +700,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
 	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)
 
-	u.notify.Emit("update_success", map[string]string{
+	u.emitResult("update_success", map[string]string{
 		"container": name, "image": res.Image, "result": "更新成功",
 	})
 	res.Duration = time.Since(started).Milliseconds()
@@ -969,8 +985,12 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 	}
 }
 
-// UpdateMany 批量更新（有界并发），并汇总成一条通知。
-func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []Result {
+// UpdateMany 批量更新（有界并发），并把整批结果汇总成**一条**通知。
+//
+// source 只影响文案："auto" = 定时/启动自动更新（通知写「自动更新…」），其余按手动批量表述。
+// 多容器批次期间逐容器的 update_success/update_failed 被抑制（见 inBatch）——
+// 单容器批次不抑制，仍走 Update 内部的逐条通知。
+func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, source string) []Result {
 	if len(names) == 0 {
 		return nil
 	}
@@ -984,6 +1004,12 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	// 留着会让「刚推的新版本」在下一轮里被上一次的旧结论吃掉。
 	u.resetBatchPull()
 	defer u.resetBatchPull()
+
+	// 多容器批次里，逐容器通知让位给批次末尾的汇总（见 inBatch 字段注释）。
+	if len(names) > 1 {
+		u.inBatch.Store(true)
+		defer u.inBatch.Store(false)
+	}
 
 	batch := u.bus.Publish("update", "batch_start", "running", map[string]any{
 		"total": len(names),
@@ -1007,6 +1033,7 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	updated, skipped, failed := 0, 0, 0
 	var reclaimed int64
 	reused := 0
+	failures := []string{}
 	for _, r := range out {
 		reclaimed += r.ReclaimedBytes
 		if r.PullReused {
@@ -1019,28 +1046,31 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 			skipped++
 		default:
 			failed++
+			failures = append(failures, r.Container+"："+r.Message)
 		}
 	}
 	u.bus.Publish("update", "batch_done", "success", map[string]any{
 		"total": len(names), "updated": updated, "skipped": skipped, "failed": failed,
 		"reclaimedBytes": reclaimed, "pullReused": reused,
 	})
-	summary := fmt.Sprintf("共 %d 个容器：更新 %d、已是最新/跳过 %d、失败 %d", len(names), updated, skipped, failed)
-	if reclaimed > 0 {
-		summary += "，清理旧镜像回收 " + humanBytes(reclaimed)
-	}
-	if reused > 0 {
-		summary += fmt.Sprintf("，%d 个容器复用了同轮已拉取的镜像", reused)
-	}
-	// 汇总记录/通知只在**多个容器**时写：单个容器的批次里，下面每条结果本来就各有一条
-	// 运行记录（更新成功 / 镜像已是最新…），再来一条「共 1 个容器：更新 0…」纯属重复 ——
-	// 同一次更新在总览页出现两行，用户会以为执行了两遍。
+	// 汇总记录/通知只在**多个容器**时写：单个容器的批次里，每条结果本来就各有一条
+	// 运行记录和通知（更新成功 / 更新失败…），再来一条「共 1 个容器：更新 0…」纯属重复。
 	if len(names) > 1 {
-		u.log("update", "batch", "done", summary, "")
-		u.notify.Emit("batch_update_done", map[string]string{
+		notice := buildBatchNotice(batchStats{
+			source:    source,
+			total:     len(names),
+			updated:   updated,
+			skipped:   skipped,
+			failed:    failed,
+			reused:    reused,
+			reclaimed: reclaimed,
+			failures:  failures,
+		})
+		u.log("update", "batch", "done", notice.Result, notice.Detail)
+		u.notify.Emit(notice.Event, map[string]string{
 			"container": fmt.Sprintf("%d 个容器", len(names)),
-			"result":    "批量更新完成",
-			"message":   summary,
+			"result":    notice.Result,
+			"message":   notice.Message,
 		})
 	}
 	return out
