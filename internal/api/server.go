@@ -86,6 +86,8 @@ func New(d Deps) *Server {
 	// 设置是常驻状态的真相，进程一起来就先把它推给更新引擎，
 	// 免得「重启之后策略回到默认值、直到用户手动存一次设置才生效」。
 	s.applyPolicy(s.readSettings())
+	// 首次启动把预置的常用加速源直接写进「我的加速源」（只灌一次，之后用户说了算）。
+	seedRegistries(d.Store)
 	s.routes()
 	return s
 }

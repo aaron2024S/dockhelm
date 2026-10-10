@@ -335,11 +335,16 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	s.autoLast = summary
 	s.autoMu.Unlock()
 
-	msg := "自动更新：更新 " + itoa(summary.Updated) + " 个容器，失败 " + itoa(summary.Failed) + " 个容器"
+	// 巡检（note != ""）与真更新是两种动作，运行记录用不同 kind 记，
+	// 前端徽标才能分别显示「自动巡检 / 自动更新」，而不是一律 auto_update。
+	// 动作名已经由徽标表达，消息里不再重复前缀。
+	msg := "更新 " + itoa(summary.Updated) + " 个容器，失败 " + itoa(summary.Failed) + " 个容器"
+	kind := "auto_update"
 	if note != "" {
-		msg = "自动巡检：" + itoa(summary.Available) + " 个容器有可用更新（" + note + "）"
+		kind = "auto_check"
+		msg = itoa(summary.Available) + " 个容器有可用更新（" + note + "）"
 	}
-	s.st.AddRunLog("auto_update", summary.Trigger, "done", msg, "")
+	s.st.AddRunLog(kind, summary.Trigger, "done", msg, "")
 	s.bus.Publish("update", "auto_done", "success", map[string]any{
 		"trigger": summary.Trigger,
 		"updated": summary.Updated,
@@ -349,7 +354,7 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 		s.nt.Emit("auto_update_done", map[string]string{
 			"container": itoa(summary.Updated + summary.Failed) + " 个容器",
 			"result":    "自动更新完成",
-			"message":   msg,
+			"message":   "自动更新：" + msg,
 		})
 	}
 }

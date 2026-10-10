@@ -18,7 +18,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { ContainerView, RunLog, Settings } from '@/api/types'
-import { formatDateTime, relativeTime } from '@/utils/format'
+import { formatDateTime, relativeTime, runKindLabel } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
 import Modal from '@/components/Modal.vue'
@@ -516,7 +516,7 @@ onMounted(() => void load())
                     class="dh-badge"
                     :class="l.status === 'failed' ? 'dh-badge-err' : l.status === 'success' || l.status === 'up_to_date' ? 'dh-badge-accent' : 'dh-badge-plain'"
                   >
-                    {{ l.kind }}
+                    {{ runKindLabel(l.kind) }}
                   </span>
                 </td>
                 <td>

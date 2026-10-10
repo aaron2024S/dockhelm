@@ -172,7 +172,9 @@ export interface RegistrySettings {
 
 export interface RegistriesResponse {
   settings: RegistrySettings
-  suggestions: MirrorConfig[]
+  /** 预置的常用加速源清单。已随首次启动写进 settings.mirrors，
+   *  这里只用于「列表被删空后一键找回」，不再渲染成独立栏位。 */
+  presets: MirrorConfig[]
   daemonMirrors: string[]
   daemonError: string
   snippet: string

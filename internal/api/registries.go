@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aaron2024s/dockhelm/internal/store"
 )
 
 // MirrorConfig 用户配置的一个加速源。
@@ -21,7 +24,8 @@ type MirrorConfig struct {
 	// 「有没有测过」由 LastTested 是否为空判断，别用 ok 是否出现来判断。
 	OK  bool   `json:"ok"`
 	Err string `json:"err,omitempty"`
-	// Builtin 表示这是内置建议列表里带过来的
+	// Builtin 表示这条是从预置清单里灌进来的。只是个来源标记：
+	// 不影响增删改，用户删掉它和删掉自建条目没有任何区别，也不会自己回来。
 	Builtin bool `json:"builtin,omitempty"`
 }
 
@@ -35,31 +39,67 @@ type RegistrySettings struct {
 	Insecure bool `json:"insecure"`
 }
 
-// builtinMirrors 是内置的建议清单。**不再硬编码成"必用"**，
-// 只是给用户一个起点，是否启用、顺序如何完全由用户决定。
-var builtinMirrors = []MirrorConfig{
-	{URL: "https://docker.m.daocloud.io", Note: "DaoCloud", Enabled: false, Builtin: true},
-	{URL: "https://docker.1ms.run", Note: "1ms.run", Enabled: false, Builtin: true},
-	{URL: "https://dockerproxy.net", Note: "dockerproxy", Enabled: false, Builtin: true},
-	{URL: "https://docker.1panel.live", Note: "1Panel", Enabled: false, Builtin: true},
-	{URL: "https://hub.rat.dev", Note: "rat.dev", Enabled: false, Builtin: true},
-	{URL: "https://dockerhub.icu", Note: "dockerhub.icu", Enabled: false, Builtin: true},
+// 存键。加速源配置与「预置源已灌过」标记分开存，
+// 后者是「删掉的内置源不能自己长回来」这条不变式的依据。
+const (
+	registrySettingsKey = "registry.settings"
+	registrySeedMarkKey = "registry.seeded"
+)
+
+// presetMirrors 是随应用预置的常用加速源。
+//
+// 定位是「首次启动的起手配置」，**不再是一个单独的推荐栏位**：服务第一次启动时
+// 整份写进「我的加速源」（默认勾选启用），之后完全归用户所有 —— 不想要哪条直接删，
+// 删掉不会再回来（见 seedRegistries）。列表被删空了也能一键找回（presets + 前端空态按钮）。
+//
+// 清单不会自动联网刷新，所以每次改动都必须是实测过的：
+// 2026-10-10 由 NAS 出网实测，剔除连续超时的 dockerhub.icu，
+// 补入当时最快的候补 docker.1panel.top。按实测延迟升序排列。
+var presetMirrors = []MirrorConfig{
+	{URL: "https://docker.m.daocloud.io", Note: "DaoCloud", Enabled: true, Builtin: true},
+	{URL: "https://docker.1ms.run", Note: "1ms.run", Enabled: true, Builtin: true},
+	{URL: "https://hub.rat.dev", Note: "rat.dev", Enabled: true, Builtin: true},
+	{URL: "https://docker.1panel.top", Note: "1Panel", Enabled: true, Builtin: true},
+	{URL: "https://docker.1panel.live", Note: "1Panel live", Enabled: true, Builtin: true},
+	{URL: "https://dockerproxy.net", Note: "dockerproxy", Enabled: true, Builtin: true},
+}
+
+// shouldSeedRegistries 判断首次启动要不要把预置加速源灌进用户的列表。
+//
+// 只有「从没灌过」+「从没配置过」两条同时成立才灌。这是这条功能唯一的正确性边界：
+//   - 老版本升级上来的用户：registry.settings 早就存在（哪怕列表被清空过）=> 不灌；
+//   - 已经删光预置源的用户：同一个键依然存在 => 不灌，删掉的东西不能自己长回来。
+func shouldSeedRegistries(seedMark, settingsRaw string) bool {
+	return seedMark == "" && settingsRaw == ""
+}
+
+// seedRegistries 在服务启动时调用一次：首次运行把预置加速源写进「我的加速源」。
+//
+// 之后再也不动用户的列表 —— 用户删一条、删光，都只是用户自己的事。
+func seedRegistries(st *store.Store) {
+	if st.GetSetting(registrySeedMarkKey, "") != "" {
+		return
+	}
+	if shouldSeedRegistries("", st.GetSetting(registrySettingsKey, "")) {
+		cfg := RegistrySettings{Mirrors: append([]MirrorConfig{}, presetMirrors...)}
+		if err := st.SetJSON(registrySettingsKey, cfg); err != nil {
+			log.Printf("写入预置加速源失败（下次启动会重试）：%v", err)
+		} else {
+			log.Printf("已写入 %d 个预置加速源到「我的加速源」（可在镜像加速源页逐条删除）", len(cfg.Mirrors))
+		}
+	}
+	// 标记与灌入分开：即使这次没灌（用户早就有配置），也要置位，
+	// 免得以后每次启动都重复判断一遍。
+	_ = st.SetSetting(registrySeedMarkKey, "1")
 }
 
 // hGetRegistries 返回配置 + 守护进程真实生效的镜像列表。
 func (s *Server) hGetRegistries(w http.ResponseWriter, r *http.Request) {
 	var cfg RegistrySettings
-	s.st.GetJSON("registry.settings", &cfg)
+	s.st.GetJSON(registrySettingsKey, &cfg)
 	if cfg.Mirrors == nil {
 		cfg.Mirrors = []MirrorConfig{}
 	}
-	// suggestions 始终返回**完整**的内置清单，包括用户已经添加过的那些。
-	//
-	// 早先是把已添加的过滤掉，结果「推荐加速源」会随着用户一条条添加而逐渐变空 ——
-	// 全加完整个栏位就没了，看起来像功能消失。改为固定清单，由前端拿 settings.mirrors
-	// 自行标记「已添加」，栏位就稳定了。
-	suggestions := make([]MirrorConfig, 0, len(builtinMirrors))
-	suggestions = append(suggestions, builtinMirrors...)
 
 	ctx, cancel := s.ctx(r)
 	defer cancel()
@@ -71,9 +111,11 @@ func (s *Server) hGetRegistries(w http.ResponseWriter, r *http.Request) {
 		daemonErr = err.Error()
 	}
 
+	// presets 只服务于「列表被删空后一键找回」，不再渲染成页面上独立的「推荐加速源」栏位 ——
+	// 预置源在首次启动时就已经写进 settings.mirrors，用户删掉即消失。
 	writeOK(w, map[string]any{
 		"settings":      cfg,
-		"suggestions":   suggestions,
+		"presets":       presetMirrors,
 		"daemonMirrors": daemonMirrors,
 		"daemonError":   daemonErr,
 		"snippet":       daemonSnippet(cfg, daemonMirrors),
@@ -111,14 +153,14 @@ func (s *Server) hSaveRegistries(w http.ResponseWriter, r *http.Request) {
 	in.Settings.Mirrors = clean
 	in.Settings.PullMirror = strings.TrimSpace(in.Settings.PullMirror)
 
-	if err := s.st.SetJSON("registry.settings", in.Settings); err != nil {
+	if err := s.st.SetJSON(registrySettingsKey, in.Settings); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 立刻通知更新引擎换用新的加速源
 	s.up.SetMirror(func() string {
 		var c RegistrySettings
-		s.st.GetJSON("registry.settings", &c)
+		s.st.GetJSON(registrySettingsKey, &c)
 		return c.PullMirror
 	})
 	writeOK(w, map[string]any{"ok": true, "settings": in.Settings})
@@ -152,13 +194,12 @@ func (s *Server) hTestAllRegistries(w http.ResponseWriter, r *http.Request) {
 	_ = decodeBody(r, &in)
 	urls := in.URLs
 	if len(urls) == 0 {
+		// 兜底只测「我的加速源」里的条目。预置清单不再单独补测 ——
+		// 用户删掉的源就是不想再看到它，不该还出现在测速结果里。
 		var cfg RegistrySettings
-		s.st.GetJSON("registry.settings", &cfg)
+		s.st.GetJSON(registrySettingsKey, &cfg)
 		for _, m := range cfg.Mirrors {
 			urls = append(urls, m.URL)
-		}
-		for _, b := range builtinMirrors {
-			urls = append(urls, b.URL)
 		}
 	}
 	out := make([]MirrorConfig, 0, len(urls))
@@ -185,7 +226,7 @@ func (s *Server) hTestAllRegistries(w http.ResponseWriter, r *http.Request) {
 // patchMirrorResult 把测速结果回写到已保存的镜像项里（匹配 URL 即更新）。
 func (s *Server) patchMirrorResult(res MirrorConfig) {
 	var cfg RegistrySettings
-	s.st.GetJSON("registry.settings", &cfg)
+	s.st.GetJSON(registrySettingsKey, &cfg)
 	if len(cfg.Mirrors) == 0 {
 		return
 	}
@@ -201,7 +242,7 @@ func (s *Server) patchMirrorResult(res MirrorConfig) {
 		}
 	}
 	if changed {
-		_ = s.st.SetJSON("registry.settings", cfg)
+		_ = s.st.SetJSON(registrySettingsKey, cfg)
 	}
 }
 
@@ -318,7 +359,7 @@ func sortMirrors(list []MirrorConfig) {
 func PullMirrorOf(s *Server) func() string {
 	return func() string {
 		var c RegistrySettings
-		s.st.GetJSON("registry.settings", &c)
+		s.st.GetJSON(registrySettingsKey, &c)
 		return c.PullMirror
 	}
 }

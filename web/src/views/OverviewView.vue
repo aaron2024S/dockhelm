@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
 import type { OverviewResponse, RunLog, Schedule } from '@/api/types'
-import { formatBytes, formatDayTime, shortImage } from '@/utils/format'
+import { formatBytes, formatDayTime, runKindLabel } from '@/utils/format'
 
 const router = useRouter()
 const data = ref<OverviewResponse | null>(null)
@@ -86,7 +86,10 @@ const pct = (used: number, total: number) =>
 
 const cpuPercent = computed(() => Math.min(data.value?.usage?.cpuPercent ?? 0, 100))
 
-/** 待更新：按镜像归并，同一镜像影响几个容器就标几个（原设计稿写的是「N 台」，2026-10-09 起统一成「个」）。 */
+/** 待更新的容器数（概览卡一行 = 一个容器，头部徽标与行数保持一致）。 */
+const pendingCount = computed(() => data.value?.updates?.items?.length ?? 0)
+
+/** 待更新镜像：按镜像归并，只给顶部统计卡用（「待更新镜像」数的是镜像不是容器）。 */
 const updateGroups = computed(() => {
   const map = new Map<
     string,
@@ -120,11 +123,9 @@ const nextRun = computed(() => {
 
 const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 8))
 
-/** 短摘要：image 只留名字首字母当作图标。 */
-function initial(image: string) {
-  const name = shortImage(image).split(/[/:]/).filter(Boolean)
-  const last = name.length >= 2 ? (name[name.length - 2] as string) : (name[0] ?? '?')
-  return (last[0] ?? '?').toUpperCase()
+/** 图标：取名字首字母。 */
+function initial(name: string) {
+  return (name[0] ?? '?').toUpperCase()
 }
 
 /** 待更新列表里的镜像名：只留最后一段仓库名、去掉 tag（设计稿写的就是 qbittorrent / jellyfin / nginx）。 */
@@ -132,28 +133,6 @@ function imageShort(image: string) {
   const noTag = (image.split('@')[0] ?? image).split('/').pop() ?? image
   const colon = noTag.indexOf(':')
   return colon > 0 ? noTag.slice(0, colon) : noTag
-}
-
-function digestShort(d: string) {
-  if (!d) return '—'
-  const hex = d.includes(':') ? (d.split(':')[1] ?? d) : d
-  return hex.slice(0, 7)
-}
-
-const KIND_LABEL: Record<string, string> = {
-  update: '更新',
-  container: '容器',
-  image: '镜像',
-  volume: '卷',
-  schedule: '计划任务',
-  backup: '备份',
-  restore: '还原',
-  system: '系统',
-  check: '检测',
-}
-
-function kindLabel(kind: string) {
-  return KIND_LABEL[kind] ?? kind
 }
 
 function kindClass(kind: string, status: string) {
@@ -359,12 +338,12 @@ onUnmounted(() => {
       <div class="dh-card flex flex-col">
         <div class="dh-card-head">
           <span>待更新镜像</span>
-          <span class="ml-auto dh-badge" :class="updateGroups.length ? 'dh-badge-warn' : 'dh-badge-plain'">
-            {{ updateGroups.length }} 个
+          <span class="ml-auto dh-badge" :class="pendingCount ? 'dh-badge-warn' : 'dh-badge-plain'">
+            {{ pendingCount }} 个
           </span>
         </div>
 
-        <div v-if="!updateGroups.length" class="dh-card-body flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
+        <div v-if="!pendingCount" class="dh-card-body flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
           <div class="text-[12.5px] text-text-3">
             {{ data?.updates?.checkedAt ? '所有镜像都是最新的' : '还没有做过巡检' }}
           </div>
@@ -381,19 +360,23 @@ onUnmounted(() => {
           </button>
         </div>
         <div v-else class="dh-card-body flex flex-col gap-[11px]">
-          <div v-for="g in updateGroups.slice(0, 4)" :key="g.image" class="flex items-center gap-2.5">
+          <!-- 一行 = 一个待更新的容器。以前按镜像简称分组：ghcr.io/music-assistant/server
+               只剩 "server"、redis:alpine 剩 "redis"，用户根本对不上是哪个容器。
+               摘要哈希（3b39059 → 130a28b）与「N 个」徽标对用户没有信息量，一并去掉。 -->
+          <div
+            v-for="it in (data?.updates?.items ?? []).slice(0, 4)"
+            :key="it.container"
+            class="flex items-center gap-2.5"
+          >
             <div
               class="grid h-[28px] w-[28px] flex-none place-items-center rounded-[9px] bg-line-2 text-[11px] font-semibold text-accent-text"
             >
-              {{ initial(g.image) }}
+              {{ initial(it.container) }}
             </div>
             <div class="min-w-0 flex-1">
-              <div class="truncate text-[12.5px] font-semibold" :title="g.image">{{ imageShort(g.image) }}</div>
-              <div class="truncate font-mono text-[11.5px] text-text-5">
-                {{ digestShort(g.localDigest) }} → {{ digestShort(g.remoteDigest) }}
-              </div>
+              <div class="truncate text-[12.5px] font-semibold" :title="it.container">{{ it.container }}</div>
+              <div class="truncate text-[11.5px] text-text-5" :title="it.image">{{ imageShort(it.image) }}</div>
             </div>
-            <span class="dh-badge dh-badge-warn flex-none">{{ g.containers.length }} 个</span>
           </div>
 
           <button class="dh-btn dh-btn-primary mt-0.5" @click="router.push('/updates')">
@@ -408,13 +391,13 @@ onUnmounted(() => {
     <div class="dh-card">
       <div class="dh-card-head">
         <span>最近执行记录</span>
-        <span class="ml-auto text-[12px] font-normal text-text-4">近 24 小时</span>
+        <span class="ml-auto text-[12px] font-normal text-text-4">最近 15 条</span>
       </div>
       <div v-if="!recentRows.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
       <div v-else class="dh-card-body flex flex-col py-1">
         <div v-for="l in recentRows" :key="l.id" class="dh-tl">
           <div class="w-[86px] flex-none text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
-          <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ kindLabel(l.kind) }}</span>
+          <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ runKindLabel(l.kind) }}</span>
           <span class="min-w-0 flex-1 truncate text-[12.5px] text-text-2" :title="l.message">
             {{ l.message }}
           </span>

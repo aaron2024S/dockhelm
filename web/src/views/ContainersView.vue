@@ -318,6 +318,21 @@ function closeMenu() {
         <input v-model="keyword" class="dh-input !pl-8" placeholder="按名称 / 镜像 / 项目筛选" />
       </div>
 
+      <!-- 全选快捷入口放在搜索行右侧（原来孤零零挂在列表最底部，谁都看不见）；
+           选中任何容器后这里让位给批量操作条。 -->
+      <label
+        v-if="filtered.length && !selected.size"
+        class="ml-auto flex cursor-pointer items-center gap-2 text-[12px] text-text-5"
+      >
+        <input
+          type="checkbox"
+          class="h-[14px] w-[14px] accent-accent"
+          :checked="allSelected"
+          @change="toggleAll"
+        />
+        全选当前列表（{{ filtered.length }} 个）
+      </label>
+
       <div v-if="selected.size" class="ml-auto flex flex-wrap items-center gap-2">
         <span class="text-[12px] text-text-4">已选 {{ selected.size }} 个</span>
         <button class="dh-btn dh-btn-sm" @click="toggleAll">
@@ -333,14 +348,6 @@ function closeMenu() {
           更新选中
         </button>
       </div>
-    </div>
-
-    <div class="dh-banner dh-banner-warn">
-      <!-- 整句必须包在同一层里：.dh-banner 是 flex 容器，裸文本会被拆成独立格子，
-           中间夹一个 <b> 就会排成三列（"文字 / 加粗 / 文字"并排）。 -->
-      <span class="min-w-0 flex-1">
-        批量更新前会先核对镜像摘要：<b>只有镜像真的变了才会重启容器</b>，未变化的容器会原样跳过。
-      </span>
     </div>
 
     <div v-if="loading && !containers.length" class="dh-card grid h-[240px] place-items-center">
@@ -472,18 +479,6 @@ function closeMenu() {
       </div>
     </div>
 
-    <!-- 批量选择条已并入页头，这里只保留一个「全选」快捷入口 -->
-    <div v-if="filtered.length && !selected.size" class="flex items-center gap-2 text-[12px] text-text-5">
-      <label class="flex cursor-pointer items-center gap-2">
-        <input
-          type="checkbox"
-          class="h-[14px] w-[14px] accent-accent"
-          :checked="allSelected"
-          @change="toggleAll"
-        />
-        全选当前列表（{{ filtered.length }} 个）
-      </label>
-    </div>
 
     <!-- 批量启停/重启确认：一次会动多个容器，必须二次确认 -->
     <Modal

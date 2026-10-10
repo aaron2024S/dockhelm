@@ -34,22 +34,13 @@ const copied = ref(false)
 const saving = ref(false)
 
 const mirrors = computed<MirrorConfig[]>(() => data.value?.settings?.mirrors ?? [])
-const suggestions = computed<MirrorConfig[]>(() => data.value?.suggestions ?? [])
+const presets = computed<MirrorConfig[]>(() => data.value?.presets ?? [])
 const daemonMirrors = computed<string[]>(() => data.value?.daemonMirrors ?? [])
 
 /** 与后端 normalizeMirror 同口径：忽略大小写与结尾斜杠。 */
 function urlKey(u: string) {
   return u.trim().toLowerCase().replace(/\/+$/, '')
 }
-
-/**
- * 「我的加速源」里已经有的地址。
- *
- * 推荐区据此把那一行标成「已添加」，而不是整行抹掉 —— 否则添加一条就少一条，
- * 全加完整个「推荐加速源」栏位会凭空消失。后端现在也始终返回完整的内置清单。
- */
-const addedKeys = computed(() => new Set(mirrors.value.map((m) => urlKey(m.url))))
-const isAdded = (s: MirrorConfig) => addedKeys.value.has(urlKey(s.url))
 
 const pullMirror = computed({
   get: () => data.value?.settings?.pullMirror ?? '',
@@ -108,9 +99,21 @@ function addMirror() {
   newNote.value = ''
 }
 
-function addSuggestion(s: MirrorConfig) {
-  if (!data.value || isAdded(s)) return
-  data.value.settings.mirrors.push({ ...s, enabled: true })
+/**
+ * 把预置的常用加速源补回「我的加速源」，并直接保存。
+ *
+ * 正常情况下用不到 —— 预置清单在服务首次启动时就已经整份灌进来了。留这个入口只为兜底：
+ * 用户把列表删空之后还能一键找回。删掉的条目本身不会自己回来（后端只灌一次）。
+ */
+async function addPresets() {
+  if (!data.value) return
+  let added = 0
+  for (const p of presets.value) {
+    if (mirrors.value.some((m) => urlKey(m.url) === urlKey(p.url))) continue
+    data.value.settings.mirrors.push({ ...p })
+    added++
+  }
+  if (added) await save()
 }
 
 function removeMirror(idx: number) {
@@ -135,7 +138,6 @@ async function testOne(url: string) {
     const res = await api.post<MirrorConfig>('/api/registries/test', { url })
     // 只把结果写回本地，不整页重载 —— 重载会把还没点「保存」的添加/删除一起丢掉
     applyResults(mirrors.value, [res])
-    applyResults(suggestions.value, [res])
     if (res.ok) {
       toast.success(`${res.url} 可用`, `延迟 ${res.latencyMs} ms`)
     } else {
@@ -151,15 +153,9 @@ async function testOne(url: string) {
 async function testAll() {
   testing.value = true
   try {
-    const urls = [
-      ...new Set([
-        ...mirrors.value.map((m) => m.url),
-        ...suggestions.value.map((s) => s.url),
-      ]),
-    ]
+    const urls = [...new Set(mirrors.value.map((m) => m.url))]
     const res = await api.post<{ results: MirrorConfig[] }>('/api/registries/test-all', { urls })
     applyResults(mirrors.value, res.results ?? [])
-    applyResults(suggestions.value, res.results ?? [])
     toast.success('测速完成', '结果已写回各自那一行')
   } catch (e) {
     toast.error('批量测速失败', e instanceof Error ? e.message : String(e))
@@ -287,7 +283,13 @@ onMounted(() => {
           v-if="!mirrors.length"
           :icon="Rocket"
           :title="loading ? '正在载入…' : '还没有添加加速源'"
-          description="可以从下方的推荐列表一键添加，也可以手动填写自建加速站地址。"
+          :description="
+            loading
+              ? ''
+              : '预置的常用加速站随首次启动就已经写进来了，不想要哪条直接删；这里被删空之后可以一键找回，也可以手动填写自建加速站地址。'
+          "
+          :action-label="!loading && presets.length ? '加入预置的常用加速站' : ''"
+          @action="addPresets"
         />
         <div v-else class="flex flex-col">
           <div
@@ -304,7 +306,11 @@ onMounted(() => {
             />
             <div class="min-w-0 flex-1">
               <div class="truncate font-mono text-[11.5px] text-text-2">{{ m.url }}</div>
-              <div v-if="m.note" class="text-[11px] text-text-5">{{ m.note }}</div>
+              <div class="flex items-center gap-1.5 text-[11px] text-text-5">
+                <!-- 「预置」只是个来源标记：表示这条是随应用自带的，删掉与删自建条目没区别 -->
+                <span v-if="m.builtin" class="dh-badge dh-badge-plain flex-none">预置</span>
+                <span v-if="m.note" class="truncate">{{ m.note }}</span>
+              </div>
             </div>
             <span v-if="m.lastTested" class="dh-badge" :class="latencyTone(m)">
               <CheckCircle2 v-if="m.ok" class="h-3 w-3" />
@@ -378,50 +384,10 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 推荐 -->
-    <div v-if="suggestions.length" class="dh-card">
-      <div class="dh-card-head">
-        <Rocket class="h-3.5 w-3.5 text-text-4" />
-        <span>推荐加速源</span>
-        <span class="ml-auto text-[11.5px] font-normal text-text-5">
-          点「添加」加入「我的加速源」，已添加的会标记出来；这些只是起点，可用性请用测速确认
-        </span>
-      </div>
-      <div id="mirror-suggest" class="grid grid-cols-1 gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
-        <div
-          v-for="s in suggestions"
-          :key="s.url"
-          class="flex items-center gap-2 rounded-[10px] border px-3 py-2"
-          :class="isAdded(s) ? 'border-line-1 bg-ink-900 opacity-70' : 'border-line-1 bg-ink-800'"
-        >
-          <div class="min-w-0 flex-1">
-            <div class="truncate font-mono text-[11.5px] text-text-2">{{ s.url }}</div>
-            <div class="text-[11px] text-text-5">{{ s.note }}</div>
-          </div>
-          <span v-if="s.lastTested" class="dh-badge" :class="latencyTone(s)">
-            {{ s.ok ? s.latencyMs + ' ms' : '不可用' }}
-          </span>
-          <button
-            class="dh-btn dh-btn-sm"
-            :disabled="testingUrl === s.url"
-            title="测这个加速源的延迟"
-            @click="testOne(s.url)"
-          >
-            <Zap class="h-3 w-3" :class="testingUrl === s.url ? 'dh-spin' : ''" />
-          </button>
-          <button
-            class="dh-btn dh-btn-sm"
-            :class="isAdded(s) ? '' : 'dh-btn-primary'"
-            :disabled="isAdded(s)"
-            :title="isAdded(s) ? '已经在「我的加速源」里了' : '加入「我的加速源」'"
-            @click="addSuggestion(s)"
-          >
-            <CheckCircle2 v-if="isAdded(s)" class="h-3 w-3" />
-            <Plus v-else class="h-3 w-3" />
-            {{ isAdded(s) ? '已添加' : '添加' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <!--
+      这里原本有一张「推荐加速源」卡：一份独立的内置清单，用户要逐条点「添加」才进「我的加速源」。
+      同一批数据在两个地方出现、还要手动搬运，已经废掉 —— 预置清单现在只在服务首次启动时
+      整份写进「我的加速源」（默认启用），不想要就逐条删，删空后可用列表空态里的按钮一键找回。
+    -->
   </div>
 </template>

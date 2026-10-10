@@ -706,6 +706,22 @@ type ProjectFile struct {
 	Size     int64  `json:"size"`
 }
 
+// newProjectInfo 建一个空项目。
+//
+// 切片**必须显式初始化成空切片**：Go 的 nil 切片会序列化成 JSON `null`，
+// 而前端拿到 null 再取 `.length` 会抛 TypeError、整页渲染白屏
+// （0.3.0 的真实事故：有 compose 项目但一个文件都读不到时，备份页一片空白）。
+// 别把这里改成 `&ProjectInfo{Project: proj}`。
+func newProjectInfo(proj string) *ProjectInfo {
+	return &ProjectInfo{
+		Project:     proj,
+		Containers:  []string{},
+		ConfigFiles: []string{},
+		Readable:    []ProjectFile{},
+		Unreadable:  []string{},
+	}
+}
+
 // ListProjects 按 compose 项目聚合容器。
 func (s *Service) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
 	list, err := s.dc.ListContainers(ctx)
@@ -720,7 +736,7 @@ func (s *Service) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
 		}
 		p, ok := byProj[proj]
 		if !ok {
-			p = &ProjectInfo{Project: proj}
+			p = newProjectInfo(proj)
 			byProj[proj] = p
 		}
 		p.Containers = append(p.Containers, c.Name())

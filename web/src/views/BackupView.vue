@@ -684,7 +684,7 @@ onMounted(async () => {
         <div v-for="p in projects" :key="p.project" class="border-b border-line-1 p-3.5 last:border-b-0">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-[13px] font-semibold">{{ p.project }}</span>
-            <span class="dh-badge dh-badge-plain">{{ p.containers.length }} 个容器</span>
+            <span class="dh-badge dh-badge-plain">{{ p.containers?.length ?? 0 }} 个容器</span>
             <span v-if="p.workDir" class="truncate font-mono text-[11px] text-text-6" :title="p.workDir">
               {{ p.workDir }}
             </span>
@@ -699,7 +699,7 @@ onMounted(async () => {
             </span>
           </div>
 
-          <div v-if="p.readable.length" class="mt-2.5 flex flex-col gap-1.5">
+          <div v-if="p.readable?.length" class="mt-2.5 flex flex-col gap-1.5">
             <div
               v-for="f in p.readable"
               :key="f.path"
@@ -718,7 +718,7 @@ onMounted(async () => {
           </div>
 
           <div
-            v-if="p.unreadable.length"
+            v-if="p.unreadable?.length"
             class="mt-2.5 flex flex-col gap-1.5 rounded-[9px] border border-line-warn bg-soft-warn px-2.5 py-2"
           >
             <div class="flex items-center gap-2 text-[11.5px] text-warn-text">

@@ -33,7 +33,7 @@ const (
 // Version 语义化版本号。发新版时改这里。
 // 声明为 var 而不是 const，是为了让构建时可以用
 // `-ldflags "-X .../internal/version.Version=x.y.z"` 注入。
-var Version = "0.3.0"
+var Version = "0.3.1"
 
 // BuildInfo 由 ldflags 注入（见 Dockerfile / 构建脚本），默认值用于本地 `go run`。
 var (

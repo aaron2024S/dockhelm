@@ -18,20 +18,14 @@ import { api, openStream } from '@/api/client'
 import type { AutoUpdateInfo, CheckResult, UpdatesResponse } from '@/api/types'
 import { checkLabel, formatDateTime, relativeTime, shortImage } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
-import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
 
 const toast = useToastStore()
 const results = ref<CheckResult[]>([])
 const checkedAt = ref('')
-const selfName = ref('')
 const loading = ref(false)
 const deepLoading = ref(false)
-const applying = ref(false)
-const selected = ref<Set<string>>(new Set())
 const progress = ref<{ name: string; message: string; status: string }[]>([])
-const showConfirm = ref(false)
-const forceUpdate = ref(false)
 const showInfo = ref(false)
 let closeStream: (() => void) | null = null
 /** 组件已卸载 —— 用来打断 runAutoCycle 里那个最多 60 秒的轮询循环。 */
@@ -45,32 +39,24 @@ const auto = ref<AutoUpdateInfo | null>(null)
 const autoBusy = ref(false)
 
 const available = computed(() => results.value.filter((r) => r.status === 'update_available'))
-const other = computed(() => results.value.filter((r) => r.status !== 'update_available'))
-const selectedNames = computed(() => [...selected.value])
+
+/** 按容器名索引巡检结果 —— 候选表里给「未检测到更新」的行补上具体判定（已是最新/无法判定/本地镜像）。 */
+const resultByName = computed(() => {
+  const m = new Map<string, CheckResult>()
+  for (const r of results.value) m.set(r.container, r)
+  return m
+})
 
 /** 会被自动更新的那几个容器（预览）。 */
 const willUpdate = computed(() => (auto.value?.candidates ?? []).filter((c) => c.willUpdate))
 /** 被跳过的（含排除列表、自身、以及未检测到更新的）。 */
 const skipped = computed(() => (auto.value?.candidates ?? []).filter((c) => !c.willUpdate && (c.protected || c.excluded)))
 
-function toggle(name: string) {
-  const s = new Set(selected.value)
-  if (s.has(name)) s.delete(name)
-  else s.add(name)
-  selected.value = s
-}
-
-function selectAllAvailable() {
-  if (selected.value.size === available.value.length) selected.value = new Set()
-  else selected.value = new Set(available.value.map((r) => r.container))
-}
-
 async function load() {
   try {
     const res = await api.get<UpdatesResponse>('/api/updates')
     results.value = res.results ?? []
     checkedAt.value = res.checkedAt
-    selfName.value = res.selfName
   } catch (e) {
     toast.error('读取巡检结果失败', e instanceof Error ? e.message : String(e))
   }
@@ -91,55 +77,6 @@ async function check(deep: boolean) {
     deepLoading.value = false
     loading.value = false
   }
-}
-
-/**
- * 「更新中」这个状态不能只靠 SSE 的 batch_done 来复位。
- * SSE 掉线重连的窗口里提交更新、或者后端因为异常没发出 batch_done，
- * 按钮就会**永久**处于禁用态，页面上也没有任何出口（只能刷新）。
- * 兜底：提交后挂一个看门狗；它到点就强制解锁并重新拉一次状态。
- */
-let applyWatchdog: number | undefined
-
-function armApplyWatchdog() {
-  clearApplyWatchdog()
-  applyWatchdog = window.setTimeout(() => {
-    if (!applying.value) return
-    applying.value = false
-    toast.info('更新状态已超时解锁', '长时间没有收到批次结束事件，已重新拉取状态')
-    void load()
-  }, 20 * 60 * 1000)
-}
-
-function clearApplyWatchdog() {
-  if (applyWatchdog) {
-    window.clearTimeout(applyWatchdog)
-    applyWatchdog = undefined
-  }
-}
-
-async function apply() {
-  const names = selectedNames.value
-  if (!names.length) return
-  applying.value = true
-  progress.value = []
-  try {
-    await api.post('/api/updates/apply', { names, force: forceUpdate.value })
-    showConfirm.value = false
-    armApplyWatchdog()
-    toast.info(`已提交 ${names.length} 个容器的更新任务`, '正在后台执行，进度见下方')
-  } catch (e) {
-    toast.error('提交失败', e instanceof Error ? e.message : String(e))
-    applying.value = false
-    clearApplyWatchdog()
-  }
-}
-
-/** 手动出口：用户觉得任务早该结束了，就自己解锁并拉一次状态。 */
-function releaseApply() {
-  applying.value = false
-  clearApplyWatchdog()
-  void load()
 }
 
 const toneOf = (status: string) => checkLabel(status).tone
@@ -210,12 +147,9 @@ onMounted(() => {
       }
     }
     if (ev.kind === 'batch_done') {
-      applying.value = false
-      clearApplyWatchdog()
-      selected.value = new Set()
+      // 手动批量更新的入口已从本页移除（更新容器走容器页或自动更新），
+      // 但自动更新跑完也会发这个事件 —— 借它刷新一次巡检结果。
       void load()
-      const msg = `更新 ${d.updated ?? 0} 个，已是最新/跳过 ${d.skipped ?? 0} 个，失败 ${d.failed ?? 0} 个`
-      toast.success('批量更新完成', msg)
     }
     // 自动更新：巡检结束 / 整轮结束都要把这块刷新一下
     if (ev.kind === 'auto_check_done' || ev.kind === 'auto_done') {
@@ -227,7 +161,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   disposed = true
-  clearApplyWatchdog()
   closeStream?.()
 })
 </script>
@@ -252,25 +185,6 @@ onUnmounted(() => {
         </button>
         <button class="dh-btn" :disabled="loading || deepLoading" @click="check(false)">
           <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />重新检测
-        </button>
-        <button
-          class="dh-btn dh-btn-primary"
-          :disabled="!available.length || applying"
-          @click="showConfirm = true"
-        >
-          <Download class="h-3.5 w-3.5" />更新 {{ available.length }} 个镜像
-        </button>
-        <!--
-          「更新中」是按 SSE 的批次结束事件复位的。事件没来（掉线重连、后端异常）
-          时按钮会一直灰着，所以给一个明说的出口，别让用户只能刷新页面。
-        -->
-        <button
-          v-if="applying"
-          class="dh-btn"
-          title="长时间没有收到批次结束事件时，点这里重新拉取状态"
-          @click="releaseApply"
-        >
-          <RefreshCw class="h-3.5 w-3.5" />刷新状态
         </button>
       </div>
     </div>
@@ -305,12 +219,12 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 进度 -->
+    <!-- 进度：自动更新（以及容器页发起的更新）的实时步骤都走这条 SSE -->
     <div v-if="progress.length" class="dh-card">
       <div class="dh-card-head">
-        <Loader2 v-if="applying" class="h-3.5 w-3.5 dh-spin text-accent" />
+        <Loader2 v-if="autoBusy" class="h-3.5 w-3.5 dh-spin text-accent" />
         <Zap v-else class="h-3.5 w-3.5 text-text-4" />
-        <span>{{ applying ? '更新进行中' : '最近一次更新进度' }}</span>
+        <span>{{ autoBusy ? '更新进行中' : '最近一次更新进度' }}</span>
         <span class="ml-auto text-[11.5px] font-normal text-text-5">{{ progress.length }} 条</span>
       </div>
       <div class="flex flex-col">
@@ -329,80 +243,39 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 待更新 -->
-    <div class="dh-card">
-      <div class="dh-card-head">
-        <Download class="h-3.5 w-3.5 text-text-4" />
-        <span>有可用更新的容器</span>
-        <span class="text-[11.5px] font-normal text-text-5">
-          {{ checkedAt ? relativeTime(checkedAt) + '检查' : '尚未巡检' }}
-        </span>
-        <div v-if="available.length" class="ml-auto flex items-center gap-2">
-          <label class="flex cursor-pointer items-center gap-2 text-[11.5px] font-normal text-text-4">
-            <input type="checkbox" class="h-[13px] w-[13px] accent-accent" :checked="selected.size === available.length && available.length > 0" @change="selectAllAvailable" />
-            全选
-          </label>
-          <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="!selected.size" @click="showConfirm = true">
-            更新选中的 {{ selected.size }} 个
-          </button>
-        </div>
-      </div>
-
-      <EmptyState
-        v-if="!available.length"
-        :icon="CheckCircle2"
-        :title="checkedAt ? '没有可用更新' : '还没有巡检过'"
-        :description="checkedAt ? '所有可比对的容器都与仓库摘要一致。' : '点击右上角「巡检」只读检查一遍（不会动任何容器）。'"
-      />
-      <div v-else class="overflow-x-auto">
-        <table class="dh-table">
-          <thead>
-            <tr>
-              <th class="w-[34px]" />
-              <th>容器</th>
-              <th>镜像</th>
-              <th class="w-[150px]">本地摘要</th>
-              <th class="w-[150px]">仓库摘要</th>
-              <th class="w-[110px]">判定</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in available" :key="r.container">
-              <td>
-                <input
-                  type="checkbox"
-                  class="h-[14px] w-[14px] accent-accent"
-                  :checked="selected.has(r.container)"
-                  @change="toggle(r.container)"
-                />
-              </td>
-              <td>
-                <RouterLink
-                  :to="`/containers/${encodeURIComponent(r.container)}`"
-                  class="dh-tap-txt text-[12.5px] font-medium hover:text-accent"
-                >
-                  {{ r.container }}
-                </RouterLink>
-              </td>
-              <td class="max-w-[220px] truncate font-mono text-[11.5px] text-text-3">{{ shortImage(r.image) }}</td>
-              <td class="font-mono text-[11px] text-text-5">{{ (r.localDigest || '—').slice(0, 19) }}</td>
-              <td class="font-mono text-[11px] text-text-5">{{ (r.remoteDigest || '—').slice(0, 19) }}</td>
-              <td><span class="dh-badge dh-badge-warn">有新版本</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <!--
+      「有可用更新的容器」卡已删（它带全选/勾选/「更新选中的」一整套手动批量更新操作）：
+      同一批容器的判定信息已经在下面自动更新卡的候选表里（candidates 覆盖全部容器），
+      再列一遍纯属重复；手动更新走容器页（候选表的容器名可直接点过去），本页只做预览与自动更新。
+    -->
 
     <!-- 自动更新 -->
+    <!--
+      卡头一行说清三件事：开关状态（点徽标直达设置）、下次巡检时间、手动触发按钮。
+      原先这里有一个两栏的「总开关 / 下次巡检」说明区，信息与本行完全重复，已删。
+    -->
     <div class="dh-card">
       <div class="dh-card-head">
         <Zap class="h-3.5 w-3.5" :class="auto?.enabled ? 'text-warn-text' : 'text-text-4'" />
         <span>自动更新</span>
-        <span class="ml-2 text-[11.5px] font-normal" :class="auto?.enabled ? 'text-warn-text' : 'text-text-5'">
-          {{ auto?.enabled ? '检测到新版本会自动更新' : '只检测，不会自动动容器' }}
-        </span>
-        <div class="ml-auto flex items-center gap-2">
+        <RouterLink
+          to="/settings"
+          class="dh-tap dh-badge"
+          :class="auto?.enabled ? 'dh-badge-warn' : 'dh-badge-plain'"
+          :title="auto?.enabled ? '已开启 · 去「设置 → 更新与检测」调整' : '已关闭 · 去「设置 → 更新与检测」打开'"
+        >
+          {{ auto?.enabled ? '已开启' : '已关闭' }}
+        </RouterLink>
+        <div class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span
+            class="flex items-center gap-1.5 text-[11.5px] text-text-5"
+            :title="auto?.lastCheckAt ? `上次巡检 ${formatDateTime(auto.lastCheckAt)}` : '还没有巡检记录'"
+          >
+            <Clock class="h-3 w-3" />
+            {{ auto?.nextCheckAt ? `下次巡检 ${formatDateTime(auto.nextCheckAt)}` : '未开启周期巡检' }}
+            <template v-if="auto?.checkIntervalHours">· 每 {{ auto.checkIntervalHours }} 小时一次</template>
+            <template v-if="auto?.lastCheckAt">· 上次 {{ relativeTime(auto.lastCheckAt) }}</template>
+          </span>
           <button class="dh-btn dh-btn-sm" :disabled="autoBusy" @click="runAutoCycle(true)">
             <RefreshCw class="h-3 w-3" :class="autoBusy ? 'dh-spin' : ''" />立即巡检一轮
           </button>
@@ -413,51 +286,15 @@ onUnmounted(() => {
       </div>
 
       <div class="flex flex-col gap-3 p-3.5">
-        <!-- 总开关状态（只读显示）+ 下次巡检时间 -->
-        <!--
-          这里不再放自动更新开关：它就是「设置 → 更新与检测 → 自动更新」那一个开关，
-          两处都能改 = 同一份配置两个入口。本页只显示当前状态并给一个指路。
-        -->
-        <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <div
-            class="rounded-[10px] border p-3 lg:col-span-2"
-            :class="auto?.enabled ? 'border-line-warn bg-soft-warn' : 'border-line-1 bg-ink-800'"
-          >
-            <div class="flex items-center gap-2 text-[12px] text-text-4">
-              <Zap class="h-3.5 w-3.5" :class="auto?.enabled ? 'text-warn-text' : 'text-text-4'" />
-              自动更新总开关
-              <span class="dh-badge" :class="auto?.enabled ? 'dh-badge-warn' : 'dh-badge-plain'">
-                {{ auto?.enabled ? '已开启' : '已关闭' }}
-              </span>
-            </div>
-            <div class="mt-1.5 text-[12.5px] leading-relaxed text-text-3">
-              {{
-                auto?.enabled
-                  ? '每轮巡检结束后，自动把有更新的容器（排除列表与自己除外）重建到新镜像。'
-                  : '只检测、不动手 —— 发现更新后要你在下面手动勾选并更新。'
-              }}
-            </div>
-            <RouterLink to="/settings" class="dh-tap-txt mt-2 inline-flex items-center gap-1 text-[11.5px] text-accent hover:underline">
-              去「设置 → 更新与检测」开关它 →
-            </RouterLink>
-          </div>
-          <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
-            <div class="flex items-center gap-1.5 text-[12px] text-text-4"><Clock class="h-3.5 w-3.5" />下次巡检</div>
-            <div class="mt-1.5 text-[14px] font-semibold text-text-1">
-              {{ auto?.nextCheckAt ? formatDateTime(auto.nextCheckAt) : '未开启周期巡检' }}
-            </div>
-            <div class="mt-1 text-[11px] text-text-5">
-              {{ auto?.lastCheckAt ? `上次 ${relativeTime(auto.lastCheckAt)}` : '还没有巡检记录' }}
-              · 每 {{ auto?.checkIntervalHours ?? 0 }} 小时一次
-            </div>
-          </div>
-        </div>
-
         <!-- 本轮会发生什么 -->
         <div class="rounded-[10px] border border-line-1 bg-ink-800">
           <div class="flex flex-wrap items-center gap-2 border-b border-line-1 px-3 py-2">
             <span class="text-[12px] font-medium text-text-3">本轮会发生什么</span>
-            <span class="dh-badge dh-badge-warn">{{ willUpdate.length }} 个容器将被更新</span>
+            <!-- 自动更新关闭时绝不能说「将被更新」——那一轮什么都不会发生，只是标记出有更新的容器 -->
+            <span class="dh-badge dh-badge-warn">
+              {{ auto?.enabled ? `${willUpdate.length} 个容器将被更新` : `${willUpdate.length} 个容器有可用更新` }}
+            </span>
+            <span v-if="auto?.enabled === false" class="dh-badge dh-badge-plain">自动更新已关闭 · 手动更新请进容器页</span>
             <span class="dh-badge dh-badge-plain">{{ skipped.length }} 个容器被保护/排除</span>
             <RouterLink to="/settings" class="dh-tap-txt ml-auto text-[11.5px] text-text-5 hover:text-accent">
               去设置里调整检测频率与排除列表 →
@@ -478,7 +315,15 @@ onUnmounted(() => {
               </thead>
               <tbody>
                 <tr v-for="c in auto.candidates" :key="c.name">
-                  <td class="font-mono text-[11.5px] text-text-3">{{ c.name }}</td>
+                  <td>
+                    <!-- 容器名直接链到容器详情：手动更新就从那里发起（本页不再提供批量更新操作） -->
+                    <RouterLink
+                      :to="`/containers/${encodeURIComponent(c.name)}`"
+                      class="dh-tap-txt font-mono text-[11.5px] text-text-3 hover:text-accent"
+                    >
+                      {{ c.name }}
+                    </RouterLink>
+                  </td>
                   <td class="max-w-[220px] truncate font-mono text-[11px] text-text-5">{{ shortImage(c.image) }}</td>
                   <td>
                     <span class="dh-badge" :class="c.running ? 'dh-badge-run' : 'dh-badge-stop'">
@@ -486,11 +331,25 @@ onUnmounted(() => {
                     </span>
                   </td>
                   <td class="text-[11.5px]">
-                    <span v-if="c.willUpdate" class="dh-badge dh-badge-warn">将更新</span>
+                    <!--
+                      「去向」吸收了原「其余容器」表的全部信息：未命中将更新/保护/排除的行，
+                      不再笼统写「无需更新」，而是带上巡检的具体判定（已是最新/无法判定/本地镜像）与原因。
+                      自动更新关闭时不说「将更新」——那一轮什么都不会发生，只标记「有可用更新」。
+                    -->
+                    <span v-if="c.willUpdate" class="dh-badge dh-badge-warn">
+                      {{ auto?.enabled ? '将更新' : '有可用更新' }}
+                    </span>
                     <span v-else-if="c.protected" class="dh-badge dh-badge-accent">受保护</span>
                     <span v-else-if="c.excluded" class="dh-badge dh-badge-plain">已排除</span>
-                    <span v-else class="dh-badge dh-badge-plain">无需更新</span>
-                    <span v-if="c.reason" class="ml-2 text-text-5">{{ c.reason }}</span>
+                    <span
+                      v-else-if="resultByName.get(c.name)"
+                      class="dh-badge"
+                      :class="`dh-badge-${toneOf(resultByName.get(c.name)!.status)}`"
+                    >
+                      {{ checkLabel(resultByName.get(c.name)!.status).text }}
+                    </span>
+                    <span v-else class="dh-badge dh-badge-plain">未检测到更新</span>
+                    <span class="ml-2 text-text-5">{{ resultByName.get(c.name)?.reason || c.reason }}</span>
                   </td>
                 </tr>
               </tbody>
@@ -498,32 +357,11 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 上一轮结果 -->
-        <div v-if="auto?.lastRun" class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5">
-          <div class="flex flex-wrap items-center gap-2 text-[12px]">
-            <span class="font-medium text-text-3">上一轮（{{ auto.lastRun.trigger === 'manual' ? '手动触发' : '定时触发' }}）</span>
-            <span class="dh-badge dh-badge-plain">{{ relativeTime(auto.lastRun.startedAt) }}</span>
-            <span v-if="auto.lastRun.dryRun" class="dh-badge dh-badge-plain">仅巡检</span>
-            <span v-else class="dh-badge dh-badge-run">更新 {{ auto.lastRun.updated }} 个容器</span>
-            <span v-if="auto.lastRun.failed" class="dh-badge dh-badge-err">失败 {{ auto.lastRun.failed }} 个容器</span>
-            <span class="ml-auto text-[11.5px] text-text-5">
-              巡检 {{ auto.lastRun.checked }} 个容器 · 发现 {{ auto.lastRun.available }} 个有更新 · 耗时 {{ (auto.lastRun.durationMs / 1000).toFixed(1) }}s
-            </span>
-          </div>
-        </div>
-
-        <div
-          v-if="auto && !auto.enabled"
-          class="flex items-start gap-2 rounded-[8px] border border-line-1 px-2.5 py-2 text-[11.5px] leading-relaxed text-text-4"
-        >
-          <Info class="mt-[1px] h-3.5 w-3.5 flex-none" />
-          <span>
-            自动更新默认关闭：检测到新版本只会打上「有新版本」标记，要不要更新由你决定。
-            打开开关后，每轮巡检结束就会按上面的清单自动重建容器 —— 开启前建议先看清清单。
-            开关与执行策略（并发度、同一镜像只拉一次、更新前备份、更新后清理）都在
-            <RouterLink to="/settings" class="text-accent hover:underline">设置页</RouterLink>统一维护，本页只做预览与手动触发。
-          </span>
-        </div>
+        <!--
+          「上一轮结果」条与「自动更新默认关闭」长提示已删：
+          上一轮的更新/失败数在提交后的 toast、顶部汇总卡与「设置 → 运行记录」里都有；
+          开关状态与去设置的入口已在卡头的状态徽标上，不再重复一段说明文字。
+        -->
       </div>
     </div>
 
@@ -534,86 +372,16 @@ onUnmounted(() => {
       已整体删除；本页只用上面那句指路。
     -->
 
-    <!-- 其它容器 -->
-    <div v-if="other.length" class="dh-card">
-      <div class="dh-card-head">
-        <CheckCircle2 class="h-3.5 w-3.5 text-text-4" />
-        <span>其余容器</span>
-        <span class="ml-auto text-[11.5px] font-normal text-text-5">{{ other.length }} 个</span>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="dh-table">
-          <thead>
-            <tr>
-              <th>容器</th>
-              <th>镜像</th>
-              <th class="w-[110px]">判定</th>
-              <th>说明</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in other" :key="r.container">
-              <td>
-                <div class="flex items-center gap-1.5">
-                  <RouterLink
-                    :to="`/containers/${encodeURIComponent(r.container)}`"
-                    class="dh-tap-txt text-[12.5px] font-medium hover:text-accent"
-                  >
-                    {{ r.container }}
-                  </RouterLink>
-                  <span v-if="r.container === selfName" class="dh-badge dh-badge-accent">自身</span>
-                </div>
-              </td>
-              <td class="max-w-[240px] truncate font-mono text-[11.5px] text-text-3">{{ shortImage(r.image) }}</td>
-              <td>
-                <span class="dh-badge" :class="`dh-badge-${toneOf(r.status)}`">{{ checkLabel(r.status).text }}</span>
-              </td>
-              <td class="text-[11.5px] text-text-4">{{ r.reason }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <!--
+      「其余容器」卡已删：它与上面候选表的容器清单完全重复（candidates 覆盖全部容器），
+      判定信息（已是最新/无法判定/本地镜像 + 原因）已并入候选表的「去向」列。
+    -->
 
-    <!-- 确认 -->
-    <Modal
-      :open="showConfirm"
-      title="确认执行更新"
-      :subtitle="`共 ${selected.size} 个容器`"
-      :busy="applying"
-      @close="showConfirm = false"
-    >
-      <div class="flex flex-col gap-3">
-        <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[12px] leading-relaxed text-text-3">
-          Docker 会按顺序对每个容器执行：拉取镜像 → 比对镜像 ID。
-          <b class="text-text-1">ID 没变就完全跳过</b>，容器不会被停止或重建。
-          只有镜像真的变化时才会走「停旧 → 改名保留 → 建新 → 健康检查（失败自动回滚）」。
-        </div>
-        <div class="dh-scroll max-h-[200px] overflow-auto rounded-[10px] border border-line-1 bg-ink-800 p-2.5">
-          <div v-for="n in selectedNames" :key="n" class="px-1 py-[3px] font-mono text-[11.5px] text-text-3">
-            {{ n }}
-          </div>
-        </div>
-        <label class="flex cursor-pointer items-start gap-2.5 text-[12px] text-text-2">
-          <input v-model="forceUpdate" type="checkbox" class="mt-[3px] h-[14px] w-[14px] accent-warn" />
-          <span>
-            强制重建（即使镜像 ID 未变化也重建容器）
-            <br />
-            <span class="text-[11.5px] text-text-5">
-              一般不需要。勾选后连「已是最新」的容器也会被停掉重建 —— 这正是 dockerCopilot 曾经的行为。
-            </span>
-          </span>
-        </label>
-      </div>
-      <template #footer>
-        <button class="dh-btn" @click="showConfirm = false">取消</button>
-        <button class="dh-btn dh-btn-primary" :disabled="applying" @click="apply">
-          <Loader2 v-if="applying" class="h-3.5 w-3.5 dh-spin" />
-          <Download v-else class="h-3.5 w-3.5" />
-          开始更新
-        </button>
-      </template>
-    </Modal>
+    <!--
+      「确认执行更新」弹窗已随手动批量更新入口一起删除
+      （那一整套勾选 / 全选 / 更新选中的 / 强制重建都在说明同一件事：这里原本是手动更新的入口）。
+      手动更新走容器详情页；本页只保留自动更新与「立即执行自动更新」一个会动容器的按钮。
+    -->
 
     <!-- 原理说明 -->
     <Modal :open="showInfo" title="为什么 Dockhelm 不会误停容器" width="620px" @close="showInfo = false">

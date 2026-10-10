@@ -1,5 +1,29 @@
 /** 展示用的格式化工具（保持纯函数，方便单测）。 */
 
+/**
+ * 运行记录 kind → 中文标签。概览页时间线与设置页运行记录表共用。
+ * auto_update / auto_check 是后端定时循环写的两种动作（真更新 / 只巡检）；
+ * 历史数据里可能还有没映射到的 kind，原样展示。
+ */
+const RUN_KIND_LABEL: Record<string, string> = {
+  update: '更新',
+  container: '容器',
+  image: '镜像',
+  volume: '卷',
+  schedule: '计划任务',
+  backup: '备份',
+  restore: '还原',
+  system: '系统',
+  check: '检测',
+  auto_update: '自动更新',
+  auto_check: '自动巡检',
+}
+
+export function runKindLabel(kind: string): string {
+  return RUN_KIND_LABEL[kind] ?? kind
+}
+
+
 export function formatBytes(n: number | undefined | null, digits = 1): string {
   if (n === undefined || n === null || Number.isNaN(n) || n <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
