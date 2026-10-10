@@ -39,6 +39,10 @@ export interface SessionInfo {
   loggedIn: boolean
   failures: number
   maxFailures: number
+  /** 因连续失败被锁定时，还要等多少秒才能再试；未锁定为 0。 */
+  lockedFor: number
+  /** 锁定提示文案（含「约 N 分钟」），未锁定时为空串。措辞由服务端统一生成。 */
+  lockedHint: string
   minPassword: number
   sessionCount: number
 }
@@ -319,7 +323,6 @@ export interface Settings {
   exclude: string[]
   panelURL: string
   concurrency: number
-  deepCheckCron: string
   logRetention: number
   checkOnStart: boolean
 
@@ -411,7 +414,8 @@ export interface ImageView {
   id: string
   shortId: string
   tags: string[]
-  digests: string[]
+  /** 从 RepoDigests 推导的仓库名 —— 无 tag 镜像（未使用）靠它显示可读名称。 */
+  repo?: string
   size: number
   created: number
   containers: number

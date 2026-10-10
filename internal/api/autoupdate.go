@@ -23,10 +23,10 @@ type AutoRunItem struct {
 // 疑问是「它到底动没动我的容器」，把 24 个容器各自的去向逐个列出来，
 // 才能一眼看出被跳过的是哪几个、为什么跳过。
 type AutoRunSummary struct {
-	StartedAt  string       `json:"startedAt"`
-	FinishedAt string       `json:"finishedAt"`
-	Trigger    string       `json:"trigger"` // schedule | manual
-	// DryRun 只巡检不执行（总开关关着，或手动勾了「仅预览」）。
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt"`
+	Trigger    string `json:"trigger"` // schedule | manual
+	// DryRun 只巡检不执行（总开关关着时的定时轮次，或手动 dry-run）。
 	DryRun bool `json:"dryRun"`
 	// Checked 本轮巡检覆盖的容器数。
 	Checked int `json:"checked"`
@@ -38,7 +38,7 @@ type AutoRunSummary struct {
 	// ReclaimedMB 清理旧镜像回收的空间。
 	ReclaimedMB float64 `json:"reclaimedMB"`
 	// DurationMs 整轮耗时。
-	DurationMs int64        `json:"durationMs"`
+	DurationMs int64         `json:"durationMs"`
 	Containers []AutoRunItem `json:"containers"`
 	Error      string        `json:"error,omitempty"`
 }
@@ -101,7 +101,12 @@ func (s *Server) hGetAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hRunAutoUpdate 手动立即跑一轮。「仅预览」时只巡检不执行。
+// hRunAutoUpdate 手动立即跑一轮自动更新。dryRun 为真时只巡检不执行。
+//
+// 全站唯一会真正动容器的手动入口（对应更新中心那颗「立即执行自动更新」）。
+// 页头只读的「重新检测」与容器页「检测更新」都已删除，检测一律走顶栏的只读接口。
+// 这里保留 dryRun：它是「完整跑一轮决策、但一个容器都不动」的唯一入口，
+// 验证与排障都要用，去掉它等于把安全语义也删了。
 func (s *Server) hRunAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		DryRun bool `json:"dryRun"`
@@ -144,10 +149,17 @@ func (s *Server) wakeAutoLoop() {
 //
 // 关掉周期检测时定时器仍会走，但不干活 —— 这样「打开开关」这个动作
 // 只需要唤醒一次就能马上开始计时，而不必重建 goroutine。
+//
+// 启动首轮：checkOnStart 开着就 8 秒后跑一次**只读巡检**（不碰任何容器，
+// 与设置页文案「延迟 8 秒执行…不会停止任何容器」一致），之后进入正常周期节奏。
+// ⚠ 这个开关曾经是死的：StartAutoLoop 取代了 main.go 里旧的启动巡检，
+// 实现删了、设置项却留在页面上 —— 用户开了也没任何效果（2026-10-10 反馈）。
+// 兜底层 runAutoCycle 里 execute && !cfg.AutoApply && trigger != "manual" 的
+// 强制降级继续保护这一轮：就算将来有人把 execute 传错，也动不了容器。
 func (s *Server) autoLoop(ctx context.Context) {
-	// 启动后先等一会儿：让面板先起来，也避开与首次巡检的竞态。
-	timer := time.NewTimer(2 * time.Minute)
+	timer := time.NewTimer(startupDelay(s.readSettings()))
 	defer timer.Stop()
+	first := true
 
 	for {
 		select {
@@ -162,6 +174,15 @@ func (s *Server) autoLoop(ctx context.Context) {
 			}
 			timer.Reset(s.nextInterval())
 		case <-timer.C:
+			if first {
+				first = false
+				// 首轮只服务 checkOnStart；execute 恒为 false，只检查不动手。
+				if s.readSettings().CheckOnStart {
+					s.runAutoCycle(ctx, "startup", false)
+				}
+				timer.Reset(s.nextInterval())
+				continue
+			}
 			if ok, execute := scheduledRun(s.readSettings()); ok {
 				s.runAutoCycle(ctx, "schedule", execute)
 			}
@@ -170,8 +191,16 @@ func (s *Server) autoLoop(ctx context.Context) {
 	}
 }
 
+// startupDelay 返回循环启动后第一轮的等待时长：checkOnStart 开着就 8 秒后
+// 跑启动巡检，否则维持原来的 2 分钟静默（让面板先起来、避开启动竞态）。
+func startupDelay(cfg Settings) time.Duration {
+	if cfg.CheckOnStart {
+		return 8 * time.Second
+	}
+	return 2 * time.Minute
+}
+
 // scheduledRun 决定「定时循环到点时：跑不跑 / 跑的话动不动手」。
-//
 // 返回 ok=false 表示这一轮什么都不做；ok=true 时 execute 表示允许真的更新容器。
 //
 // 🚨 单独抽出来是因为这里**曾经把 execute 写死成 true**：定时循环会无视
@@ -233,7 +262,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	defer cancel()
 
 	// ---- 1. 巡检（只读，走 /distribution，绝不动容器）----
-	results := s.up.CheckAll(cctx, s.excluded(), false)
+	results := s.up.CheckAll(cctx, s.excluded())
 	s.checkMu.Lock()
 	s.checkCache = results
 	s.checkAt = started
@@ -338,13 +367,14 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	// 巡检（note != ""）与真更新是两种动作，运行记录用不同 kind 记，
 	// 前端徽标才能分别显示「自动巡检 / 自动更新」，而不是一律 auto_update。
 	// 动作名已经由徽标表达，消息里不再重复前缀。
-	msg := "更新 " + itoa(summary.Updated) + " 个容器，失败 " + itoa(summary.Failed) + " 个容器"
-	kind := "auto_update"
+	//
+	// 只有**纯巡检**才写运行记录：真更新的轮次里 updater 对每个容器各写了一条
+	// （「已更新到 abc123」/「镜像已是最新，容器保持原样」），再写一条汇总就是
+	// 同一次更新的第二行记录 —— 总览页看起来像执行了两遍。
 	if note != "" {
-		kind = "auto_check"
-		msg = itoa(summary.Available) + " 个容器有可用更新（" + note + "）"
+		s.st.AddRunLog("auto_check", summary.Trigger, "done",
+			itoa(summary.Available)+" 个容器有可用更新（"+note+"）", "")
 	}
-	s.st.AddRunLog(kind, summary.Trigger, "done", msg, "")
 	s.bus.Publish("update", "auto_done", "success", map[string]any{
 		"trigger": summary.Trigger,
 		"updated": summary.Updated,
@@ -352,9 +382,10 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note st
 	})
 	if summary.Updated > 0 || summary.Failed > 0 {
 		s.nt.Emit("auto_update_done", map[string]string{
-			"container": itoa(summary.Updated + summary.Failed) + " 个容器",
+			"container": itoa(summary.Updated+summary.Failed) + " 个容器",
 			"result":    "自动更新完成",
-			"message":   "自动更新：" + msg,
+			"message": "自动更新：更新 " + itoa(summary.Updated) + " 个容器，失败 " +
+				itoa(summary.Failed) + " 个容器",
 		})
 	}
 }

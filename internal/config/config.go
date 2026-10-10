@@ -200,12 +200,12 @@ func splitCSV(s string) []string {
 
 // ---- 数据目录下的固定路径 ----
 
-func (c *Config) DBPath() string            { return filepath.Join(c.DataDir, "dockhelm.db") }
-func (c *Config) AuthPath() string          { return filepath.Join(c.DataDir, "auth.json") }
-func (c *Config) BackupDir() string         { return filepath.Join(c.DataDir, "backups") }
+func (c *Config) DBPath() string             { return filepath.Join(c.DataDir, "dockhelm.db") }
+func (c *Config) AuthPath() string           { return filepath.Join(c.DataDir, "auth.json") }
+func (c *Config) BackupDir() string          { return filepath.Join(c.DataDir, "backups") }
 func (c *Config) ContainerBackupDir() string { return filepath.Join(c.BackupDir(), "containers") }
-func (c *Config) ProjectBackupDir() string  { return filepath.Join(c.BackupDir(), "projects") }
-func (c *Config) LogDir() string            { return filepath.Join(c.DataDir, "logs") }
+func (c *Config) ProjectBackupDir() string   { return filepath.Join(c.BackupDir(), "projects") }
+func (c *Config) LogDir() string             { return filepath.Join(c.DataDir, "logs") }
 
 // EnsureDirs 创建所有需要的目录。
 func (c *Config) EnsureDirs() error {

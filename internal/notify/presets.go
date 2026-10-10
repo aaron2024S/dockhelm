@@ -23,15 +23,15 @@ type ChannelField struct {
 // 加一个新渠道只需要往 Presets 里加一条数据，不需要动任何代码 ——
 // 这是为了避开「每接一个通知服务就要写一套适配器」的泥潭。
 type Preset struct {
-	Type        string         `json:"type"`
-	Label       string         `json:"label"`
-	Description string         `json:"description"`
-	Fields      []ChannelField `json:"fields"`
-	Method      string         `json:"method"`
-	URL         string         `json:"url"`
-	ContentType string         `json:"contentType"` // application/json | text/plain | application/x-www-form-urlencoded
+	Type        string            `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description"`
+	Fields      []ChannelField    `json:"fields"`
+	Method      string            `json:"method"`
+	URL         string            `json:"url"`
+	ContentType string            `json:"contentType"` // application/json | text/plain | application/x-www-form-urlencoded
 	Headers     map[string]string `json:"headers"`
-	Body        string         `json:"body"`
+	Body        string            `json:"body"`
 	// Config 里是否还能自定义请求头（仅自定义 webhook 为 true）
 	AllowCustomHeaders bool `json:"allowCustomHeaders"`
 }

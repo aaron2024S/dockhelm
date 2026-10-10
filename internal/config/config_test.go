@@ -45,7 +45,7 @@ func TestMapHostPathLongestPrefixWins(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.SetMounts(map[string]string{
-		"/volume1/docker":       outer,
+		"/volume1/docker":        outer,
 		"/volume1/docker/moontv": inner,
 	})
 

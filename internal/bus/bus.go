@@ -13,8 +13,8 @@ import (
 // Event 一条要推给前端的事件。
 type Event struct {
 	ID     int64          `json:"id"`
-	Topic  string         `json:"topic"`  // update / schedule / backup / notify / log
-	Kind   string         `json:"kind"`   // 更细的动作，如 pull_progress / container_done
+	Topic  string         `json:"topic"` // update / schedule / backup / notify / log
+	Kind   string         `json:"kind"`  // 更细的动作，如 pull_progress / container_done
 	Time   string         `json:"time"`
 	Data   map[string]any `json:"data,omitempty"`
 	Status string         `json:"status,omitempty"` // running | success | failed | info

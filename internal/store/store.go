@@ -24,9 +24,9 @@ import (
 
 // 各类历史的保留上限（超出即截断最旧的）。
 const (
-	maxRunLogs        = 500
-	maxNotifyHistory  = 500
-	maxLoginAttempts  = 500
+	maxRunLogs       = 500
+	maxNotifyHistory = 500
+	maxLoginAttempts = 500
 )
 
 // Store 持久化句柄。
@@ -238,6 +238,24 @@ func (s *Store) DeleteAllSessions() error {
 	return s.flushLocked()
 }
 
+// DeleteOtherSessions 强制登出 current 之外的所有会话（其他浏览器/设备上的残留登录），
+// 当前会话原样保留。返回被登出的会话数。
+func (s *Store) DeleteOtherSessions(current string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Session, 0, len(s.db.Sessions))
+	removed := 0
+	for _, it := range s.db.Sessions {
+		if it.Token == current {
+			out = append(out, it)
+		} else {
+			removed++
+		}
+	}
+	s.db.Sessions = out
+	return removed, s.flushLocked()
+}
+
 // SessionCount 当前有效会话数。
 func (s *Store) SessionCount() int {
 	s.mu.Lock()
@@ -298,19 +316,29 @@ func (s *Store) RecordLogin(ip string, ok bool) {
 
 // CountRecentFailures 某 IP 在窗口内的失败次数。
 func (s *Store) CountRecentFailures(ip string, window time.Duration) int {
+	return len(s.RecentFailureTimes(ip, window))
+}
+
+// RecentFailureTimes 某 IP 在窗口内的失败时刻，按时间升序返回。
+//
+// 给「还要锁多久」用：锁定是滑动窗口，解锁时刻 = 第 (n-MaxFailures+1) 早的那次
+// 失败滑出窗口的瞬间。只想知道次数的话用 CountRecentFailures。
+func (s *Store) RecentFailureTimes(ip string, window time.Duration) []time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	since := time.Now().Add(-window)
-	n := 0
+	out := []time.Time{}
 	for _, it := range s.db.Logins {
 		if it.OK || it.IP != ip {
 			continue
 		}
 		if ts, err := time.Parse(time.RFC3339, it.TS); err == nil && ts.After(since) {
-			n++
+			out = append(out, ts)
 		}
 	}
-	return n
+	// 记录是按调用顺序追加的，正常已经有序；时间回拨等极端情况下排一次更稳。
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
 }
 
 // CountRecentGlobalFailures 全局限定窗口内的失败次数。

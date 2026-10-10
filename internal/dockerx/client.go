@@ -225,23 +225,23 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Info 是 GET /info 里我们关心的字段子集。
 type Info struct {
-	ID              string `json:"ID"`
-	Name            string `json:"Name"`
-	ServerVersion   string `json:"ServerVersion"`
-	OperatingSystem string `json:"OperatingSystem"`
-	OSType          string `json:"OSType"`
-	Architecture    string `json:"Architecture"`
-	KernelVersion   string `json:"KernelVersion"`
-	CPUs            int    `json:"NCPU"`
-	MemTotal        int64  `json:"MemTotal"`
-	Containers      int    `json:"Containers"`
-	ContainersRunning int  `json:"ContainersRunning"`
-	ContainersPaused  int  `json:"ContainersPaused"`
-	ContainersStopped int  `json:"ContainersStopped"`
-	Images          int    `json:"Images"`
-	DockerRootDir   string `json:"DockerRootDir"`
-	Driver          string `json:"Driver"`
-	RegistryConfig  struct {
+	ID                string `json:"ID"`
+	Name              string `json:"Name"`
+	ServerVersion     string `json:"ServerVersion"`
+	OperatingSystem   string `json:"OperatingSystem"`
+	OSType            string `json:"OSType"`
+	Architecture      string `json:"Architecture"`
+	KernelVersion     string `json:"KernelVersion"`
+	CPUs              int    `json:"NCPU"`
+	MemTotal          int64  `json:"MemTotal"`
+	Containers        int    `json:"Containers"`
+	ContainersRunning int    `json:"ContainersRunning"`
+	ContainersPaused  int    `json:"ContainersPaused"`
+	ContainersStopped int    `json:"ContainersStopped"`
+	Images            int    `json:"Images"`
+	DockerRootDir     string `json:"DockerRootDir"`
+	Driver            string `json:"Driver"`
+	RegistryConfig    struct {
 		Mirrors []string `json:"Mirrors"`
 	} `json:"RegistryConfig"`
 }
@@ -259,8 +259,8 @@ func (c *Client) Info(ctx context.Context) (*Info, error) {
 
 // Event 是 GET /events 的一条事件。
 type Event struct {
-	Type   string            `json:"Type"`
-	Action string            `json:"Action"`
+	Type   string `json:"Type"`
+	Action string `json:"Action"`
 	Actor  struct {
 		ID         string            `json:"ID"`
 		Attributes map[string]string `json:"Attributes"`
@@ -300,14 +300,14 @@ func (c *Client) Events(ctx context.Context, handler func(Event)) error {
 
 // ContainerSummary 对应 GET /containers/json 的条目。
 type ContainerSummary struct {
-	ID      string   `json:"Id"`
-	Names   []string `json:"Names"`
-	Image   string   `json:"Image"`
-	ImageID string   `json:"ImageID"`
-	Command string   `json:"Command"`
-	Created int64    `json:"Created"`
-	State   string   `json:"State"`
-	Status  string   `json:"Status"`
+	ID      string            `json:"Id"`
+	Names   []string          `json:"Names"`
+	Image   string            `json:"Image"`
+	ImageID string            `json:"ImageID"`
+	Command string            `json:"Command"`
+	Created int64             `json:"Created"`
+	State   string            `json:"State"`
+	Status  string            `json:"Status"`
 	Labels  map[string]string `json:"Labels"`
 	Ports   []struct {
 		IP          string `json:"IP"`
@@ -522,8 +522,8 @@ func (c *Client) RemoveImage(ctx context.Context, ref string, force, noprune boo
 // PruneImages 清理悬空镜像，返回释放的字节数。
 func (c *Client) PruneImages(ctx context.Context) (int64, error) {
 	var out struct {
-		ImagesDeleted []map[string]string `json:"ImagesDeleted"`
-		SpaceReclaimed int64              `json:"SpaceReclaimed"`
+		ImagesDeleted  []map[string]string `json:"ImagesDeleted"`
+		SpaceReclaimed int64               `json:"SpaceReclaimed"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/images/prune", nil, map[string]any{}, nil, &out); err != nil {
 		return 0, err

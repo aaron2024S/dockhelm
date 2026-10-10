@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-vue-next'
+import { AlertTriangle, ArrowRight } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
 import type { OverviewResponse, RunLog, Schedule } from '@/api/types'
 import { formatBytes, formatDayTime, runKindLabel } from '@/utils/format'
+import { useAppStore } from '@/stores/app'
 
+const app = useAppStore()
 const router = useRouter()
 const data = ref<OverviewResponse | null>(null)
 const schedules = ref<Schedule[]>([])
 const loading = ref(true)
-const checking = ref(false)
 const errorMsg = ref('')
 let closeStream: (() => void) | null = null
 
@@ -42,18 +43,33 @@ async function load() {
   }
 }
 
-/** 只读巡检，不会停任何容器。 */
-async function checkNow() {
-  if (checking.value) return
-  checking.value = true
-  errorMsg.value = ''
+// 本页原先的空态「立即巡检」按钮已删：手动检测入口统一到顶栏「检查更新」，
+// 检测完成后顶栏自增 app.checkTick，本页 watch 它重新拉取总览。
+
+/**
+ * 「容器状态」卡的轮询。
+ *
+ * CPU / 内存 / 磁盘原来只在 load() 时拿一次，卡片却挂着「实时」徽标 —— 用户看到的
+ * 是进度条永远不动的快照。现在每 10 秒打一次轻量的 /api/usage（后端 CPU/内存恰好
+ * 有 10 秒缓存），只合并这三个数，不整页刷新、不触发 loading。
+ * 页面切到后台时跳过，别在看不见的地方白白打接口。
+ */
+let usageTimer: number | undefined
+async function pollUsage() {
+  if (document.hidden) return
   try {
-    await api.post('/api/updates/check', {})
-    later(() => void load(), 2500)
-  } catch (e) {
-    errorMsg.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    checking.value = false
+    const u = await api.get<{
+      cpuPercent: number
+      memUsed: number
+      memTotal: number
+      diskFree: number
+      diskTotal: number
+    }>('/api/usage')
+    if (!data.value) return
+    data.value.usage = { cpuPercent: u.cpuPercent, memUsed: u.memUsed, memTotal: u.memTotal }
+    if (u.diskTotal) data.value.disk = { free: u.diskFree, total: u.diskTotal }
+  } catch {
+    /* 静默：一张卡的数字，不值得为它弹错误条，下一轮再试 */
   }
 }
 
@@ -166,8 +182,16 @@ function logTime(ts: string) {
   return formatDayTime(ts, 'date')
 }
 
+// 顶栏「检查更新」跑完一轮后重新拉总览（含待更新清单）——本页不再有自己的检测按钮。
+watch(
+  () => app.checkTick,
+  () => void load(),
+)
+
 onMounted(() => {
   void load()
+  // 容器状态卡：每 10 秒刷新一次 CPU / 内存 / 磁盘（与后端缓存的 10 秒 TTL 对齐）
+  usageTimer = window.setInterval(() => void pollUsage(), 10000)
   // 订阅事件只为「批次跑完 / 巡检结束」时自动刷新总览，界面本身不再展示活动流。
   closeStream = openStream('/api/events/stream', (topic, ev) => {
     if (topic !== 'update' && topic !== 'schedule') return
@@ -179,6 +203,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   closeStream?.()
+  if (usageTimer !== undefined) window.clearInterval(usageTimer)
   timers.forEach((t) => window.clearTimeout(t))
   timers = []
 })
@@ -351,13 +376,9 @@ onUnmounted(() => {
             {{
               data?.updates?.checkedAt
                 ? '没有任何容器需要更新。'
-                : '点顶栏的刷新按钮可以只读地检查一遍所有容器。'
+                : '点顶栏右上角的「检查更新」可以只读地检查一遍所有容器。'
             }}
           </div>
-          <button v-if="!data?.updates?.checkedAt" class="dh-btn dh-btn-sm mt-1" :disabled="checking" @click="checkNow">
-            <Loader2 v-if="checking" class="h-3 w-3 dh-spin" />
-            立即巡检
-          </button>
         </div>
         <div v-else class="dh-card-body flex flex-col gap-[11px]">
           <!-- 一行 = 一个待更新的容器。以前按镜像简称分组：ghcr.io/music-assistant/server

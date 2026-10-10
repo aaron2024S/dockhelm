@@ -31,15 +31,15 @@ import (
 
 // 设置键
 const (
-	KeyEnabled        = "notify.enabled"
-	KeyQuietEnabled   = "notify.quietEnabled"
-	KeyQuietStart     = "notify.quietStart"
-	KeyQuietEnd       = "notify.quietEnd"
-	KeyQuietMode      = "notify.quietNormalMode" // digest | drop
-	KeyQuietUrgent    = "notify.quietUrgentSend"
-	KeyDedupeMinutes  = "notify.dedupeWindow"
-	KeyDailyLimit     = "notify.dailyLimit"
-	KeyPanelURL       = "notify.panelURL"
+	KeyEnabled       = "notify.enabled"
+	KeyQuietEnabled  = "notify.quietEnabled"
+	KeyQuietStart    = "notify.quietStart"
+	KeyQuietEnd      = "notify.quietEnd"
+	KeyQuietMode     = "notify.quietNormalMode" // digest | drop
+	KeyQuietUrgent   = "notify.quietUrgentSend"
+	KeyDedupeMinutes = "notify.dedupeWindow"
+	KeyDailyLimit    = "notify.dailyLimit"
+	KeyPanelURL      = "notify.panelURL"
 )
 
 // Manager 通知管理器。
@@ -65,8 +65,8 @@ type buffered struct {
 func New(st *store.Store, b *bus.Bus) *Manager {
 	host, _ := os.Hostname()
 	m := &Manager{
-		st:  st,
-		bus: b,
+		st:   st,
+		bus:  b,
 		host: host,
 		client: &http.Client{
 			Timeout: 15 * time.Second,

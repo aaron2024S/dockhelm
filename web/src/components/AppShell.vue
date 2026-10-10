@@ -216,15 +216,27 @@ function go(name: string) {
 }
 
 const checking = ref(false)
+
+/**
+ * 顶栏「检查更新」：**只读检测，永不更新容器**。
+ *
+ * 这是全站唯一的手动检测入口 —— 容器页、更新中心页头、总览空态原先各有一颗
+ * 同功能按钮（三种叫法），已全部删除，避免同一个动作散在四处。
+ * 真正会动容器的只有更新中心的「立即执行自动更新」。
+ *
+ * 检测完成后：① 刷侧栏角标；② 自增 app.checkTick，让当前页重载自己的检测结果。
+ */
 async function quickCheck() {
   if (checking.value) return
   checking.value = true
   try {
-    const res = await api.post<{ results: unknown[] }>('/api/updates/check', {})
-    toast.success('巡检完成', `共检查 ${res.results?.length ?? 0} 个容器`)
+    const res = await api.post<{ results?: { status: string }[] }>('/api/updates/check', {})
+    const n = (res.results ?? []).filter((r) => r.status === 'update_available').length
+    toast.success('检查完成', n ? `发现 ${n} 个容器有可用更新` : '所有容器都是最新的')
     await loadCounts()
+    app.checkTick++
   } catch (e) {
-    toast.error('巡检失败', e instanceof Error ? e.message : String(e))
+    toast.error('检查失败', e instanceof Error ? e.message : String(e))
   } finally {
     checking.value = false
   }
@@ -281,23 +293,27 @@ async function quickCheck() {
           />
         </div>
 
-        <!-- 主题：深色 / 浅色 / 跟随系统 三档循环，图标即当前档 -->
-        <button type="button" class="dh-iconbtn" :title="themeTip" @click="theme.cycle()">
-          <component :is="themeIcon" class="h-[14px] w-[14px]" />
+        <!-- 主题：深色 / 浅色 / 跟随系统 三档循环，图标与文字都表示当前档 -->
+        <button type="button" class="dh-topbtn" :title="themeTip" @click="theme.cycle()">
+          <component :is="themeIcon" class="h-[14px] w-[14px] flex-none" />
+          <span class="max-md:hidden">{{ theme.label }}</span>
         </button>
 
+        <!-- 全站唯一的手动检测入口：只检查有没有新版本，绝不会更新容器 -->
         <button
           type="button"
-          class="dh-iconbtn"
-          title="立即巡检更新（只读，不会动任何容器）"
+          class="dh-topbtn"
+          title="检查有没有新版本（只读，不会更新任何容器）"
           :disabled="checking"
           @click="quickCheck"
         >
-          <RefreshCw class="h-[14px] w-[14px]" :class="checking ? 'dh-spin' : ''" />
+          <RefreshCw class="h-[14px] w-[14px] flex-none" :class="checking ? 'dh-spin' : ''" />
+          <span class="max-md:hidden">检查更新</span>
         </button>
 
-        <button type="button" class="dh-iconbtn" title="退出登录" @click="doLogout">
-          <LogOut class="h-[14px] w-[14px]" />
+        <button type="button" class="dh-topbtn" title="退出登录" @click="doLogout">
+          <LogOut class="h-[14px] w-[14px] flex-none" />
+          <span class="max-md:hidden">退出</span>
         </button>
       </div>
     </header>

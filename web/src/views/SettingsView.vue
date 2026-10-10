@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   Ban,
+  Eye,
+  EyeOff,
   KeyRound,
   Loader2,
   LogOut,
@@ -32,7 +34,6 @@ const settings = ref<Settings>({
   exclude: [],
   panelURL: '',
   concurrency: 2,
-  deepCheckCron: '',
   logRetention: 500,
   checkOnStart: true,
   checkIntervalHours: 6,
@@ -62,6 +63,25 @@ const showNew = ref(false)
 const changing = ref(false)
 /** 「清空运行记录」的二次确认 —— 其余破坏性操作都有确认框，这个以前点了就清。 */
 const confirmClearLogs = ref(false)
+
+// —— 强制登出其他会话 ——
+const confirmRevoke = ref(false)
+const revoking = ref(false)
+
+async function revokeOthers() {
+  if (revoking.value) return
+  revoking.value = true
+  confirmRevoke.value = false
+  try {
+    const r = await api.post<{ revoked: number }>('/api/account/sessions/logout-others', {})
+    await load()
+    toast.success('已登出其他会话', `共作废 ${r.revoked} 个会话，当前登录保持不变`)
+  } catch (e) {
+    toast.error('操作失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    revoking.value = false
+  }
+}
 /** 清空请求进行中 —— 防连点。 */
 const clearingLogs = ref(false)
 
@@ -86,6 +106,8 @@ async function load() {
       api.get<Record<string, any>>('/api/account'),
     ])
     settings.value = s
+    // 记下进页面时的基线：之后点「保存」先和它对比，没有变化就不发请求、不弹提示。
+    savedSnapshot.value = JSON.stringify(patchBody(s))
     containers.value = c.containers ?? []
     logs.value = l.logs ?? []
     account.value = a
@@ -96,7 +118,52 @@ async function load() {
   }
 }
 
+/** 本页可编辑字段的中文对照 —— 保存成功时用来告诉用户到底改了哪几项。 */
+const FIELD_LABEL: Record<string, string> = {
+  exclude: '排除列表',
+  panelURL: '容器面板地址',
+  concurrency: '并发度',
+  logRetention: '运行记录保留条数',
+  checkOnStart: '启动自动巡检',
+  checkIntervalHours: '检测频率',
+  notifyOnCheck: '检测完成后通知',
+  autoApply: '自动更新',
+  pullOnce: '同一镜像只拉取一次',
+  backupBefore: '更新前备份',
+  cleanupAfter: '更新后清理',
+}
+
+/** 组装 PATCH 请求体（只含本页真正在编辑的字段）。 */
+function patchBody(s: Settings): Record<string, unknown> {
+  return {
+    exclude: s.exclude,
+    panelURL: s.panelURL,
+    concurrency: s.concurrency,
+    logRetention: s.logRetention,
+    checkOnStart: s.checkOnStart,
+    checkIntervalHours: s.checkIntervalHours,
+    notifyOnCheck: s.notifyOnCheck,
+    autoApply: s.autoApply,
+    pullOnce: s.pullOnce,
+    backupBefore: s.backupBefore,
+    cleanupAfter: s.cleanupAfter,
+  }
+}
+
+/**
+ * 上次保存（或进页面时）的请求体快照。
+ * 保存前先对比：没有任何变化就不发请求、也不弹「已保存」——
+ * 否则用户没改任何东西点保存也会看到「设置已保存」，无从判断到底存了什么。
+ */
+const savedSnapshot = ref('')
+
 async function save() {
+  const body = patchBody(settings.value)
+  const snapshot = JSON.stringify(body)
+  if (snapshot === savedSnapshot.value) {
+    toast.info('没有改动', '设置与上次保存时一致')
+    return
+  }
   saving.value = true
   try {
     // 只提交本页真正在编辑的字段（PATCH）。
@@ -105,22 +172,14 @@ async function save() {
     // （backupKeep*/backupMax*）。以前这里把整份 Settings PUT 回去，那份快照是
     // 进页面时拉的 —— 期间在备份页改过的保留策略会被静默还原。PATCH 后后端只改
     // 出现的键，其余保持原值。
-    const s = settings.value
-    settings.value = await api.patch<Settings>('/api/settings', {
-      exclude: s.exclude,
-      panelURL: s.panelURL,
-      concurrency: s.concurrency,
-      logRetention: s.logRetention,
-      checkOnStart: s.checkOnStart,
-      checkIntervalHours: s.checkIntervalHours,
-      notifyOnCheck: s.notifyOnCheck,
-      autoApply: s.autoApply,
-      pullOnce: s.pullOnce,
-      backupBefore: s.backupBefore,
-      cleanupAfter: s.cleanupAfter,
-    })
+    settings.value = await api.patch<Settings>('/api/settings', body)
     await app.loadSettings()
-    toast.success('设置已保存', '并发度改动会在下一次批量更新时生效')
+    // 列出真正变化的字段，提示语不再写死「并发度」。
+    const prev = JSON.parse(savedSnapshot.value || '{}') as Record<string, unknown>
+    const changed = Object.keys(body).filter((k) => JSON.stringify(body[k]) !== JSON.stringify(prev[k]))
+    const names = changed.map((k) => FIELD_LABEL[k] ?? k)
+    savedSnapshot.value = snapshot
+    toast.success('设置已保存', names.length ? `已更新：${names.join('、')}` : '设置已更新')
   } catch (e) {
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -200,7 +259,7 @@ onMounted(() => void load())
         <RefreshCw class="h-3.5 w-3.5 text-text-4" />
         <span>更新与检测</span>
         <span class="ml-2 text-[11.5px] font-normal text-text-5">
-          {{ settings.checkIntervalHours > 0 ? `每 ${settings.checkIntervalHours} 小时巡检一次` : '未开启周期巡检' }}
+          {{ `每 ${settings.checkIntervalHours} 小时巡检一次` }}
           · 自动更新{{ settings.autoApply ? '已开启' : '已关闭' }}
         </span>
         <button class="dh-btn dh-btn-sm dh-btn-primary ml-auto" :disabled="saving" @click="save">
@@ -216,18 +275,14 @@ onMounted(() => void load())
             <SearchCheck class="h-3.5 w-3.5 text-text-4" />检测
           </div>
           <div class="flex flex-col gap-2.5">
-            <SettingRow title="检测频率" :sub="settings.checkIntervalHours > 0 ? `每 ${settings.checkIntervalHours} 小时自动扫描一次镜像仓库` : '关闭后只在手动点「重新检测」时才检查'">
+            <SettingRow title="检测频率" :sub="`每 ${settings.checkIntervalHours} 小时自动扫描一次镜像仓库`">
               <select v-model.number="settings.checkIntervalHours" class="dh-select !w-[120px] !py-[5px] !text-[11.5px]">
-                <option :value="0">关闭</option>
                 <option :value="1">每 1 小时</option>
                 <option :value="3">每 3 小时</option>
                 <option :value="6">每 6 小时</option>
                 <option :value="12">每 12 小时</option>
                 <option :value="24">每 24 小时</option>
               </select>
-            </SettingRow>
-            <SettingRow title="摘要来源" sub="由本机 Docker 守护进程解析，与 docker pull 走同一数据源">
-              <span class="dh-badge dh-badge-plain">推荐</span>
             </SettingRow>
             <SettingRow title="检测完成后通知" sub="巡检发现问题时推一条通知到已配置的渠道">
               <ToggleSwitch v-model="settings.notifyOnCheck" label="检测完成后通知" />
@@ -273,9 +328,6 @@ onMounted(() => void load())
             <SlidersHorizontal class="h-3.5 w-3.5 text-text-4" />执行策略
           </div>
           <div class="flex flex-col gap-2.5">
-            <SettingRow title="仅在镜像真正变化时重启容器" sub="比对更新前后的镜像 ID，一致就完全不动它">
-              <span class="dh-badge dh-badge-plain">始终开启</span>
-            </SettingRow>
             <SettingRow title="同一镜像的多个容器只拉取一次" sub="4 个容器共用 nginx:alpine 时，下载 1 次、重建 4 个">
               <ToggleSwitch v-model="settings.pullOnce" label="同一镜像只拉取一次" />
             </SettingRow>
@@ -316,7 +368,7 @@ onMounted(() => void load())
           <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-warn-text" />
           <span>
             这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及下面的排除列表。
-            计划任务也只会作用于你在任务里<b class="text-text-3">明确勾选</b>的容器（「不选」不代表全部）。
+            计划任务也只会作用于你在任务里<b class="text-text-3">明确勾选</b>的容器。
           </span>
         </div>
       </div>
@@ -369,7 +421,6 @@ onMounted(() => void load())
         <div class="dh-card-head">
           <User class="h-3.5 w-3.5 text-text-4" />
           <span>账户</span>
-          <span class="ml-auto text-[11.5px] font-mono font-normal text-text-5">右上角头像 → 账户</span>
         </div>
         <div class="flex flex-col gap-3.5 p-3.5">
           <div class="grid grid-cols-2 gap-3 text-[12px]">
@@ -387,6 +438,20 @@ onMounted(() => void load())
             </div>
           </div>
 
+          <!--
+            会话本身没有「登出」按钮，被忘在旧浏览器/旧设备上时只能干等过期（最长 7 天）。
+            这里给一个主动清场的出口：保留当前登录，其余全部作废。
+          -->
+          <button
+            v-if="(account?.sessionCount ?? 0) > 1"
+            class="dh-btn !justify-start"
+            :disabled="revoking"
+            @click="confirmRevoke = true"
+          >
+            <LogOut class="h-3.5 w-3.5" />
+            强制登出其他会话（{{ (account?.sessionCount ?? 0) - 1 }} 个）
+          </button>
+
           <div class="border-t border-line-1 pt-3.5">
             <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-medium">
               <KeyRound class="h-3.5 w-3.5 text-text-4" />修改登录密码
@@ -401,8 +466,15 @@ onMounted(() => void load())
                     placeholder="当前使用的密码"
                     autocomplete="current-password"
                   />
-                  <button type="button" class="dh-eye" @click="showOld = !showOld">
-                    {{ showOld ? '隐藏' : '显示' }}
+                  <button
+                    type="button"
+                    class="dh-eye"
+                    :title="showOld ? '隐藏密码' : '显示密码'"
+                    :aria-label="showOld ? '隐藏密码' : '显示密码'"
+                    @click="showOld = !showOld"
+                  >
+                    <EyeOff v-if="showOld" class="h-[15px] w-[15px]" />
+                    <Eye v-else class="h-[15px] w-[15px]" />
                   </button>
                 </div>
               </div>
@@ -415,8 +487,15 @@ onMounted(() => void load())
                     :placeholder="`至少 ${app.minPasswordLength} 位`"
                     autocomplete="new-password"
                   />
-                  <button type="button" class="dh-eye" @click="showNew = !showNew">
-                    {{ showNew ? '隐藏' : '显示' }}
+                  <button
+                    type="button"
+                    class="dh-eye"
+                    :title="showNew ? '隐藏密码' : '显示密码'"
+                    :aria-label="showNew ? '隐藏密码' : '显示密码'"
+                    @click="showNew = !showNew"
+                  >
+                    <EyeOff v-if="showNew" class="h-[15px] w-[15px]" />
+                    <Eye v-else class="h-[15px] w-[15px]" />
                   </button>
                 </div>
               </div>
@@ -542,6 +621,28 @@ onMounted(() => void load())
         <button class="dh-btn" :disabled="clearingLogs" @click="confirmClearLogs = false">取消</button>
         <button class="dh-btn dh-btn-danger" :disabled="clearingLogs" @click="clearLogs">
           <Trash2 class="h-3.5 w-3.5" />{{ clearingLogs ? '清空中…' : '确认清空' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!-- 强制登出其他会话：不可逆（对方要重新输密码），二次确认 -->
+    <Modal
+      :open="confirmRevoke"
+      title="强制登出其他会话"
+      width="430px"
+      :busy="revoking"
+      @close="confirmRevoke = false"
+    >
+      <div class="text-[12.5px] leading-relaxed text-text-3">
+        其他浏览器 / 设备上的 <b class="text-text-1">{{ (account?.sessionCount ?? 0) - 1 }} 个会话</b>会立刻失效，
+        那边再打开面板时需要重新输密码。<b class="text-text-1">你当前这个登录不受影响</b>，也不会改动密码本身。
+      </div>
+      <template #footer>
+        <button class="dh-btn" :disabled="revoking" @click="confirmRevoke = false">取消</button>
+        <button class="dh-btn dh-btn-primary" :disabled="revoking" @click="revokeOthers">
+          <Loader2 v-if="revoking" class="h-3.5 w-3.5 dh-spin" />
+          <LogOut v-else class="h-3.5 w-3.5" />
+          确认登出
         </button>
       </template>
     </Modal>

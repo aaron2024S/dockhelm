@@ -38,10 +38,10 @@ func TestTarRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"a.txt":              "hello",
-		"sub/b.bin":          strings.Repeat("x", 4096),
-		"sub/deep/c.json":    `{"k":1}`,
-		"空 格 名.txt":        "unicode",
+		"a.txt":           "hello",
+		"sub/b.bin":       strings.Repeat("x", 4096),
+		"sub/deep/c.json": `{"k":1}`,
+		"空 格 名.txt":       "unicode",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(src, filepath.FromSlash(name)), []byte(body), 0o644); err != nil {

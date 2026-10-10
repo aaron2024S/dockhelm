@@ -2,7 +2,7 @@
 # 版本号一致性闸门 —— 在「登录 / 推送 / 构建镜像」之前跑，参数错了别浪费一次发布。
 #
 #   ./scripts/check-version.sh                # 校验三处声明一致
-#   ./scripts/check-version.sh --expect-tag v0.3.1   # 顺带校验 git tag 与声明一致
+#   ./scripts/check-version.sh --expect-tag v0.3.2   # 顺带校验 git tag 与声明一致
 #
 # 为什么需要它：Dockhelm 的版本号有三个声明处 ——
 #   1. internal/version/version.go   ← 唯一事实源，「关于」页与 /api/about 用它

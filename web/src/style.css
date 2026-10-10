@@ -500,6 +500,46 @@ html.light {
     cursor: not-allowed;
   }
 
+  /*
+   * 顶栏文字按钮（图标 + 文字）：与 .dh-iconbtn 同款描边，宽度自适应。
+   * 顶栏的「主题 / 检查更新 / 退出」用它 —— 纯图标看不出是干什么的，
+   * 加上文字后用户不用悬停猜。窄屏退化成与 .dh-iconbtn 同尺寸的方块。
+   */
+  .dh-topbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    flex: none;
+    padding: 0 10px;
+    border-radius: 9px;
+    border: 1px solid var(--color-line-3);
+    color: var(--color-text-3);
+    background: transparent;
+    cursor: pointer;
+    font-size: 11.5px;
+    white-space: nowrap;
+    transition:
+      border-color 0.15s,
+      color 0.15s;
+  }
+  .dh-topbtn:hover:not(:disabled) {
+    border-color: var(--color-line-4);
+    color: var(--color-text-1);
+  }
+  .dh-topbtn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  @media (max-width: 767px) {
+    .dh-topbtn {
+      width: 30px;
+      padding: 0;
+      justify-content: center;
+      gap: 0;
+    }
+  }
+
   /* 筛选 chip（设计稿 .chip） */
   .dh-chip {
     display: inline-flex;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Loader2 } from 'lucide-vue-next'
+import { Eye, EyeOff, Loader2 } from 'lucide-vue-next'
 import { useAppStore } from '@/stores/app'
 import { ApiError } from '@/api/client'
 
@@ -17,6 +17,60 @@ const busy = ref(false)
 const errorMsg = ref('')
 const remaining = ref<number | null>(null)
 const locked = ref(false)
+/** 锁定解除的时刻（毫秒时间戳）。用相对时限而不是服务端绝对时间，省得依赖两端时钟一致。 */
+const lockDeadline = ref(0)
+/** 每秒推一下的「现在」，只为驱动倒计时重算。 */
+const nowTick = ref(Date.now())
+let lockTimer: number | undefined
+
+/** 锁定还要等多少秒（向上取整，0 表示已解锁）。 */
+const lockLeft = computed(() => {
+  const ms = lockDeadline.value - nowTick.value
+  return ms > 0 ? Math.ceil(ms / 1000) : 0
+})
+
+function mmss(total: number) {
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function ensureLockTicker() {
+  if (lockTimer !== undefined) return
+  lockTimer = window.setInterval(() => {
+    nowTick.value = Date.now()
+    if (lockDeadline.value <= Date.now()) clearLock()
+  }, 1000)
+}
+
+/** 进入锁定态：msg 是服务端给的「约 N 分钟」，seconds > 0 时顺带起倒计时。 */
+function applyLock(msg: string, seconds: number) {
+  errorMsg.value = msg
+  locked.value = true
+  if (seconds > 0) {
+    lockDeadline.value = Date.now() + seconds * 1000
+    nowTick.value = Date.now()
+    ensureLockTicker()
+  } else {
+    lockDeadline.value = 0
+  }
+}
+
+/** 锁定结束（或重载后已过期）：清掉倒计时与错误条，按钮重新可用。 */
+function clearLock() {
+  locked.value = false
+  lockDeadline.value = 0
+  errorMsg.value = ''
+  remaining.value = app.maxFailures
+  if (lockTimer !== undefined) {
+    window.clearInterval(lockTimer)
+    lockTimer = undefined
+  }
+}
+
+onUnmounted(() => {
+  if (lockTimer !== undefined) window.clearInterval(lockTimer)
+})
 
 const isSetup = computed(() => mode.value === 'setup')
 const title = computed(() => (isSetup.value ? '首次启动' : 'Dockhelm'))
@@ -47,8 +101,14 @@ const bannerTone = computed(() =>
 )
 
 const bannerText = computed(() => {
+  if (locked.value) {
+    // 光说「请稍后再试」等于没说：把服务端的「约 N 分钟」和本地倒计时一起摆出来
+    return lockLeft.value > 0
+      ? `${errorMsg.value}（剩余 ${mmss(lockLeft.value)}）`
+      : errorMsg.value
+  }
   if (!errorMsg.value) return ''
-  if (!locked.value && remaining.value !== null && remaining.value > 0) {
+  if (remaining.value !== null && remaining.value > 0) {
     return `${errorMsg.value}，还可尝试 ${remaining.value} 次`
   }
   return errorMsg.value
@@ -66,6 +126,8 @@ onMounted(async () => {
   }
   mode.value = 'login'
   remaining.value = app.maxFailures - app.failures
+  // 刷新页面后仍在锁定期：提示与倒计时都要接上，别让用户以为能试却一直失败
+  if (app.lockedFor > 0) applyLock(app.lockedHint, app.lockedFor)
 })
 
 async function submit() {
@@ -88,11 +150,14 @@ async function submit() {
     }
   } catch (e) {
     if (e instanceof ApiError) {
-      errorMsg.value = e.message
-      if (e.code === 'locked') locked.value = true
-      const payload = e.payload as { remaining?: number } | undefined
-      if (typeof payload?.remaining === 'number') remaining.value = payload.remaining
-      if (e.code === 'bad_password') password.value = ''
+      const payload = e.payload as { remaining?: number; retryAfter?: number } | undefined
+      if (e.code === 'locked') {
+        applyLock(e.message, typeof payload?.retryAfter === 'number' ? payload.retryAfter : 0)
+      } else {
+        errorMsg.value = e.message
+        if (typeof payload?.remaining === 'number') remaining.value = payload.remaining
+        if (e.code === 'bad_password') password.value = ''
+      }
     } else {
       errorMsg.value = e instanceof Error ? e.message : String(e)
     }
@@ -110,8 +175,21 @@ function onEnter() {
   <div class="flex min-h-screen flex-col bg-ink-900">
     <!-- 全宽顶栏（与其它页面同一套外壳） -->
     <header class="flex flex-none items-center gap-2.5 border-b border-line-2 bg-ink-850 px-[18px] py-3">
-      <div class="grid h-[27px] w-[27px] flex-none place-items-center rounded-[9px] bg-accent text-[14px] font-bold text-accent-ink">
-        D
+      <!--
+        顶栏标必须与 AppShell 完全一致（同一套罗盘标）。
+        这里原来落着一个字母「D」—— 2026-10-09 换标时漏了这一处（当时只算了 5 个落点）。
+      -->
+      <div
+        class="grid h-[27px] w-[27px] flex-none place-items-center rounded-[9px] bg-accent text-accent-ink"
+      >
+        <svg viewBox="0 0 32 32" class="h-[15px] w-[15px]">
+          <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
+          <path
+            fill-rule="evenodd"
+            fill="currentColor"
+            d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+          />
+        </svg>
       </div>
       <div class="text-[14px] font-semibold tracking-[.2px]">Dockhelm</div>
       <div class="text-[12px] text-text-4">登录与账户</div>
@@ -159,8 +237,15 @@ function onEnter() {
                   autofocus
                   @keyup.enter="onEnter"
                 />
-                <button type="button" class="dh-eye" @click="showPw = !showPw">
-                  {{ showPw ? '隐藏' : '显示' }}
+                <button
+                  type="button"
+                  class="dh-eye"
+                  :title="showPw ? '隐藏密码' : '显示密码'"
+                  :aria-label="showPw ? '隐藏密码' : '显示密码'"
+                  @click="showPw = !showPw"
+                >
+                  <EyeOff v-if="showPw" class="h-[15px] w-[15px]" />
+                  <Eye v-else class="h-[15px] w-[15px]" />
                 </button>
               </div>
               <div class="mt-[7px] flex gap-1">
@@ -204,8 +289,15 @@ function onEnter() {
                 autofocus
                 @keyup.enter="onEnter"
               />
-              <button type="button" class="dh-eye" @click="showPw = !showPw">
-                {{ showPw ? '隐藏' : '显示' }}
+              <button
+                type="button"
+                class="dh-eye"
+                :title="showPw ? '隐藏密码' : '显示密码'"
+                :aria-label="showPw ? '隐藏密码' : '显示密码'"
+                @click="showPw = !showPw"
+              >
+                <EyeOff v-if="showPw" class="h-[15px] w-[15px]" />
+                <Eye v-else class="h-[15px] w-[15px]" />
               </button>
             </div>
           </template>
@@ -224,7 +316,7 @@ function onEnter() {
             class="flex cursor-pointer items-center gap-2 text-[12px] text-text-3"
           >
             <input v-model="keep" type="checkbox" class="h-[14px] w-[14px] accent-accent" />
-            保持登录（7 天，勾选延长到 30 天）
+            保持登录（7 天）
           </label>
 
           <button
@@ -233,24 +325,19 @@ function onEnter() {
             :disabled="!canSubmit"
             @click="submit"
           >
-            {{ busy ? '请稍候…' : isSetup ? '完成并进入' : '登 录' }}
+            {{ busy ? '请稍候…' : locked ? `已锁定 ${mmss(lockLeft)}` : isSetup ? '完成并进入' : '登 录' }}
           </button>
 
           <div v-if="!isSetup" class="text-center text-[11.5px] text-text-6">
-            连续错 {{ app.maxFailures }} 次锁定 5 分钟 · 每次失败延迟 1 秒
+            连续错 {{ app.maxFailures }} 次锁定 5 分钟
           </div>
         </template>
       </div>
 
-      <div class="relative w-[312px] text-center text-[11.5px] leading-[1.7] text-text-6">
-        <template v-if="isSetup">
-          密码只存 <span class="font-mono">bcrypt</span> 哈希，明文不落盘、也不写日志。
-          <br />
-          Dockhelm 持有 Docker 套接字，等于拥有宿主机 root 权限，请务必设置密码。
-        </template>
-        <template v-else>
-          会话用 HttpOnly Cookie，有效期 7 天；勾「保持登录」延长到 30 天。
-        </template>
+      <div v-if="isSetup" class="relative w-[312px] text-center text-[11.5px] leading-[1.7] text-text-6">
+        密码只存 <span class="font-mono">bcrypt</span> 哈希，明文不落盘、也不写日志。
+        <br />
+        Dockhelm 持有 Docker 套接字，等于拥有宿主机 root 权限，请务必设置密码。
       </div>
     </div>
   </div>

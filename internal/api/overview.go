@@ -99,6 +99,51 @@ func (s *Server) aggregateUsage(ctx context.Context, ids []string, cpus int) hos
 	return out
 }
 
+// hUsage 轻量资源占用：只回 CPU / 内存 / 磁盘三个数。
+//
+// 这三个数原来只在 /api/overview 里出，而总览页只在进页面和巡检结束时才拉一次 ——
+// 卡片上写着「实时」，进度条却永远不动。现在由前端每 10 秒打一次这个接口，
+// CPU/内存走 aggregateUsage 的 10 秒缓存，正好一次轮询至多真算一次。
+func (s *Server) hUsage(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+
+	info, infoErr := s.dc.Info(ctx)
+	containers, _ := s.dc.ListContainers(ctx)
+
+	memTotal := int64(0)
+	cpus := 0
+	if infoErr == nil {
+		memTotal = info.MemTotal
+		cpus = info.CPUs
+	}
+	out := map[string]any{
+		"cpuPercent": 0.0,
+		"memUsed":    0,
+		"memTotal":   memTotal,
+	}
+
+	runningIDs := make([]string, 0, len(containers))
+	for _, c := range containers {
+		if c.State == "running" {
+			runningIDs = append(runningIDs, c.ID)
+		}
+	}
+	if len(runningIDs) > 0 {
+		u := s.aggregateUsage(ctx, runningIDs, cpus)
+		out["cpuPercent"] = u.cpuPercent
+		out["memUsed"] = u.memUsed
+		if u.memTotal > 0 {
+			out["memTotal"] = u.memTotal
+		}
+	}
+
+	free, total, _ := diskUsage(s.cfg.DataDir)
+	out["diskFree"] = free
+	out["diskTotal"] = total
+	writeOK(w, out)
+}
+
 // hOverview 总览页所需的全部数据（一次请求拿齐，避免首屏打一堆请求）。
 func (s *Server) hOverview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)

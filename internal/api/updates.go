@@ -42,16 +42,15 @@ func (s *Server) hListUpdates(w http.ResponseWriter, r *http.Request) {
 
 type checkReq struct {
 	Names []string `json:"names"`
-	Deep  bool     `json:"deep"`
 }
 
-// hCheckUpdates 巡检。普通模式只读（走守护进程的 /distribution），
-// 深度模式会真的拉一次镜像再比对镜像 ID。
+// hCheckUpdates 巡检（只读）：走守护进程的 /distribution 比对远端摘要与本地摘要，
+// 不拉层、不停容器。拉取后再比对镜像 ID 的那套「权威判定」属于更新流程，不属于检测。
 func (s *Server) hCheckUpdates(w http.ResponseWriter, r *http.Request) {
 	var in checkReq
 	_ = decodeBody(r, &in)
 
-	s.bus.Publish("update", "check_start", "running", map[string]any{"deep": in.Deep, "count": len(in.Names)})
+	s.bus.Publish("update", "check_start", "running", map[string]any{"count": len(in.Names)})
 	started := time.Now()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -60,19 +59,13 @@ func (s *Server) hCheckUpdates(w http.ResponseWriter, r *http.Request) {
 	ex := s.excluded()
 	var results []updater.CheckResult
 	if len(in.Names) == 0 {
-		results = s.up.CheckAll(ctx, ex, in.Deep)
+		results = s.up.CheckAll(ctx, ex)
 	} else {
 		for _, n := range in.Names {
 			if ex[n] {
 				continue
 			}
-			var res *updater.CheckResult
-			var err error
-			if in.Deep {
-				res, err = s.up.DeepCheck(ctx, n)
-			} else {
-				res, err = s.up.Check(ctx, n)
-			}
+			res, err := s.up.Check(ctx, n)
 			if err != nil {
 				results = append(results, updater.CheckResult{
 					Container: n, Status: updater.StatusUnknown, Reason: err.Error(),
@@ -118,27 +111,6 @@ func (s *Server) hCheckUpdates(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeOK(w, map[string]any{"results": results, "checkedAt": time.Now().UTC().Format(time.RFC3339)})
-}
-
-type deepCheckReq struct {
-	Name string `json:"name"`
-}
-
-func (s *Server) hDeepCheck(w http.ResponseWriter, r *http.Request) {
-	var in deepCheckReq
-	if err := decodeBody(r, &in); err != nil || strings.TrimSpace(in.Name) == "" {
-		writeErr(w, http.StatusBadRequest, "需要指定容器名")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	res, err := s.up.DeepCheck(ctx, in.Name)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	s.mergeCheckResults([]updater.CheckResult{*res})
-	writeOK(w, res)
 }
 
 func (s *Server) mergeCheckResults(rows []updater.CheckResult) {

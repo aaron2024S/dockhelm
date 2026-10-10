@@ -121,26 +121,26 @@ func summarizeInspect(insp map[string]any) map[string]any {
 	ns, _ := insp["NetworkSettings"].(map[string]any)
 
 	out := map[string]any{
-		"id":         str(insp["Id"]),
-		"name":       strings.TrimPrefix(str(insp["Name"]), "/"),
-		"created":    str(insp["Created"]),
-		"image":      str(cfg["Image"]),
-		"imageId":    shortID(str(insp["Image"])),
-		"cmd":        strSlice(cfg["Cmd"]),
-		"entrypoint": strSlice(cfg["Entrypoint"]),
-		"workingDir": str(cfg["WorkingDir"]),
-		"user":       str(cfg["User"]),
-		"env":        maskEnv(strSlice(cfg["Env"])),
-		"labels":     cfg["Labels"],
-		"restart":    restartName(hc),
-		"privileged": hc["Privileged"],
+		"id":           str(insp["Id"]),
+		"name":         strings.TrimPrefix(str(insp["Name"]), "/"),
+		"created":      str(insp["Created"]),
+		"image":        str(cfg["Image"]),
+		"imageId":      shortID(str(insp["Image"])),
+		"cmd":          strSlice(cfg["Cmd"]),
+		"entrypoint":   strSlice(cfg["Entrypoint"]),
+		"workingDir":   str(cfg["WorkingDir"]),
+		"user":         str(cfg["User"]),
+		"env":          maskEnv(strSlice(cfg["Env"])),
+		"labels":       cfg["Labels"],
+		"restart":      restartName(hc),
+		"privileged":   hc["Privileged"],
 		"portBindings": hc["PortBindings"],
-		"networkMode": str(hc["NetworkMode"]),
-		"health":     "",
-		"startedAt":  str(st["StartedAt"]),
-		"finishedAt": str(st["FinishedAt"]),
-		"exitCode":   st["ExitCode"],
-		"restarts":   st["RestartCount"],
+		"networkMode":  str(hc["NetworkMode"]),
+		"health":       "",
+		"startedAt":    str(st["StartedAt"]),
+		"finishedAt":   str(st["FinishedAt"]),
+		"exitCode":     st["ExitCode"],
+		"restarts":     st["RestartCount"],
 	}
 	if h, ok := st["Health"].(map[string]any); ok {
 		out["health"] = str(h["Status"])
@@ -496,8 +496,8 @@ func (s *Server) hRemoveContainer(w http.ResponseWriter, r *http.Request) {
 				}
 				nm := str(m["Name"])
 				warn = append(warn, map[string]any{
-					"name": nm,
-					"dest": str(m["Destination"]),
+					"name":              nm,
+					"dest":              str(m["Destination"]),
 					"anonymousDetected": strings.HasPrefix(str(m["Source"]), "/var/lib/docker/volumes/"),
 				})
 			}
@@ -533,6 +533,22 @@ func (s *Server) hExportContainer(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 镜像 / 网络 / 卷 ----------
 
+// repoDisplayName 从 RepoDigests（形如 `aaron2024s/dockhelm@sha256:...`）
+// 推导出可读的仓库名；docker.io 官方镜像去掉 docker.io/library/ 前缀（redis 而不是
+// docker.io/library/redis），其他 registry 保留全名。取不到返回空串。
+func repoDisplayName(ds []string) string {
+	if len(ds) == 0 {
+		return ""
+	}
+	name := ds[0]
+	if i := strings.LastIndex(name, "@"); i > 0 {
+		name = name[:i]
+	}
+	name = strings.TrimPrefix(name, "docker.io/")
+	name = strings.TrimPrefix(name, "library/")
+	return name
+}
+
 func (s *Server) hListImages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
@@ -542,14 +558,18 @@ func (s *Server) hListImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type imageView struct {
-		ID         string   `json:"id"`
-		ShortID    string   `json:"shortId"`
-		Tags       []string `json:"tags"`
-		Digests    []string `json:"digests"`
-		Size       int64    `json:"size"`
-		Created    int64    `json:"created"`
-		Containers int64    `json:"containers"`
-		Dangling   bool     `json:"dangling"`
+		ID      string   `json:"id"`
+		ShortID string   `json:"shortId"`
+		Tags    []string `json:"tags"`
+		// Repo 是从 RepoDigests 推导出的仓库名（如 aaron2024s/dockhelm）。
+		// 无 tag 镜像（<none>:<none>）在 RepoTags 里没有名字，但 RepoDigests
+		// 还记着它原来从哪个仓库拉的 —— 这是这类「未使用镜像」唯一能显示的
+		// 可读名称，别让用户对着一串镜像 ID 猜它是什么。
+		Repo       string `json:"repo,omitempty"`
+		Size       int64  `json:"size"`
+		Created    int64  `json:"created"`
+		Containers int64  `json:"containers"`
+		Dangling   bool   `json:"dangling"`
 	}
 	out := make([]imageView, 0, len(list))
 	var total int64
@@ -560,18 +580,9 @@ func (s *Server) hListImages(w http.ResponseWriter, r *http.Request) {
 				tags = append(tags, t)
 			}
 		}
-		short := func(ds []string) []string {
-			o := []string{}
-			for _, d := range ds {
-				if i := strings.LastIndex(d, "@"); i >= 0 {
-					d = d[i+1:]
-				}
-				o = append(o, shortID(d))
-			}
-			return o
-		}
 		out = append(out, imageView{
-			ID: im.ID, ShortID: shortID(im.ID), Tags: tags, Digests: short(im.RepoDigests),
+			ID: im.ID, ShortID: shortID(im.ID), Tags: tags,
+			Repo: repoDisplayName(im.RepoDigests),
 			Size: im.Size, Created: im.Created, Containers: im.Containers,
 			Dangling: len(tags) == 0,
 		})

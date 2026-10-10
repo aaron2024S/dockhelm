@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   Box,
-  Download,
   MoreVertical,
   Play,
   RefreshCw,
@@ -15,11 +14,13 @@ import {
 import { api, openStream } from '@/api/client'
 import type { ContainerView } from '@/api/types'
 import { containerStateLabel, relativeTime, shortImage } from '@/utils/format'
+import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
 import PortChips from '@/components/PortChips.vue'
 
+const app = useAppStore()
 const toast = useToastStore()
 const route = useRoute()
 
@@ -33,7 +34,6 @@ const removeTarget = ref<ContainerView | null>(null)
 const removeVolumes = ref(false)
 const removing = ref(false)
 const selected = ref<Set<string>>(new Set())
-const checking = ref(false)
 const bulkBusy = ref(false)
 /** 提交更新任务中 —— 防连点（连点两次会发出两次批量更新请求）。 */
 const applying = ref(false)
@@ -140,19 +140,8 @@ async function updateSelected() {
   }
 }
 
-async function checkAll() {
-  checking.value = true
-  try {
-    const res = await api.post<{ results?: { status: string }[] }>('/api/updates/check', { deep: false })
-    const n = (res.results ?? []).filter((r) => r.status === 'update_available').length
-    toast.success('巡检完成', n ? `发现 ${n} 个有可用更新` : '所有容器都是最新的')
-    await load(true)
-  } catch (e) {
-    toast.error('巡检失败', e instanceof Error ? e.message : String(e))
-  } finally {
-    checking.value = false
-  }
-}
+// 本页原先有个「检测更新」按钮（走只读的 /api/updates/check）。手动检测入口已统一到
+// 顶栏「检查更新」；检测完成后顶栏会自增 app.checkTick，本页 watch 它重新拉一遍列表。
 
 async function updateAll() {
   const names = updatableAll.value.map((c) => c.name)
@@ -255,6 +244,13 @@ watch(
   },
 )
 
+// 顶栏「检查更新」跑完一轮后（app.checkTick 自增）重新拉一次列表与更新徽标 ——
+// 手动检测入口已统一到顶栏，本页不再有自己的检测按钮。
+watch(
+  () => app.checkTick,
+  () => void load(true),
+)
+
 onMounted(() => {
   void load()
   // 更新批次或容器状态变化时自动刷新
@@ -298,9 +294,6 @@ function closeMenu() {
       <div class="ml-auto flex flex-wrap gap-2">
         <button class="dh-btn" :disabled="loading" @click="load()">
           <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
-        </button>
-        <button class="dh-btn" :disabled="checking" @click="checkAll">
-          <Download class="h-3.5 w-3.5" :class="checking ? 'dh-spin' : ''" />检测更新
         </button>
         <button
           class="dh-btn dh-btn-primary"

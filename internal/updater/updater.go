@@ -114,8 +114,8 @@ type Updater struct {
 	// 而更新流程有多条 goroutine 在读它 —— 普通字段会构成数据竞争。
 	opts atomic.Pointer[Options]
 
-	mu     sync.Mutex
-	locks  map[string]*sync.Mutex // 逐容器串行锁（键 = 容器名，重建前后都稳定）
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex // 逐容器串行锁（键 = 容器名，重建前后都稳定）
 	// resolveMu 只包住「把名字/ID 解析成容器名」这一次 Inspect，
 	// 保证两个并发调用拿到的是同一把锁（见 lockForContainer）。
 	resolveMu sync.Mutex
@@ -350,22 +350,22 @@ func (u *Updater) IsSelf(nameOrID string) bool {
 type CheckStatus string
 
 const (
-	StatusUpToDate        CheckStatus = "up_to_date"        // 已是最新
-	StatusUpdateAvailable CheckStatus = "update_available"  // 有新版本
-	StatusUnknown         CheckStatus = "unknown"           // 无法判定（网络/认证/接口不可用）
-	StatusNoUpstream      CheckStatus = "no_upstream"       // 本地构建的镜像，无远端可比
+	StatusUpToDate        CheckStatus = "up_to_date"       // 已是最新
+	StatusUpdateAvailable CheckStatus = "update_available" // 有新版本
+	StatusUnknown         CheckStatus = "unknown"          // 无法判定（网络/认证/接口不可用）
+	StatusNoUpstream      CheckStatus = "no_upstream"      // 本地构建的镜像，无远端可比
 )
 
 // CheckResult 单容器检测结果。
 type CheckResult struct {
-	Container   string      `json:"container"`
-	ID          string      `json:"id"`
-	Image       string      `json:"image"`
-	LocalDigest string      `json:"localDigest"`
-	RemoteDigest string     `json:"remoteDigest"`
-	Status      CheckStatus `json:"status"`
-	Reason      string      `json:"reason"`
-	CheckedAt   string      `json:"checkedAt"`
+	Container    string      `json:"container"`
+	ID           string      `json:"id"`
+	Image        string      `json:"image"`
+	LocalDigest  string      `json:"localDigest"`
+	RemoteDigest string      `json:"remoteDigest"`
+	Status       CheckStatus `json:"status"`
+	Reason       string      `json:"reason"`
+	CheckedAt    string      `json:"checkedAt"`
 }
 
 // Check 检测单个容器是否有新版本（只读，不拉取、不动容器）。
@@ -439,61 +439,13 @@ func (u *Updater) Check(ctx context.Context, nameOrID string) (*CheckResult, err
 	return res, nil
 }
 
-// DeepCheck 权威检测：真的拉一次镜像再比对镜像 ID。
-//
-// 因为「拉取」走的必然是守护进程（含 registry-mirrors），这是唯一 100% 同源的判定。
-// 镜像已最新时，守护进程只会下载 manifest 与 config（几 KB），不会下载层。
-func (u *Updater) DeepCheck(ctx context.Context, nameOrID string) (*CheckResult, error) {
-	lk, err := u.lockForContainer(ctx, nameOrID)
-	if err != nil {
-		return nil, err
-	}
-	lk.Lock()
-	defer lk.Unlock()
-
-	insp, err := u.dc.Inspect(ctx, nameOrID)
-	if err != nil {
-		return nil, err
-	}
-	name := inspectName(insp)
-	res := &CheckResult{
-		Container: name,
-		ID:        inspectID(insp),
-		Image:     inspectImageRef(insp),
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	oldID, _ := insp["Image"].(string)
-	res.LocalDigest = dockerx.ShortID(oldID)
-	if res.Image == "" {
-		res.Status = StatusNoUpstream
-		res.Reason = "容器没有记录镜像引用"
-		return res, nil
-	}
-
-	pr, err := u.pullImage(ctx, res.Image, nil)
-	if err != nil {
-		res.Status = StatusUnknown
-		res.Reason = "拉取失败：" + err.Error()
-		return res, nil
-	}
-	res.RemoteDigest = pr.Digest
-	if pr.ImageID == "" {
-		res.Status = StatusUnknown
-		res.Reason = "拉取后无法读取镜像 ID"
-		return res, nil
-	}
-	if pr.ImageID == oldID || pr.UpToDate {
-		res.Status = StatusUpToDate
-		res.Reason = "拉取后镜像 ID 未变化"
-		return res, nil
-	}
-	res.Status = StatusUpdateAvailable
-	res.Reason = "拉取到新镜像 " + dockerx.ShortID(pr.ImageID)
-	return res, nil
-}
-
 // CheckAll 并发检测全部容器（跳过自身与被排除的）。
-func (u *Updater) CheckAll(ctx context.Context, exclude map[string]bool, deep bool) []CheckResult {
+//
+// 检测只走守护进程的 /distribution（只下 manifest，不拉层、不动容器）。
+// 曾经还有一个「深度检测」——真的 pull 一次再比镜像 ID；它只是拿带宽与磁盘
+// 换一个几乎总是相同的答案，且做成页面级按钮时会一次拉满所有容器，已删。
+// 拉取后比对镜像 ID 的那套逻辑仍在更新流程里（UpdateMany），那才是它该待的地方。
+func (u *Updater) CheckAll(ctx context.Context, exclude map[string]bool) []CheckResult {
 	list, err := u.dc.ListContainers(ctx)
 	if err != nil {
 		return []CheckResult{}
@@ -520,13 +472,7 @@ func (u *Updater) CheckAll(ctx context.Context, exclude map[string]bool, deep bo
 			defer func() { <-sem }()
 			sub, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
-			var r *CheckResult
-			var err error
-			if deep {
-				r, err = u.DeepCheck(sub, j.id)
-			} else {
-				r, err = u.Check(sub, j.id)
-			}
+			r, err := u.Check(sub, j.id)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -721,7 +667,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
 		u.notify.Emit("update_failed", map[string]string{
 			"container": name, "image": res.Image,
-			"result": map[bool]string{true: "已回滚", false: "回滚失败"}[rb],
+			"result":  map[bool]string{true: "已回滚", false: "回滚失败"}[rb],
 			"message": failMsg,
 		})
 		res.Duration = time.Since(started).Milliseconds()
@@ -1078,13 +1024,17 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool) []
 	if reused > 0 {
 		summary += fmt.Sprintf("，%d 个容器复用了同轮已拉取的镜像", reused)
 	}
-	u.log("update", "batch", "done", summary, "")
-	// 批量更新合并成一条汇总，而不是每个一条
-	u.notify.Emit("batch_update_done", map[string]string{
-		"container": fmt.Sprintf("%d 个容器", len(names)),
-		"result":    "批量更新完成",
-		"message":   summary,
-	})
+	// 汇总记录/通知只在**多个容器**时写：单个容器的批次里，下面每条结果本来就各有一条
+	// 运行记录（更新成功 / 镜像已是最新…），再来一条「共 1 个容器：更新 0…」纯属重复 ——
+	// 同一次更新在总览页出现两行，用户会以为执行了两遍。
+	if len(names) > 1 {
+		u.log("update", "batch", "done", summary, "")
+		u.notify.Emit("batch_update_done", map[string]string{
+			"container": fmt.Sprintf("%d 个容器", len(names)),
+			"result":    "批量更新完成",
+			"message":   summary,
+		})
+	}
 	return out
 }
 

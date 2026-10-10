@@ -199,12 +199,12 @@ func (s *Scheduler) runJob(id int64) (string, bool) {
 
 	if ok {
 		s.nt.Emit("schedule_success", map[string]string{
-			"result": "计划任务执行成功",
+			"result":  "计划任务执行成功",
 			"message": fmt.Sprintf("「%s」%s", sc.Name, msg),
 		})
 	} else {
 		s.nt.Emit("schedule_failed", map[string]string{
-			"result": "计划任务执行失败",
+			"result":  "计划任务执行失败",
 			"message": fmt.Sprintf("「%s」%s", sc.Name, msg),
 		})
 	}

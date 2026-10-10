@@ -646,14 +646,14 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 
 // Stats 备份占用统计。
 type Stats struct {
-	Snapshots  int   `json:"snapshots"`
-	SizeBytes  int64 `json:"sizeBytes"`
-	Containers int   `json:"containers"`
+	Snapshots  int    `json:"snapshots"`
+	SizeBytes  int64  `json:"sizeBytes"`
+	Containers int    `json:"containers"`
 	Dir        string `json:"dir"`
 	// VolumeRootMounted 是否挂了 /var/lib/docker/volumes（决定卷数据能否备份）
 	VolumeRootMounted bool `json:"volumeRootMounted"`
 	// DockerRootVisible 是否能看到 Docker 数据根目录
-	DockerRootVisible bool `json:"dockerRootVisible"`
+	DockerRootVisible bool   `json:"dockerRootVisible"`
 	DockerRoot        string `json:"dockerRoot"`
 	// PathMappings 当前生效的「宿主机路径 → 容器内路径」映射，界面上直接展示，
 	// 免得用户猜 Dockhelm 到底看见了什么。

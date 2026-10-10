@@ -19,11 +19,11 @@ import (
 
 // Watcher 事件观察者。
 type Watcher struct {
-	dc     *dockerx.Client
-	nt     *notify.Manager
-	st     *store.Store
-	bus    *bus.Bus
-	self   func() string
+	dc   *dockerx.Client
+	nt   *notify.Manager
+	st   *store.Store
+	bus  *bus.Bus
+	self func() string
 
 	mu       sync.Mutex
 	dieTimes map[string][]time.Time // 容器 -> 最近退出时间

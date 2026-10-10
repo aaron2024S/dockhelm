@@ -114,9 +114,11 @@ func (s *Server) routes() {
 	a := s.requireAuth
 
 	m.HandleFunc("POST /api/account/password", a(s.hChangePassword))
+	m.HandleFunc("POST /api/account/sessions/logout-others", a(s.hLogoutOthers))
 	m.HandleFunc("GET /api/account", a(s.hAccount))
 
 	m.HandleFunc("GET /api/overview", a(s.hOverview))
+	m.HandleFunc("GET /api/usage", a(s.hUsage))
 	m.HandleFunc("GET /api/system", a(s.hSystem))
 	m.HandleFunc("GET /api/events/stream", a(s.hEventStream))
 
@@ -139,7 +141,6 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/updates", a(s.hListUpdates))
 	m.HandleFunc("POST /api/updates/check", a(s.hCheckUpdates))
-	m.HandleFunc("POST /api/updates/deep-check", a(s.hDeepCheck))
 	m.HandleFunc("POST /api/updates/apply", a(s.hApplyUpdates))
 	m.HandleFunc("GET /api/updates/stream", a(s.hUpdateStream))
 	m.HandleFunc("GET /api/updates/auto", a(s.hGetAutoUpdate))
@@ -453,15 +454,15 @@ func (s *Server) hHealth(w http.ResponseWriter, r *http.Request) {
 // 这里的字段名就是「设置页上看得见的那几个旋钮」—— 不搞一套抽象的配置模型，
 // 因为一个自托管的单用户面板最终只需要「这些开关各自是什么值」这一个真相。
 type Settings struct {
-	Exclude       []string `json:"exclude"`
-	PanelURL      string   `json:"panelURL"`
-	Concurrency   int      `json:"concurrency"`
-	DeepCheckCron string   `json:"deepCheckCron"`
-	LogRetention  int      `json:"logRetention"`
-	CheckOnStart  bool     `json:"checkOnStart"`
+	Exclude      []string `json:"exclude"`
+	PanelURL     string   `json:"panelURL"`
+	Concurrency  int      `json:"concurrency"`
+	LogRetention int      `json:"logRetention"`
+	CheckOnStart bool     `json:"checkOnStart"`
 
 	// —— 检测 ——
-	// CheckIntervalHours 周期性自动巡检的间隔（小时），0 表示不自动巡检。
+	// CheckIntervalHours 周期性自动巡检的间隔（小时）。取值必为 checkIntervalChoices
+	// 之一（不允许 0 —— 见 normalizeInterval：0 会让自动更新永久失效）。
 	CheckIntervalHours int `json:"checkIntervalHours"`
 	// NotifyOnCheck 巡检发现新版本时推一条通知。
 	NotifyOnCheck bool `json:"notifyOnCheck"`
@@ -486,7 +487,11 @@ type Settings struct {
 }
 
 // 检测间隔的可选值（小时）。前端下拉框与后端校验共用这一份，避免两边说法不一致。
-var checkIntervalChoices = []int{0, 1, 3, 6, 12, 24}
+//
+// 🚨 这里绝不能有 0：周期检测是自动更新的唯一触发源，一旦允许「关闭」，
+// 用户会在「自动更新：已开启」的状态下永远等不到动作 —— 没有检测轮次，
+// 就永远发现不了更新，也就永远不会更新。
+var checkIntervalChoices = []int{1, 3, 6, 12, 24}
 
 func (s *Server) readSettings() Settings {
 	var out Settings
@@ -522,6 +527,9 @@ func (s *Server) readSettings() Settings {
 	readBool("update.checkOnStart", &out.CheckOnStart)
 	readInt("log.retention", &out.LogRetention)
 	readInt("update.checkInterval", &out.CheckIntervalHours)
+	// 老库里可能存过 0（旧版本下拉框有「关闭」档）⇒ 收敛到默认值，
+	// 否则这个用户升级后周期检测与自动更新会一直是死的。
+	out.CheckIntervalHours = normalizeInterval(out.CheckIntervalHours)
 	readBool("update.notifyOnCheck", &out.NotifyOnCheck)
 	readBool("update.autoApply", &out.AutoApply)
 	readBool("update.pullOnce", &out.PullOnce)
@@ -533,7 +541,6 @@ func (s *Server) readSettings() Settings {
 	readInt("backup.maxTotalMB", &out.BackupMaxTotalMB)
 	readBool("backup.keepPreUpdate", &out.BackupKeepPreUpdate)
 
-	out.DeepCheckCron = s.st.GetSetting("update.deepCheckCron", "")
 	out.PanelURL = s.st.GetSetting(notify.KeyPanelURL, "")
 	s.st.GetJSON("exclude.containers", &out.Exclude)
 	if out.Exclude == nil {
@@ -639,7 +646,6 @@ func (s *Server) persistSettings(in Settings) {
 	_ = s.st.SetSetting("update.concurrency", strconv.Itoa(in.Concurrency))
 	_ = s.st.SetSetting("update.checkOnStart", boolStr(in.CheckOnStart))
 	_ = s.st.SetSetting("log.retention", strconv.Itoa(in.LogRetention))
-	_ = s.st.SetSetting("update.deepCheckCron", in.DeepCheckCron)
 	_ = s.st.SetSetting(notify.KeyPanelURL, in.PanelURL)
 	_ = s.st.SetSetting("update.checkInterval", strconv.Itoa(in.CheckIntervalHours))
 	_ = s.st.SetSetting("update.notifyOnCheck", boolStr(in.NotifyOnCheck))
@@ -667,12 +673,11 @@ func normalizeInterval(h int) int {
 			return h
 		}
 	}
-	if h <= 0 {
-		return 0
-	}
 	if h > 24 {
 		return 24
 	}
+	// 非合法值（含老库里的 0 / 负数）一律收敛到默认 6 小时 —— 绝不返回 0，
+	// 0 会让周期循环彻底停摆，自动更新也跟着永久失效。
 	return 6
 }
 

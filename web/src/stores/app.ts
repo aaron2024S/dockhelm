@@ -11,10 +11,22 @@ export const useAppStore = defineStore('app', {
     sessionCount: 0,
     failures: 0,
     maxFailures: 5,
+    /** 连续失败被锁定时，还要等多少秒才能再试；未锁定为 0。 */
+    lockedFor: 0,
+    /** 锁定提示文案（含「约 N 分钟」），由服务端生成，前端只负责加倒计时。 */
+    lockedHint: '',
     minPasswordLength: 6,
     settings: null as Settings | null,
     dockerOnline: true,
     sidebarCollapsed: false,
+    /**
+     * 顶栏「检查更新」完成的信号：每检测一次自增。
+     *
+     * 手动检测入口收敛到顶栏一处后，各页面（总览 / 更新中心 / 容器页）靠 watch
+     * 这个计数来重载自己那份检测结果 —— 否则用户在页面上点顶栏检测完、
+     * 页面数据还是旧的，看起来像「没生效」。
+     */
+    checkTick: 0,
     /** bootstrap 的进行中 promise（非响应式用途，仅用于去重）。 */
     _bootstrapping: null as Promise<void> | null,
   }),
@@ -49,6 +61,8 @@ export const useAppStore = defineStore('app', {
         this.sessionCount = s.sessionCount
         this.failures = s.failures
         this.maxFailures = s.maxFailures
+        this.lockedFor = s.lockedFor || 0
+        this.lockedHint = s.lockedHint || ''
         this.minPasswordLength = s.minPassword || 6
       } catch {
         this.loggedIn = false

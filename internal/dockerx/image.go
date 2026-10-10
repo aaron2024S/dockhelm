@@ -167,7 +167,7 @@ type PullResult struct {
 	Ref        string   `json:"ref"`
 	ImageID    string   `json:"imageId"`
 	Digest     string   `json:"digest"`
-	UpToDate   bool     `json:"upToDate"` // 守护进程明确回了 "Image is up to date"
+	UpToDate   bool     `json:"upToDate"`   // 守护进程明确回了 "Image is up to date"
 	Downloaded bool     `json:"downloaded"` // 守护进程明确回了 "Downloaded newer image"
 	Messages   []string `json:"messages"`
 }
@@ -252,7 +252,7 @@ func (c *Client) Pull(ctx context.Context, ref string, onEvent func(PullEvent)) 
 					Status:   m.Status,
 					ID:       m.ID,
 					Progress: m.Progress,
-					Detail: fmt.Sprintf("%d/%d", m.ProgressDetail.Current, m.ProgressDetail.Total),
+					Detail:   fmt.Sprintf("%d/%d", m.ProgressDetail.Current, m.ProgressDetail.Total),
 				})
 			}
 		}
@@ -289,7 +289,7 @@ func (c *Client) DistributionInspect(ctx context.Context, ref string) (digest st
 	}
 	var out struct {
 		Descriptor struct {
-			Digest string `json:"digest"`
+			Digest    string `json:"digest"`
 			MediaType string `json:"mediaType"`
 		} `json:"Descriptor"`
 		Platforms []map[string]any `json:"Platforms"`

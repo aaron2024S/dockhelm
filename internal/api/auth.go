@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -16,14 +17,28 @@ func (s *Server) hSession(w http.ResponseWriter, r *http.Request) {
 		loggedIn = true
 	}
 	ip := s.clientIP(r)
+	left := s.auth.LockedFor(ip)
 	writeOK(w, map[string]any{
 		"initialized":  s.auth.Initialized(),
 		"loggedIn":     loggedIn,
 		"failures":     s.auth.Failures(ip),
 		"maxFailures":  auth.MaxFailures,
+		"lockedFor":    retryAfterSeconds(left),
+		"lockedHint":   auth.LockedHint(left),
 		"minPassword":  auth.MinPasswordLen,
 		"sessionCount": s.st.SessionCount(),
 	})
+}
+
+// retryAfterSeconds 把剩余锁定时间换算成给前端的整数秒（向上取整）。
+//
+// 向上取整是为了「宁可多显示 1 秒」：向下取整会在还剩 0.4 秒时给出 0，
+// 前端据此把界面解锁、按钮点亮，用户一点又是 429 —— 看着像坏了。
+func retryAfterSeconds(left time.Duration) int {
+	if left <= 0 {
+		return 0
+	}
+	return int(math.Ceil(left.Seconds()))
 }
 
 type loginReq struct {
@@ -48,13 +63,19 @@ func (s *Server) hLogin(w http.ResponseWriter, r *http.Request) {
 			"result":  "登录失败",
 			"message": "来源 IP " + ip + "，原因：" + err.Error(),
 		})
+		if err == auth.ErrLocked {
+			// 锁定提示要带「还要等多久」，前端拿 retryAfter 起倒计时
+			left := s.auth.LockedFor(ip)
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      auth.LockedHint(left),
+				"code":       "locked",
+				"retryAfter": retryAfterSeconds(left),
+			})
+			return
+		}
 		remaining := auth.MaxFailures - s.auth.Failures(ip)
 		if remaining < 0 {
 			remaining = 0
-		}
-		if err == auth.ErrLocked {
-			writeErrCode(w, http.StatusTooManyRequests, err.Error(), "locked")
-			return
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error":     err.Error(),
@@ -64,26 +85,45 @@ func (s *Server) hLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ttl := auth.SessionTTL
-	if in.Keep {
-		ttl = auth.SessionTTLKeep
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     auth.CookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(ttl.Seconds()),
-		// Secure 由反向代理决定；局域网 HTTP 部署下强制 Secure 会导致登录不了
-		Secure: strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-	})
+	// Secure 由反向代理决定；局域网 HTTP 部署下强制 Secure 会导致登录不了
+	secure := strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	http.SetCookie(w, sessionCookie(token, in.Keep, secure))
 
 	s.nt.Emit("login_success", map[string]string{
 		"result":  "登录成功",
 		"message": "来源 IP " + ip,
 	})
-	writeOK(w, map[string]any{"ok": true, "expiresIn": int(ttl.Seconds())})
+	writeOK(w, map[string]any{"ok": true, "expiresIn": int(sessionTTL(in.Keep).Seconds())})
+}
+
+// sessionTTL 会话在服务端的有效期。
+//
+// 勾「保持登录」⇒ 7 天；不勾 ⇒ 24 小时上限兜底 —— 浏览器端那时下发的是会话
+// Cookie（关浏览器即失效），这个上限只是防止「恢复标签页」让会话无限续命。
+func sessionTTL(keep bool) time.Duration {
+	if keep {
+		return auth.SessionTTLKeep
+	}
+	return auth.SessionTTL
+}
+
+// sessionCookie 构造登录会话 Cookie。
+//
+// 勾「保持登录」⇒ 下发 MaxAge，浏览器持久保存（7 天）；
+// 不勾 ⇒ MaxAge 留 0，浏览器按会话 Cookie 处理，关掉浏览器即失效。
+func sessionCookie(token string, keep, secure bool) *http.Cookie {
+	c := &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+	}
+	if keep {
+		c.MaxAge = int(auth.SessionTTLKeep.Seconds())
+	}
+	return c
 }
 
 // hLogout 退出登录。
@@ -134,10 +174,11 @@ func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, map[string]any{"ok": true, "autoLogin": false})
 		return
 	}
+	// 首启自动登录下发**会话 Cookie**（不设 MaxAge）：与登录页「不勾保持登录」
+	// 同一语义 —— 关掉浏览器就失效，不悄悄留下一个持久登录。
 	http.SetCookie(w, &http.Cookie{
 		Name: auth.CookieName, Value: token, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		MaxAge: int(auth.SessionTTLKeep.Seconds()),
 	})
 	writeOK(w, map[string]any{"ok": true, "autoLogin": true})
 }
@@ -165,6 +206,29 @@ func (s *Server) hAccount(w http.ResponseWriter, r *http.Request) {
 	info["recentLogins"] = list
 	info["now"] = time.Now().UTC().Format(time.RFC3339)
 	writeOK(w, info)
+}
+
+// hLogoutOthers 强制登出当前会话之外的所有登录会话。
+//
+// 会话没有「登出按钮」，被忘在旧浏览器/旧设备上时只能等过期（最长 7 天）。
+// 这个接口给用户一个主动清场出口：以请求自带的会话 Cookie 为「当前」，
+// 其余全部作废 —— 改密码也能达到同样效果，但对只是想清理残留的用户来说太重。
+func (s *Server) hLogoutOthers(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(auth.CookieName)
+	if err != nil || c.Value == "" {
+		writeErr(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	if s.st.GetSession(c.Value) == nil {
+		writeErr(w, http.StatusUnauthorized, "当前会话已失效，请重新登录")
+		return
+	}
+	n, err := s.st.DeleteOtherSessions(c.Value)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"ok": true, "revoked": n})
 }
 
 type changePwReq struct {

@@ -186,26 +186,9 @@ func main() {
 
 	// 周期检测 + 自动更新。
 	//
-	// 这一条循环同时承担了原来的「启动后首次巡检」：如果 checkOnStart 开着，
-	// 它启动后 8 秒就先跑一轮；之后按 update.checkInterval 周期跑。
-	// 之所以合并，是因为两套并行跑会在启动瞬间同时打镜像仓库、白白触发限流。
-	checkOnStart := st.GetSetting("update.checkOnStart", "1") == "1"
-	if checkOnStart {
-		go func() {
-			time.Sleep(8 * time.Second) // 等面板先起来
-			log.Printf("开始启动后首次更新巡检（只读，不会动任何容器）…")
-			ctx, cancel := context.WithTimeout(appCtx, 10*time.Minute)
-			defer cancel()
-			results := up.CheckAll(ctx, excludedFrom(st, up.SelfName()), false)
-			avail := 0
-			for _, r := range results {
-				if r.Status == updater.StatusUpdateAvailable {
-					avail++
-				}
-			}
-			log.Printf("首次巡检完成：检查 %d 个容器，%d 个有可用更新", len(results), avail)
-		}()
-	}
+	// 启动后首次巡检由 StartAutoLoop 的首轮承担（checkOnStart 开着则 8 秒后跑，
+	// 否则 2 分钟）—— 这里曾经还额外挂了一个 8 秒的 goroutine 直接调 CheckAll，
+	// 与首轮重复：启动瞬间两套并行打同一个镜像仓库，白白触发限流。
 	go srv.StartAutoLoop(appCtx)
 	{
 		interval := config.AtoiDefault(st.GetSetting("update.checkInterval", ""), 6)
@@ -325,19 +308,4 @@ func onOff(enabled bool) string {
 		return "已开启"
 	}
 	return "已关闭"
-}
-
-func excludedFrom(st *store.Store, self string) map[string]bool {
-	out := map[string]bool{}
-	if self != "" {
-		out[self] = true
-	}
-	var list []string
-	st.GetJSON("exclude.containers", &list)
-	for _, n := range list {
-		if n = strings.TrimSpace(n); n != "" {
-			out[n] = true
-		}
-	}
-	return out
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   AlertTriangle,
@@ -10,25 +10,24 @@ import {
   Info,
   Loader2,
   Play,
-  RefreshCw,
   ShieldQuestion,
   Zap,
 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
 import type { AutoUpdateInfo, CheckResult, UpdatesResponse } from '@/api/types'
 import { checkLabel, formatDateTime, relativeTime, shortImage } from '@/utils/format'
+import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
 import Modal from '@/components/Modal.vue'
 
+const app = useAppStore()
 const toast = useToastStore()
 const results = ref<CheckResult[]>([])
 const checkedAt = ref('')
-const loading = ref(false)
-const deepLoading = ref(false)
 const progress = ref<{ name: string; message: string; status: string }[]>([])
 const showInfo = ref(false)
 let closeStream: (() => void) | null = null
-/** 组件已卸载 —— 用来打断 runAutoCycle 里那个最多 60 秒的轮询循环。 */
+/** 组件已卸载 —— 用来打断 runAutoUpdate 里那个最多 60 秒的轮询循环。 */
 let disposed = false
 
 // —— 自动更新 ——
@@ -62,22 +61,9 @@ async function load() {
   }
 }
 
-async function check(deep: boolean) {
-  if (deep) deepLoading.value = true
-  else loading.value = true
-  try {
-    const res = await api.post<{ results: CheckResult[] }>('/api/updates/check', { deep })
-    results.value = res.results ?? []
-    checkedAt.value = new Date().toISOString()
-    const n = (res.results ?? []).filter((r) => r.status === 'update_available').length
-    toast.success(deep ? '深度检测完成' : '巡检完成', `发现 ${n} 个有可用更新`)
-  } catch (e) {
-    toast.error('巡检失败', e instanceof Error ? e.message : String(e))
-  } finally {
-    deepLoading.value = false
-    loading.value = false
-  }
-}
+// 本页原先有个页头「重新检测」按钮（走只读的 /api/updates/check）。
+// 手动检测入口已统一到顶栏「检查更新」—— 同一功能散在每页一处、叫法还各不相同，
+// 用户根本分不清该点哪个。检测完成后顶栏会自增 app.checkTick，本页 watch 它重载。
 
 const toneOf = (status: string) => checkLabel(status).tone
 
@@ -92,12 +78,12 @@ async function loadAuto() {
   }
 }
 
-/** 立即跑一轮；dryRun 为真时只巡检不动容器。 */
-async function runAutoCycle(dryRun: boolean) {
+/** 立即手动跑一轮自动更新：真的按策略停旧容器、起新容器。 */
+async function runAutoUpdate() {
   autoBusy.value = true
   try {
-    await api.post('/api/updates/auto-run', { dryRun })
-    toast.info(dryRun ? '已开始巡检（不动容器）' : '已开始自动更新', '完成后本页会自动刷新')
+    await api.post('/api/updates/auto-run', {})
+    toast.info('已开始自动更新', '完成后本页会自动刷新')
     // 后端在后台跑，轮询几次把结果拉回来。
     // 循环必须能被卸载打断：否则用户点完就离开页面，这个循环还会持续
     // 最多一分钟对着已卸载的组件写 state、继续发请求。
@@ -112,8 +98,12 @@ async function runAutoCycle(dryRun: boolean) {
     if (disposed) return
     await Promise.all([load(), loadAuto()])
     const last = auto.value?.lastRun
-    if (last && !last.dryRun) {
-      toast.success('自动更新完成', `更新 ${last.updated} 个，失败 ${last.failed} 个`)
+    if (last) {
+      if (last.updated + last.failed === 0) {
+        toast.info('本轮没有需要更新的容器', `巡检 ${last.checked} 个，均已是新版`)
+      } else {
+        toast.success('自动更新完成', `更新 ${last.updated} 个，失败 ${last.failed} 个`)
+      }
     }
   } catch (e) {
     if (disposed) return
@@ -122,6 +112,16 @@ async function runAutoCycle(dryRun: boolean) {
     if (!disposed) autoBusy.value = false
   }
 }
+
+// 顶栏「检查更新」跑完一轮后重载本次检测结果与「本轮会发生什么」候选表 ——
+// 检测入口已统一到顶栏，本页不再有自己的检测按钮。
+watch(
+  () => app.checkTick,
+  () => {
+    void load()
+    void loadAuto()
+  },
+)
 
 onMounted(() => {
   void load()
@@ -179,14 +179,6 @@ onUnmounted(() => {
       <div class="dh-sub">
         {{ checkedAt ? `上次检测 ${relativeTime(checkedAt)} · 共比对 ${results.length} 个容器` : '还没有检测过' }}
       </div>
-      <div class="ml-auto flex gap-2">
-        <button class="dh-btn" :disabled="loading || deepLoading" @click="check(true)">
-          <Zap class="h-3.5 w-3.5" :class="deepLoading ? 'dh-spin' : ''" />深度检测
-        </button>
-        <button class="dh-btn" :disabled="loading || deepLoading" @click="check(false)">
-          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />重新检测
-        </button>
-      </div>
     </div>
 
     <!-- 汇总 -->
@@ -208,7 +200,7 @@ onUnmounted(() => {
         <div class="mt-1.5 text-[22px] font-semibold leading-none">
           {{ results.filter((r) => r.status === 'unknown').length }}
         </div>
-        <div class="mt-1 text-[11px] text-text-6">网络/认证问题导致，绝不当作有更新</div>
+        <div class="mt-1 text-[11px] text-text-6">网络/认证问题导致</div>
       </div>
       <div class="dh-card p-3.5">
         <div class="flex items-center gap-2 text-[12px] text-text-4"><HelpCircle class="h-3.5 w-3.5" />本地镜像</div>
@@ -272,14 +264,11 @@ onUnmounted(() => {
             :title="auto?.lastCheckAt ? `上次巡检 ${formatDateTime(auto.lastCheckAt)}` : '还没有巡检记录'"
           >
             <Clock class="h-3 w-3" />
-            {{ auto?.nextCheckAt ? `下次巡检 ${formatDateTime(auto.nextCheckAt)}` : '未开启周期巡检' }}
+            {{ auto?.nextCheckAt ? `下次巡检 ${formatDateTime(auto.nextCheckAt)}` : '下次巡检尚未排期' }}
             <template v-if="auto?.checkIntervalHours">· 每 {{ auto.checkIntervalHours }} 小时一次</template>
             <template v-if="auto?.lastCheckAt">· 上次 {{ relativeTime(auto.lastCheckAt) }}</template>
           </span>
-          <button class="dh-btn dh-btn-sm" :disabled="autoBusy" @click="runAutoCycle(true)">
-            <RefreshCw class="h-3 w-3" :class="autoBusy ? 'dh-spin' : ''" />立即巡检一轮
-          </button>
-          <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="autoBusy || !auto?.enabled" @click="runAutoCycle(false)">
+          <button class="dh-btn dh-btn-sm dh-btn-primary" :disabled="autoBusy || !auto?.enabled" @click="runAutoUpdate">
             <Play class="h-3 w-3" />立即执行自动更新
           </button>
         </div>
@@ -301,7 +290,7 @@ onUnmounted(() => {
             </RouterLink>
           </div>
           <div v-if="!auto?.candidates?.length" class="px-3 py-3 text-[12px] text-text-5">
-            还没有巡检结果，点右上角「立即巡检一轮」先跑一次。
+            还没有巡检结果，点顶栏右上角的「检查更新」先跑一次。
           </div>
           <div v-else class="overflow-x-auto">
             <table class="dh-table">
@@ -412,10 +401,9 @@ onUnmounted(() => {
         <div class="flex items-start gap-2.5">
           <Info class="mt-[2px] h-4 w-4 flex-none text-accent" />
           <div>
-            <b class="text-text-1">「深度检测」是什么。</b>
-            它真的拉一次镜像再比对镜像 ID —— 这是唯一 100% 同源的判定。
-            镜像已最新时守护进程只会下载 manifest 与 config（几 KB），不会下载层文件。
-            如果你怀疑某个容器被误报，用它确认即可。
+            <b class="text-text-1">检测是只读的。</b>
+            检测只下 manifest、比对摘要，<b class="text-text-1">不拉层、不停容器</b>；
+            真正会动容器的只有「立即执行自动更新」与容器详情页的更新。
           </div>
         </div>
       </div>

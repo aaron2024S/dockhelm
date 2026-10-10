@@ -57,12 +57,12 @@ func fakeInspect() map[string]any {
 		},
 		"HostConfig": map[string]any{
 			// 这两个必须被删掉，否则重复挂载
-			"Binds":      []any{"./data:/data", "cfgvol:/etc/redis"},
-			"Mounts":     []any{map[string]any{"Type": "bind", "Source": "./data", "Target": "/data"}},
-			"NetworkMode": "moontv_default",
+			"Binds":         []any{"./data:/data", "cfgvol:/etc/redis"},
+			"Mounts":        []any{map[string]any{"Type": "bind", "Source": "./data", "Target": "/data"}},
+			"NetworkMode":   "moontv_default",
 			"RestartPolicy": map[string]any{"Name": "always", "MaximumRetryCount": 0},
-			"PortBindings": map[string]any{},
-			"BindsExtra":   "should-stay",
+			"PortBindings":  map[string]any{},
+			"BindsExtra":    "should-stay",
 		},
 		"Mounts": []any{
 			map[string]any{
@@ -81,7 +81,7 @@ func fakeInspect() map[string]any {
 		"NetworkSettings": map[string]any{
 			"Networks": map[string]any{
 				"moontv_default": map[string]any{
-					"Aliases":   []any{"9f8e7d6c5b4a", "moontv-redis"},
+					"Aliases":    []any{"9f8e7d6c5b4a", "moontv-redis"},
 					"IPAMConfig": nil,
 				},
 			},

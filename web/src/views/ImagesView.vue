@@ -22,7 +22,12 @@ const filtered = computed(() => {
   let list = images.value
   const k = keyword.value.trim().toLowerCase()
   if (k) {
-    list = list.filter((i) => i.tags.some((t) => t.toLowerCase().includes(k)) || i.shortId.includes(k))
+    list = list.filter(
+      (i) =>
+        i.tags.some((t) => t.toLowerCase().includes(k)) ||
+        (i.repo ?? '').toLowerCase().includes(k) ||
+        i.shortId.includes(k),
+    )
   }
   if (onlyDangling.value) list = list.filter((i) => i.dangling)
   return list
@@ -100,7 +105,7 @@ onMounted(() => void load())
     <div class="flex flex-wrap items-center gap-2.5">
       <div class="relative min-w-[170px] flex-1 sm:max-w-[260px]">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-5" />
-        <input v-model="keyword" class="dh-input !pl-8" placeholder="按标签或 ID 搜索" />
+        <input v-model="keyword" class="dh-input !pl-8" placeholder="按标签、仓库名或 ID 搜索" />
       </div>
 
       <label class="flex cursor-pointer items-center gap-2 text-[12px] text-text-3">
@@ -145,9 +150,11 @@ onMounted(() => void load())
                     {{ t }}
                   </span>
                 </div>
-                <span v-else class="dh-badge dh-badge-plain">未使用镜像</span>
-                <div v-if="img.digests.length" class="mt-1 font-mono text-[10.5px] text-text-6">
-                  {{ img.digests[0] }}
+                <!-- 无 tag 的「未使用镜像」也要给出可读名字：后端从 RepoDigests 推导出
+                     它原来所属的仓库，绝不能让用户对着一串镜像 ID 猜这是什么。 -->
+                <div v-else class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-mono text-[11.5px] text-text-2">{{ img.repo || img.shortId }}</span>
+                  <span class="dh-badge dh-badge-plain">未使用镜像</span>
                 </div>
               </td>
               <td class="font-mono text-[11.5px] text-text-4">{{ img.shortId }}</td>
@@ -176,7 +183,7 @@ onMounted(() => void load())
     <Modal
       :open="!!removeTarget"
       title="删除镜像"
-      :subtitle="removeTarget?.tags.join(', ') || removeTarget?.shortId"
+      :subtitle="removeTarget?.tags.join(', ') || removeTarget?.repo || removeTarget?.shortId"
       width="440px"
       :busy="removing"
       @close="removeTarget = null"
