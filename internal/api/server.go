@@ -54,11 +54,14 @@ type Server struct {
 	checkAt    time.Time
 
 	// 后台「周期检测 + 自动更新」循环的状态
-	autoWake      chan struct{}
+	autoWake      chan wakeAction
 	autoMu        sync.Mutex
 	autoBusy      bool
 	autoLast      *AutoRunSummary
 	autoLastCheck time.Time
+	// autoNextAt 下一轮巡检实际排定的时刻（定时器是唯一真相；
+	// 冷却期/提前逻辑会让「上次巡检 + 间隔」这种推算失真）。
+	autoNextAt time.Time
 }
 
 // Deps 构造参数。
@@ -81,7 +84,7 @@ func New(d Deps) *Server {
 		cfg: d.Cfg, st: d.Store, dc: d.Docker, auth: d.Auth,
 		up: d.Update, sch: d.Sched, bk: d.Backup, nt: d.Notify, bus: d.Bus,
 		mux: http.NewServeMux(), static: d.Static,
-		autoWake: make(chan struct{}, 1),
+		autoWake: make(chan wakeAction, 1),
 	}
 	// 设置是常驻状态的真相，进程一起来就先把它推给更新引擎，
 	// 免得「重启之后策略回到默认值、直到用户手动存一次设置才生效」。
@@ -499,14 +502,14 @@ type Settings struct {
 // 🚨 这里绝不能有 0：周期检测是自动更新的唯一触发源，一旦允许「关闭」，
 // 用户会在「自动更新：已开启」的状态下永远等不到动作 —— 没有检测轮次，
 // 就永远发现不了更新，也就永远不会更新。
-var checkIntervalChoices = []int{1, 3, 6, 12, 24}
+var checkIntervalChoices = []int{1, 2, 3, 6, 12, 24}
 
 func (s *Server) readSettings() Settings {
 	var out Settings
 	out.Concurrency = 2
-	out.LogRetention = 500
+	out.LogRetention = 100
 	out.CheckOnStart = true
-	out.CheckIntervalHours = 6
+	out.CheckIntervalHours = 1
 	out.NotifyOnCheck = false
 	out.AutoApply = false
 	out.PullOnce = true
@@ -637,6 +640,9 @@ func (s *Server) hPatchSettings(w http.ResponseWriter, r *http.Request) {
 
 // persistSettings 校验 + 落盘 + 推给常驻对象。PUT 与 PATCH 共用这一份写入口。
 func (s *Server) persistSettings(in Settings) {
+	// 先留一份「改之前」的快照：等会儿唤醒后台循环时，要靠它判断这次改动
+	// 是不是「用户明显在等着看动作」的那两类（见 wakeDecision）。
+	prev := s.readSettings()
 	if in.Concurrency < 1 || in.Concurrency > 8 {
 		in.Concurrency = 2
 	}
@@ -669,8 +675,9 @@ func (s *Server) persistSettings(in Settings) {
 	_ = s.st.SetJSON("exclude.containers", in.Exclude)
 
 	s.applyPolicy(in)
-	// 检测频率可能刚被改过，唤醒后台循环按新间隔重新计时。
-	s.wakeAutoLoop()
+	// 检测频率/自动更新总开关可能刚被改过，唤醒后台循环重新计时；
+	// 若属于「刚打开自动更新」或「把间隔调小了」，则把下一轮提前（见 wakeDecision）。
+	s.wakeAutoLoop(wakeDecision(prev, in))
 }
 
 // normalizeInterval 把检测间隔收敛到允许的取值上，防止存进一个
@@ -684,9 +691,9 @@ func normalizeInterval(h int) int {
 	if h > 24 {
 		return 24
 	}
-	// 非合法值（含老库里的 0 / 负数）一律收敛到默认 6 小时 —— 绝不返回 0，
+	// 非合法值（含老库里的 0 / 负数）一律收敛到默认 1 小时 —— 绝不返回 0，
 	// 0 会让周期循环彻底停摆，自动更新也跟着永久失效。
-	return 6
+	return 1
 }
 
 func boolStr(b bool) string {

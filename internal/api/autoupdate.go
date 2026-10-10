@@ -61,7 +61,13 @@ func (s *Server) hGetAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	s.autoMu.Unlock()
 
 	next := ""
-	if cfg.CheckIntervalHours > 0 {
+	s.autoMu.Lock()
+	nextAt := s.autoNextAt
+	s.autoMu.Unlock()
+	if !nextAt.IsZero() {
+		next = nextAt.UTC().Format(time.RFC3339)
+	} else if cfg.CheckIntervalHours > 0 {
+		// 循环还没排过第一次（极端情况：刚起进程接口就进来了），按上次巡检推算兜底。
 		base := lastCheck
 		if base.IsZero() {
 			s.checkMu.RLock()
@@ -137,11 +143,47 @@ func (s *Server) StartAutoLoop(ctx context.Context) {
 	go s.autoLoop(ctx)
 }
 
+// autoBootCooldown 是「启动冷却期」：进程起来后，第一次**可执行**的巡检
+// 最早排在启动后这一刻。
+//
+// 为什么需要它：启动首轮巡检（8 秒）刻意是只读的 —— 那时 Docker 刚起来，
+// 一堆容器在同时创建/拉镜像，此刻去重建容器既慢又容易踩到竞态。
+// 但只读那一轮之后若直接按检测周期排下一轮，急着更新的人就要干等一个完整
+// 周期（默认 1 小时）。折中：把第一轮可执行巡检排到启动后 15 分钟 ——
+// 容器启动峰值基本过去，又远比等满一个周期快。
+const autoBootCooldown = 15 * time.Minute
+
+// wakeAction 是「设置刚保存」递给后台循环的意图。
+type wakeAction int
+
+const (
+	// wakeRestart 按新间隔重新计时（绝大多数设置改动的行为）。
+	wakeRestart wakeAction = iota
+	// wakeSooner 把下一轮提前（见 wakeDecision）。
+	wakeSooner
+)
+
+// wakeDecision 判断这次保存设置是否属于「用户明显在等着看动作」的两类改动。
+//
+// ① 自动更新总开关由关打到开 —— 刚打开就干等一个周期最反直觉；
+// ② 检测间隔被调小 —— 用户嫌太慢，改完却还按旧的长间隔等，等于这次改动没生效。
+// 其余改动（并发度、备份策略、排除列表、检测通知…）与「下一轮什么时候跑」无关，
+// 保持原行为按新间隔重新计时即可。
+func wakeDecision(prev, next Settings) wakeAction {
+	if next.AutoApply && !prev.AutoApply {
+		return wakeSooner
+	}
+	if next.CheckIntervalHours > 0 && next.CheckIntervalHours < prev.CheckIntervalHours {
+		return wakeSooner
+	}
+	return wakeRestart
+}
+
 // wakeAutoLoop 通知后台循环「设置刚改过，按新间隔重新计时」。
 // 非阻塞：调用方（HTTP handler）不该因为循环正忙而卡住。
-func (s *Server) wakeAutoLoop() {
+func (s *Server) wakeAutoLoop(act wakeAction) {
 	select {
-	case s.autoWake <- struct{}{}:
+	case s.autoWake <- act:
 	default:
 	}
 }
@@ -153,11 +195,14 @@ func (s *Server) wakeAutoLoop() {
 //
 // 启动首轮：checkOnStart 开着就 8 秒后跑一次**只读巡检**（不碰任何容器，
 // 与设置页文案「延迟 8 秒执行…不会停止任何容器」一致），之后进入正常周期节奏。
+// 唯一的不对称在「第二轮」：首轮要是查到了更新、而总开关是开着的，第二轮会排到
+// 启动冷却期结束（15 分钟）而不是等满一个周期 —— 见 firstRoundDelay。
 // ⚠ 这个开关曾经是死的：StartAutoLoop 取代了 main.go 里旧的启动巡检，
 // 实现删了、设置项却留在页面上 —— 用户开了也没任何效果（2026-10-10 反馈）。
 // 兜底层 runAutoCycle 里 execute && !cfg.AutoApply && trigger != "manual" 的
 // 强制降级继续保护这一轮：就算将来有人把 execute 传错，也动不了容器。
 func (s *Server) autoLoop(ctx context.Context) {
+	bootAt := time.Now()
 	timer := time.NewTimer(startupDelay(s.readSettings()))
 	defer timer.Stop()
 	first := true
@@ -166,30 +211,57 @@ func (s *Server) autoLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.autoWake:
+		case act := <-s.autoWake:
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
 				default:
 				}
 			}
-			timer.Reset(s.nextInterval())
+			var d time.Duration
+			if first {
+				// 启动巡检还没跑过：一次「保存设置」不该把它挤到一个周期之后，
+				// 仍按启动延迟重排（新间隔从之后的轮次起生效）。
+				d = startupDelay(s.readSettings())
+			} else {
+				s.autoMu.Lock()
+				pending := s.autoNextAt
+				s.autoMu.Unlock()
+				d = wakeRoundDelay(time.Now(), bootAt, s.nextInterval(), pending, act)
+			}
+			s.scheduleNext(timer, d)
 		case <-timer.C:
+			cfg := s.readSettings()
 			if first {
 				first = false
 				// 首轮只服务 checkOnStart；execute 恒为 false，只检查不动手。
-				if s.readSettings().CheckOnStart {
-					s.runAutoCycle(ctx, "startup", false)
+				var available int
+				if cfg.CheckOnStart {
+					if sum := s.runAutoCycle(ctx, "startup", false); sum != nil {
+						available = sum.Available
+					}
 				}
-				timer.Reset(s.nextInterval())
+				s.scheduleNext(timer, firstRoundDelay(time.Now(), bootAt, s.nextInterval(), cfg, available))
 				continue
 			}
-			if ok, execute := scheduledRun(s.readSettings()); ok {
+			if ok, execute := scheduledRun(cfg); ok {
 				s.runAutoCycle(ctx, "schedule", execute)
 			}
-			timer.Reset(s.nextInterval())
+			s.scheduleNext(timer, s.nextInterval())
 		}
 	}
+}
+
+// scheduleNext 重排定时器，并把「下一轮实际排在何时」记下来。
+//
+// 必须记：设置页的「下次巡检」原来靠「上次巡检时间 + 间隔」推算，
+// 而启动冷却期与保存设置后的提前都会让真实排期早于这个推算 ——
+// 界面说 1 小时后巡检、实际 15 分钟后就跑，这种「显示比实际慢」最招人疑惑。
+func (s *Server) scheduleNext(timer *time.Timer, d time.Duration) {
+	timer.Reset(d)
+	s.autoMu.Lock()
+	s.autoNextAt = time.Now().Add(d)
+	s.autoMu.Unlock()
 }
 
 // startupDelay 返回循环启动后第一轮的等待时长：checkOnStart 开着就 8 秒后
@@ -199,6 +271,58 @@ func startupDelay(cfg Settings) time.Duration {
 		return 8 * time.Second
 	}
 	return 2 * time.Minute
+}
+
+// firstRoundDelay 决定「启动首轮巡检之后」到下一轮之间的等待时长。
+//
+// 常规情况就是等满一个周期；唯一的例外是「总开关开着、且首轮确实查到了更新」——
+// 这时把下一轮提前到启动冷却期结束，让急着更新的人不必干等一整个周期
+// （首轮本身是只读的，真正动手的是这一轮）。
+//
+// 抽成纯函数（时间与间隔都当参数传进来）是为了能对着固定时刻写断言 ——
+// 「等多久」这件事一旦改错，表现是「自动更新好像不生效」，极难从日志上看出来。
+func firstRoundDelay(now, bootAt time.Time, interval time.Duration, cfg Settings, available int) time.Duration {
+	if !cfg.CheckOnStart || !cfg.AutoApply || available <= 0 {
+		return interval
+	}
+	d := bootAt.Add(autoBootCooldown).Sub(now)
+	// 巡检本身耗时超过冷却期（超大堆栈）时别倒着等：至少留 1 秒，
+	// 免得 Reset(负值) 把定时器变成一个 0 时长的忙等触发器。
+	if d < time.Second {
+		d = time.Second
+	}
+	if d > interval {
+		d = interval
+	}
+	return d
+}
+
+// wakeRoundDelay 决定「保存设置之后」到下一轮之间的等待时长。
+//
+// 大多数设置改动按新间隔重新计时（原行为）；只有 wakeSooner 那一类会提前，
+// 且提前也不等于立刻就动手：至少留 30 秒缓冲，并且不早于启动冷却期结束 ——
+// 免得用户刚打开总开关，就在容器启动峰值里被它重建一轮。
+//
+// pending 是当前已排定的下一轮时刻：普通改动按新间隔重新计时没错，
+// 但不能把一个已经排得更早的轮次往后推 —— 否则「打开自动更新（15 分钟后跑）→
+// 顺手改下面板地址再保存」就把那一轮悄悄顶回一个小时之后，提前等于白提。
+func wakeRoundDelay(now, bootAt time.Time, interval time.Duration, pending time.Time, act wakeAction) time.Duration {
+	if act != wakeSooner {
+		if !pending.IsZero() {
+			if until := pending.Sub(now); until > 0 && until < interval {
+				return until
+			}
+		}
+		return interval
+	}
+	d := 30 * time.Second
+	if until := bootAt.Add(autoBootCooldown).Sub(now); until > d {
+		d = until
+	}
+	if d > interval {
+		d = interval
+	}
+	return d
 }
 
 // scheduledRun 决定「定时循环到点时：跑不跑 / 跑的话动不动手」。
@@ -227,15 +351,18 @@ func (s *Server) nextInterval() time.Duration {
 	return time.Duration(h) * time.Hour
 }
 
-// runAutoCycle 跑一整轮：巡检 → 决策 → （可选）执行。
+// runAutoCycle 跑一整轮：巡检 → 决策 → （可选）执行，并把这一轮的汇总返回。
 //
 // execute 为 false 时只巡检并更新候选，绝不动任何容器 —— 这就是
 // 「总开关关掉时它只是看着，永远不会擅自动手」的落点。
-func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool) {
+//
+// 返回值是调用方（后台循环）决定「下一轮多久之后跑」的唯一依据；
+// 上一轮还在跑（撞上 autoBusy）时返回 nil，表示这一轮什么都没做。
+func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool) *AutoRunSummary {
 	s.autoMu.Lock()
 	if s.autoBusy {
 		s.autoMu.Unlock()
-		return
+		return nil
 	}
 	s.autoBusy = true
 	s.autoMu.Unlock()
@@ -313,7 +440,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	// ---- 3. 总开关关着，或没有候选 ⇒ 到此为止 ----
 	if !execute || summary.Available == 0 {
 		s.finishCycle(summary, started, "仅巡检，未改动任何容器")
-		return
+		return summary
 	}
 
 	// ---- 4. 执行 ----
@@ -356,6 +483,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	s.mergeCheckResults(cacheRows)
 
 	s.finishCycle(summary, started, "")
+	return summary
 }
 
 func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note string) {

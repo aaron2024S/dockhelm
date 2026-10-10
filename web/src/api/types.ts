@@ -357,7 +357,11 @@ export interface Settings {
   checkOnStart: boolean
 
   // —— 检测 ——
-  /** 周期性自动巡检间隔（小时），0 = 关闭。 */
+  /**
+   * 周期性自动巡检间隔（小时）。取值必为 /api/updates/auto 返回的
+   * intervalChoices 之一，没得「关闭」这个档 —— 0 会被后端收敛回默认值
+   * （周期检测是自动更新的唯一触发源，停摆等于自动更新永久失效）。
+   */
   checkIntervalHours: number
   /** 巡检发现新版本时推一条通知。 */
   notifyOnCheck: boolean

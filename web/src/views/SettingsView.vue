@@ -33,9 +33,9 @@ const settings = ref<Settings>({
   exclude: [],
   panelURL: '',
   concurrency: 2,
-  logRetention: 500,
+  logRetention: 100,
   checkOnStart: true,
-  checkIntervalHours: 6,
+  checkIntervalHours: 1,
   notifyOnCheck: false,
   autoApply: false,
   pullOnce: true,
@@ -132,6 +132,21 @@ async function loadAuto() {
 const checkIntervalSub = computed(() => {
   const base = `每 ${settings.value.checkIntervalHours} 小时自动扫描一次镜像仓库`
   return auto.value?.nextCheckAt ? `${base} · 下次巡检 ${formatDateTime(auto.value.nextCheckAt)}` : base
+})
+
+/**
+ * 检测频率的下拉档位。
+ *
+ * 以后端返回的 intervalChoices 为唯一真相 —— 后端校验用的就是这一份
+ * （server.go 的 checkIntervalChoices）。以前这里手抄了一份选项，
+ * 加档位时两边都得改，漏一边就会出现「选了后端不认、被悄悄收敛掉」的档。
+ *
+ * 接口取不到时退化成「只显示当前值」：绝不能出现下拉里没有当前值、
+ * 用户一打开页面就把档位改掉的情况。
+ */
+const intervalOptions = computed<number[]>(() => {
+  const list = auto.value?.intervalChoices
+  return list && list.length ? list : [settings.value.checkIntervalHours]
 })
 
 /** 本页可编辑字段的中文对照 —— 保存成功时用来告诉用户到底改了哪几项。 */
@@ -294,11 +309,7 @@ onMounted(() => void load())
           <div class="flex flex-col gap-2.5">
             <SettingRow title="检测频率" :sub="checkIntervalSub">
               <select v-model.number="settings.checkIntervalHours" class="dh-select !w-[120px] !py-[5px] !text-[11.5px]">
-                <option :value="1">每 1 小时</option>
-                <option :value="3">每 3 小时</option>
-                <option :value="6">每 6 小时</option>
-                <option :value="12">每 12 小时</option>
-                <option :value="24">每 24 小时</option>
+                <option v-for="h in intervalOptions" :key="h" :value="h">每 {{ h }} 小时</option>
               </select>
             </SettingRow>
             <SettingRow title="检测完成后通知" sub="巡检发现问题时推一条通知到已配置的渠道">
@@ -320,7 +331,7 @@ onMounted(() => void load())
               title="检测到新版本后自动更新"
               :sub="
                 settings.autoApply
-                  ? '每轮巡检结束后，把有更新的容器（排除列表与自己除外）自动重建到新镜像'
+                  ? '每轮巡检结束后，把有更新的容器（排除列表与自己除外）自动重建到新镜像；重启后的第一轮排在启动 15 分钟后，不必等满一个检测周期'
                   : '当前只检测、不动手 —— 发现更新后去容器页手动更新'
               "
             >
