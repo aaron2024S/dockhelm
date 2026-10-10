@@ -141,6 +141,17 @@ const nextRun = computed(() => {
 // 之前 slice(0, 8) 只显示 8 条，与卡片头「最近 15 条」对不上（2026-10-10 用户抓到）。
 const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 15))
 
+/**
+ * 总览行要不要显示对象列（ref 里存的是容器/计划任务/快照名）。
+ * 此前只显示 message，更新类记录就只剩一串镜像 ID，看不出更新的是哪个容器。
+ * auto_check 的 ref 是 schedule|manual（徽标已表达）、image 的 ref 是镜像 ID、
+ * 批量操作的 ref 是 batch/-，这几类显示出来没有信息量，跳过。
+ */
+const REF_KINDS = new Set(['update', 'container', 'backup', 'restore', 'schedule'])
+function refShown(l: RunLog): boolean {
+  return REF_KINDS.has(l.kind) && !!l.ref && l.ref !== '-' && l.ref !== 'batch'
+}
+
 /** 图标：取名字首字母。 */
 function initial(name: string) {
   return (name[0] ?? '?').toUpperCase()
@@ -421,6 +432,11 @@ onUnmounted(() => {
         <div v-for="l in recentRows" :key="l.id" class="dh-tl">
           <div class="w-[86px] flex-none text-[11.5px] text-text-5">{{ logTime(l.ts) }}</div>
           <span class="dh-badge flex-none" :class="kindClass(l.kind, l.status)">{{ runKindLabel(l.kind) }}</span>
+          <span
+            v-if="refShown(l)"
+            class="max-w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3"
+            :title="l.ref"
+          >{{ l.ref }}</span>
           <span class="min-w-0 flex-1 truncate text-[12.5px] text-text-2" :title="l.message">
             {{ l.message }}
           </span>
