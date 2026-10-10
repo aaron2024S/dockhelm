@@ -96,6 +96,8 @@ const counts = ref<Record<CountKey, number>>({
   schedules: 0,
   snapshots: 0,
 })
+/** 有可用更新的容器数（来自 /api/overview 的 updates.available），驱动顶栏「有更新」徽标。 */
+const updatesAvailable = ref(0)
 
 watch(collapsed, (v) => localStorage.setItem('dockhelm.side', v ? 'collapsed' : 'open'))
 
@@ -161,6 +163,7 @@ async function loadCounts() {
     counts.value.images = ov.value.images.total
     hostName.value = ov.value.docker?.name ?? ''
     app.dockerOnline = !ov.value.dockerError
+    updatesAvailable.value = ov.value.updates?.available ?? 0
   }
   if (sch.status === 'fulfilled') counts.value.schedules = (sch.value.schedules ?? []).length
   if (bk.status === 'fulfilled') counts.value.snapshots = bk.value.snapshots ?? 0
@@ -301,13 +304,26 @@ async function quickCheck() {
         <!-- 全站唯一的手动检测入口：只检查有没有新版本，绝不会更新容器 -->
         <button
           type="button"
-          class="dh-topbtn"
-          title="检查有没有新版本（只读，不会更新任何容器）"
+          class="dh-topbtn relative"
+          :title="
+            updatesAvailable
+              ? `有 ${updatesAvailable} 个容器有可用更新 · 点击重新检测（只读，不会更新任何容器）`
+              : '检查有没有新版本（只读，不会更新任何容器）'
+          "
           :disabled="checking"
           @click="quickCheck"
         >
           <RefreshCw class="h-[14px] w-[14px] flex-none" :class="checking ? 'dh-spin' : ''" />
           <span class="max-md:hidden">检查更新</span>
+          <!-- 有更新提示，两处渲染同一份数据：桌面 = 文字后的琥珀计数；手机 = 图标角上的数字泡 -->
+          <span
+            v-if="updatesAvailable > 0"
+            class="max-md:hidden flex-none rounded-[6px] bg-soft-warn px-1.5 text-[11px] leading-[18px] text-warn-text"
+          >{{ updatesAvailable }}</span>
+          <span
+            v-if="updatesAvailable > 0"
+            class="md:hidden absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warn px-1 text-[10px] leading-none text-white"
+          >{{ updatesAvailable > 99 ? '99+' : updatesAvailable }}</span>
         </button>
 
         <button type="button" class="dh-topbtn" title="退出登录" @click="doLogout">
