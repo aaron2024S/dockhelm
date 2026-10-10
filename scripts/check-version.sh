@@ -71,6 +71,29 @@ if [ "$V_GO" != "$V_PKG" ] || [ "$V_GO" != "$V_TS" ]; then
   exit 1
 fi
 
+# ---- 部署文档里的固定版本 tag 也必须等于当前版本 ----
+# 下面这些位置写的是「用户会照抄的镜像引用」：README 的 tag 表格、docker-compose.yml
+# 的 image 行、workflow 的注释示例。它们不会跟着发版自己走 ⇒ 用户照文档拉一个早被
+# 清理掉的旧 tag 就直接起不来（0.3.2 的漂移就是这么来的：0.4.0~0.4.2 三次发版都没改
+# 这几行，而 0.3.2 的镜像正在被清理）。
+DOC_PIN_FILES="docker-compose.yml README.md .github/workflows/docker.yml"
+DOC_DRIFT=""
+for f in $DOC_PIN_FILES; do
+  [ -f "$f" ] || continue
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    [ "$v" = "$V_GO" ] || DOC_DRIFT="${DOC_DRIFT}    $f → dockhelm:$v"$'\n'
+  done < <(grep -oE '/dockhelm:[0-9]+\.[0-9]+\.[0-9]+' "$f" 2>/dev/null | sed 's#.*:##' | sort -u || true)
+done
+if [ -n "$DOC_DRIFT" ]; then
+  echo
+  echo "✗ 部署文档里的固定版本 tag 与当前版本号不一致（用户照抄会拉到一个不存在的 tag）：" >&2
+  printf '%s' "$DOC_DRIFT" >&2
+  echo "    当前版本 = $V_GO，请把上面几处都改成 $V_GO" >&2
+  exit 1
+fi
+echo "部署文档固定版本 tag : $V_GO ✓"
+
 # ---- CI 上额外校验 tag（tag 是 vX.Y.Z，版本号是 X.Y.Z）----
 if [ -n "$EXPECT_TAG" ]; then
   TAG_VER="${EXPECT_TAG#v}"

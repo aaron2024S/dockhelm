@@ -1,7 +1,7 @@
 name: docker
 
 # 只在「真的要发一版」的时候跑：
-#   - 打 tag：git push origin v0.3.2
+#   - 打 tag：git push origin v0.4.2
 #   - 或在 Actions 页面手动 Run workflow
 # 推 main 不再触发任何构建 —— 日常代码提交不会碰 Docker Hub 上的任何 tag。
 on:
@@ -60,7 +60,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           # 每个正式发版都推两个 tag：版本号 + latest
-          #   - <用户名>/dockhelm:0.3.2   ← 固定版本，部署时建议用这个
+          #   - <用户名>/dockhelm:0.4.2   ← 固定版本，部署时建议用这个
           #   - <用户名>/dockhelm:latest  ← 总是指向最近一次发版，图省事的人用它
           # 注意：手动 Run workflow 也会移动 latest，所以别拿这个 job 做试探性构建。
           tags: |
