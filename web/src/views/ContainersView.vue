@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   Box,
@@ -12,7 +12,7 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
-import type { ContainerView } from '@/api/types'
+import type { BusEvent, ContainerView } from '@/api/types'
 import { containerStateLabel, relativeTime, shortImage } from '@/utils/format'
 import { useAppStore } from '@/stores/app'
 import { useToastStore } from '@/stores/toast'
@@ -37,6 +37,200 @@ const selected = ref<Set<string>>(new Set())
 const bulkBusy = ref(false)
 /** 提交更新任务中 —— 防连点（连点两次会发出两次批量更新请求）。 */
 const applying = ref(false)
+
+/**
+ * 卡片上的更新进度（按容器名索引）。
+ *
+ * 后端 updater 每走一步都会经 SSE 推一条 update 事件（step / pull_progress /
+ * container_status），前端把它们收敛成卡片上的一条进度条。百分比是**前端按里程碑
+ * 映射**出来的：step 事件只带文字，拉取阶段则用 Docker 报的 "1.2MB/3.4MB" 算真实
+ * 比例。整体只增不减，避免逐层下载时来回跳。
+ */
+interface UpdateProgress {
+  /** 当前步骤文案。 */
+  message: string
+  /** 0–100，只增不减。 */
+  percent: number
+  /** 终态：成功 / 失败 / 跳过；空串表示仍在进行中。 */
+  done: 'updated' | 'failed' | 'skipped' | ''
+}
+
+const updateProgress = reactive<Record<string, UpdateProgress>>({})
+/** 终态展示多久后收回进度条（让卡片回到常态）。 */
+const PROGRESS_LINGER_MS = 2500
+
+/** 里程碑关键字 → 百分比。命中取最大值；一条都没命中就小步前进。 */
+const STEP_MILESTONES: Array<[string, number]> = [
+  ['开始处理', 5],
+  ['拉取', 10],
+  ['复用', 55],
+  ['拉取完成', 55],
+  ['重建', 62],
+  ['快照', 64],
+  ['已停止', 72],
+  ['无需停止', 72],
+  ['改名', 76],
+  ['新容器已创建', 86],
+  ['已启动', 90],
+  ['健康检查通过', 96],
+  ['清理', 98],
+]
+
+/** 从 Docker 的 "1.2MB/3.4MB" 里取（已下载字节, 总字节）；取不到返回 (0, 0)。 */
+function parsePullBytes(s: string): [number, number] {
+  const m = /([\d.]+)\s*([KMGTP]?i?B)\s*\/\s*([\d.]+)\s*([KMGTP]?i?B)/i.exec(s)
+  if (!m) return [0, 0]
+  const scale = (u: string) => {
+    switch (u.toUpperCase().charAt(0)) {
+      case 'T':
+        return 1e12
+      case 'G':
+        return 1e9
+      case 'M':
+        return 1e6
+      case 'K':
+        return 1e3
+      default:
+        return 1
+    }
+  }
+  const cur = Number(m[1]) * scale(m[2] ?? '')
+  const total = Number(m[3]) * scale(m[4] ?? '')
+  return [cur, total]
+}
+
+/** 把一条 update 事件折算进对应容器的进度。 */
+function applyUpdateEvent(ev: BusEvent) {
+  const name = typeof ev.data?.container === 'string' ? ev.data.container : ''
+  if (!name) return
+  const p = (updateProgress[name] ??= { message: '', percent: 0, done: '' })
+
+  switch (ev.kind) {
+    case 'step': {
+      const msg = String(ev.data?.message ?? '')
+      if (msg) p.message = msg
+      let hit = 0
+      for (const [kw, pct] of STEP_MILESTONES) {
+        if (msg.includes(kw)) hit = Math.max(hit, pct)
+      }
+      // 命不中里程碑时小步走，但绝不越过 96 —— 剩下的交给终态事件。
+      p.percent = hit > 0 ? Math.max(p.percent, hit) : Math.min(96, p.percent + 2)
+      break
+    }
+    case 'pull_progress': {
+      // 拉取阶段映射到 10–55% 区间，用 Docker 报的字节数算真实比例。
+      const [cur, total] = parsePullBytes(String(ev.data?.progress ?? ''))
+      if (total > 0) {
+        p.percent = Math.max(p.percent, Math.min(55, 10 + Math.round((cur / total) * 45)))
+      }
+      const st = String(ev.data?.status ?? '')
+      if (st) p.message = `拉取镜像：${st}`
+      break
+    }
+    case 'container_status': {
+      const st = String(ev.data?.status ?? '')
+      const msg = String(ev.data?.message ?? '')
+      if (msg) p.message = msg
+      if (st === 'pulling') {
+        p.percent = Math.max(p.percent, 10)
+      } else if (st === 'updated') {
+        p.done = 'updated'
+        p.percent = 100
+        scheduleClear(name)
+      } else if (st === 'failed') {
+        p.done = 'failed'
+        p.percent = Math.max(p.percent, 1)
+        scheduleClear(name)
+      } else if (st === 'up_to_date' || st === 'skipped') {
+        p.done = 'skipped'
+        p.percent = 100
+        scheduleClear(name)
+      }
+      break
+    }
+    case 'batch_done': {
+      // 整批结束：进度条统一收回（列表由 SSE 回调里的 load 重拉）。
+      for (const k of Object.keys(updateProgress)) delete updateProgress[k]
+      break
+    }
+  }
+}
+
+function scheduleClear(name: string) {
+  const snapshot = updateProgress[name]
+  window.setTimeout(() => {
+    // 期间又开了一轮（对象被替换）就别动它。
+    if (updateProgress[name] === snapshot) delete updateProgress[name]
+  }, PROGRESS_LINGER_MS)
+}
+
+// —— 模板用的只读取值器（noUncheckedIndexedAccess 下模板里直接索引会推断成可能 undefined）——
+function isUpdating(name: string): boolean {
+  return updateProgress[name] !== undefined
+}
+function pctOf(name: string): number {
+  return updateProgress[name]?.percent ?? 0
+}
+function msgOf(name: string): string {
+  return updateProgress[name]?.message ?? ''
+}
+function doneOf(name: string): UpdateProgress['done'] {
+  return updateProgress[name]?.done ?? ''
+}
+function stateText(name: string): string {
+  switch (doneOf(name)) {
+    case 'updated':
+      return '更新完成'
+    case 'failed':
+      return '更新失败'
+    case 'skipped':
+      return '已跳过'
+    default:
+      return '更新中'
+  }
+}
+function barFillClass(name: string): string {
+  switch (doneOf(name)) {
+    case 'updated':
+      return 'bg-run/15'
+    case 'failed':
+      return 'bg-err/15'
+    default:
+      return 'bg-accent/12'
+  }
+}
+function barEdgeClass(name: string): string {
+  switch (doneOf(name)) {
+    case 'updated':
+      return 'bg-run/70'
+    case 'failed':
+      return 'bg-err'
+    default:
+      return 'bg-accent'
+  }
+}
+function progressTextClass(name: string): string {
+  switch (doneOf(name)) {
+    case 'updated':
+      return 'text-run-text'
+    case 'failed':
+      return 'text-err-text'
+    case 'skipped':
+      return 'text-text-3'
+    default:
+      return 'text-accent-text'
+  }
+}
+function progressBorderClass(name: string): string {
+  switch (doneOf(name)) {
+    case 'updated':
+      return 'border-line-ok bg-run/8'
+    case 'failed':
+      return 'border-line-err bg-err/8'
+    default:
+      return 'border-line-accent-soft bg-accent/6'
+  }
+}
 
 const filtered = computed(() => {
   let list = containers.value
@@ -255,8 +449,12 @@ onMounted(() => {
   void load()
   // 更新批次或容器状态变化时自动刷新
   inner = openStream('/api/events/stream', (topic, ev) => {
-    if (topic === 'update' && (ev.kind === 'batch_done' || ev.kind === 'container_status')) {
-      void load(true)
+    if (topic === 'update') {
+      // 先把事件折算进卡片进度条，再决定要不要重拉列表。
+      applyUpdateEvent(ev)
+      if (ev.kind === 'batch_done' || ev.kind === 'container_status') {
+        void load(true)
+      }
     }
     if (topic === 'container' && ev.kind === 'action') {
       void load(true)
@@ -359,12 +557,23 @@ function closeMenu() {
       <div
         v-for="c in filtered"
         :key="c.id"
-        class="flex flex-col gap-2.5 rounded-[14px] border bg-ink-700 p-3 transition-colors"
+        class="relative isolate flex flex-col gap-2.5 overflow-hidden rounded-[14px] border bg-ink-700 p-3 transition-colors"
         :class="[
           c.hasUpdate ? 'border-line-warn' : 'border-line-1 hover:border-line-4',
           selected.has(c.name) ? '!border-accent-line bg-accent-soft' : '',
         ]"
       >
+        <!-- 更新中：卡片背景进度条（宽度=进度百分比，成功/失败换色）。
+             -z-10 + 父级 isolate ⇒ 压在卡片底色之上、文字之下。 -->
+        <div
+          v-if="isUpdating(c.name)"
+          class="pointer-events-none absolute inset-y-0 left-0 -z-10 transition-[width] duration-500 ease-out"
+          :class="barFillClass(c.name)"
+          :style="{ width: pctOf(c.name) + '%' }"
+        >
+          <div class="absolute inset-y-0 right-0 w-[2px]" :class="barEdgeClass(c.name)" />
+        </div>
+
         <div class="flex items-start gap-2.5">
           <label class="mt-[3px] flex-none cursor-pointer">
             <input
@@ -442,11 +651,28 @@ function closeMenu() {
              超过 3 条收成 +N，鼠标悬停看全部 —— 卡片本身不该被端口撑变形。 -->
         <PortChips :ports="c.portList ?? []" :max="3" />
 
+        <!-- 更新中：当前步骤 + 百分比 -->
+        <div
+          v-if="isUpdating(c.name)"
+          class="flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[11.5px]"
+          :class="[progressBorderClass(c.name), progressTextClass(c.name)]"
+        >
+          <RefreshCw
+            class="h-3 w-3 flex-none"
+            :class="doneOf(c.name) === '' ? 'dh-spin' : ''"
+          />
+          <span class="min-w-0 flex-1 truncate" :title="msgOf(c.name)">
+            {{ stateText(c.name)
+            }}<template v-if="msgOf(c.name)"> · {{ msgOf(c.name) }}</template>
+          </span>
+          <span class="flex-none font-medium tabular-nums">{{ pctOf(c.name) }}%</span>
+        </div>
+
         <div class="mt-auto flex gap-1.5 border-t border-line-2 pt-2.5">
           <button
             v-if="c.state === 'running'"
             class="dh-btn dh-btn-sm flex-1"
-            :disabled="busyName === c.name"
+            :disabled="busyName === c.name || isUpdating(c.name)"
             @click="act(c, 'stop')"
           >
             <Square class="h-3 w-3" />停止
@@ -454,14 +680,14 @@ function closeMenu() {
           <button
             v-else
             class="dh-btn dh-btn-sm flex-1"
-            :disabled="busyName === c.name"
+            :disabled="busyName === c.name || isUpdating(c.name)"
             @click="act(c, 'start')"
           >
             <Play class="h-3 w-3" />启动
           </button>
           <button
             class="dh-btn dh-btn-sm flex-1"
-            :disabled="busyName === c.name || c.self"
+            :disabled="busyName === c.name || c.self || isUpdating(c.name)"
             @click="act(c, 'restart')"
           >
             <RotateCw class="h-3 w-3" :class="busyName === c.name ? 'dh-spin' : ''" />重启
