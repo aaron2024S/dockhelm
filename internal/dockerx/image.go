@@ -275,17 +275,30 @@ func (c *Client) Pull(ctx context.Context, ref string, onEvent func(PullEvent)) 
 
 // ---------- 远端检测（同源） ----------
 
-// DistributionInspect 询问守护进程「这个镜像在它对应的仓库里是什么」。
+// DistributionInspect 询问守护进程「这个引用在它对应的仓库里是什么」。
 //
 // 与 dockerCopilot 的「自拼 registry HTTP 请求 + 硬编码加速站表」不同：
 // 这个接口由守护进程自己解析仓库端点，因此与 docker pull 走的是同一套配置。
 // 如果注册表需要认证（401）或接口不可用，返回错误 —— 调用方必须把该容器标成
 // 「未知」而不是「有新版本」，这条规则是从 dockerCopilot 的误报里学到的。
+//
+// 🚨 name 必须是「完整引用」（仓库 + tag 或 digest），不能只给仓库名：
+// /distribution/{name}/json 里的 name 就是一条镜像引用，**不带 tag 等于 :latest**。
+// 2026-10-10 真机事故：这里曾经只传仓库名，于是 redis:alpine 拿着 alpine 的本地摘要
+// 去跟 redis:latest 的远端摘要比 —— 永远「有更新」，点更新又永远「镜像未变化」
+// （lucky:v2、rsshub:chromium-bundled 同理）。只有 tag 恰好是 latest 的容器歪打正着。
+// 回归线：internal/dockerx/image_test.go 里的假守护进程按 tag 返回不同摘要。
 func (c *Client) DistributionInspect(ctx context.Context, ref string) (digest string, err error) {
 	r := ParseRef(ref)
 	name := r.LocalName
 	if r.Registry != "docker.io" {
 		name = r.Registry + "/" + r.Repository
+	}
+	switch {
+	case r.Digest != "":
+		name += "@" + r.Digest
+	case r.Tag != "":
+		name += ":" + r.Tag
 	}
 	var out struct {
 		Descriptor struct {
