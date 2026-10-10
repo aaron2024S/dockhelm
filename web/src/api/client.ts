@@ -70,11 +70,6 @@ export async function request<T>(path: string, opts: Options = {}): Promise<T> {
     throw new ApiError('网络请求失败：' + (e instanceof Error ? e.message : String(e)), 0)
   }
 
-  if (res.status === 401) {
-    onUnauthorized?.()
-    throw new UnauthorizedError()
-  }
-
   const text = await res.text()
   let data: unknown = null
   if (text) {
@@ -83,6 +78,23 @@ export async function request<T>(path: string, opts: Options = {}): Promise<T> {
     } catch {
       data = text
     }
+  }
+
+  if (res.status === 401) {
+    const obj = (data ?? {}) as Record<string, unknown>
+    // 登录接口的密码错误也走 401，但带 error / code（bad_password）——那是业务
+    // 错误：文案要用后端给的（「密码错误」）、剩余次数在 payload 里，且不能触发
+    // 全局登出回调。全局会话过期的 401 不带 code（writeErr 恒传空串）。
+    if (typeof obj.code === 'string' && obj.code !== '') {
+      throw new ApiError(
+        typeof obj.error === 'string' ? obj.error : `请求失败（HTTP ${res.status}）`,
+        res.status,
+        obj.code,
+        data,
+      )
+    }
+    onUnauthorized?.()
+    throw new UnauthorizedError()
   }
 
   if (!res.ok) {
