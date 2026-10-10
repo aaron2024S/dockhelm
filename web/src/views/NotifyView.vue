@@ -127,6 +127,15 @@ function needField(key: string) {
   return p?.fields.find((f) => f.key === key)?.required && !String(v ?? '').trim()
 }
 
+/**
+ * 渠道写接口只收这四个字段 —— id 走 URL 路径、createdAt 由后端生成。
+ * 后端 decodeBody 开了 DisallowUnknownFields（键名写错必须报错，不能悄悄忽略），
+ * 把整个编辑对象（含 id/createdAt）直接发过去会被拒：json: unknown field "id"。
+ */
+function channelPayload(ch: Channel) {
+  return { name: ch.name, type: ch.type, enabled: ch.enabled, config: ch.config ?? {} }
+}
+
 async function saveChannel() {
   const ch = editingChannel.value
   if (!ch) return
@@ -136,10 +145,10 @@ async function saveChannel() {
   }
   try {
     if (ch.id) {
-      await api.put(`/api/notify/channels/${ch.id}`, ch)
+      await api.put(`/api/notify/channels/${ch.id}`, channelPayload(ch))
       toast.success('渠道已更新')
     } else {
-      await api.post('/api/notify/channels', ch)
+      await api.post('/api/notify/channels', channelPayload(ch))
       toast.success('渠道已创建')
     }
     showEditor.value = false
@@ -154,7 +163,7 @@ async function toggleChannel(c: Channel, v: boolean) {
   const prev = c.enabled
   c.enabled = v
   try {
-    await api.put(`/api/notify/channels/${c.id}`, c)
+    await api.put(`/api/notify/channels/${c.id}`, channelPayload(c))
   } catch (e) {
     c.enabled = prev
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
