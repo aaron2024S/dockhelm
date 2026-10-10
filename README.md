@@ -105,7 +105,7 @@ docker compose up -d
 
 | tag | 含义 |
 |---|---|
-| `aaron2024s/dockhelm:0.4.3` | 固定版本。**推荐**，升级由你决定，行为可复现 |
+| `aaron2024s/dockhelm:0.4.4` | 固定版本。**推荐**，升级由你决定，行为可复现 |
 | `aaron2024s/dockhelm:latest` | 总是指向最近一次正式发版。图省事用它，代价是每次 `docker compose pull` 都可能变版本 |
 
 ### 方式二：自己构建
@@ -377,7 +377,7 @@ npm run build
 发新版本：改 `internal/version/version.go` 里的 `Version`，提交并打 tag，CI 就会构建 amd64 + arm64 并推送**两个** tag（`:<版本>` 与 `:latest`，latest 总是指向最近一次发版）：
 
 ```bash
-git tag v0.4.3 && git push origin v0.4.3
+git tag v0.4.4 && git push origin v0.4.4
 ```
 
 推 `main` 不会触发任何 CI —— 只有打 tag 或在 Actions 页面手动 Run workflow 才会构建并推送。手动 Run workflow 同样会移动 `latest`，所以别拿它做试探性构建。
