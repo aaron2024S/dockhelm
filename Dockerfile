@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
 
 # ─────────────────────────────────────────────────────────────
-# 1) 前端构建
+# 关于 --platform=$BUILDPLATFORM（两段构建都钉在构建机上）：
+# 不加这一句时，多架构构建会把「前端安装+打包」「Go 编译」在 QEMU 模拟下
+# 对 arm64 再完完整整跑一遍 —— 一次发版 5 分半钟基本都耗在这上面，而且
+# 日志长时间不动，看起来像卡死。钉到构建机后改成交叉编译：产物一样，
+# 但少了整轮模拟执行，只有最后那段 apk 装证书还在模拟里跑（几秒钟）。
 # ─────────────────────────────────────────────────────────────
-FROM node:22-alpine AS web
+
+# ─────────────────────────────────────────────────────────────
+# 1) 前端构建（产物与架构无关，只构建一次、两个平台共用）
+# ─────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/web
 
 # 先只拷贝清单，让依赖层可以被缓存
@@ -17,8 +25,13 @@ RUN npm run build
 # ─────────────────────────────────────────────────────────────
 # 2) 后端构建（CGO 关掉，才能静态链接、才能交叉编译 arm64）
 # ─────────────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
 WORKDIR /src
+
+# BuildKit 会按目标平台自动注入这两个参数（amd64/arm64 各一次）。
+# 必须在这里重新 ARG 声明一次，否则 FROM 之后拿不到。
+ARG TARGETOS
+ARG TARGETARCH
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -31,7 +44,9 @@ COPY . .
 # 用真实的前端产物覆盖仓库里的那一份
 COPY --from=web /src/web/dist ./web/dist
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+# CGO 关掉 + 显式指定 GOARCH ⇒ 在构建机上直接交叉编译出目标架构的二进制，
+# 不需要为 arm64 起模拟器。这就是上面钉 $BUILDPLATFORM 换来的收益。
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags "-s -w \
         -X github.com/aaron2024s/dockhelm/internal/version.Version=${VERSION} \

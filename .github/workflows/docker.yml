@@ -16,6 +16,9 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # 正常情况下整个作业一两分钟就完了（见 Dockerfile 里钉 $BUILDPLATFORM 的说明）。
+    # 给个上限是为了让「真的卡住」变成一次快速失败，而不是让人对着转圈猜半小时。
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
