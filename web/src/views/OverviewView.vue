@@ -137,7 +137,9 @@ const nextRun = computed(() => {
   return times.length ? times[0] : 0
 })
 
-const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 8))
+// 后端 /api/overview 固定回传 15 条（ListRunLogs(15)），这里原样全展示 ——
+// 之前 slice(0, 8) 只显示 8 条，与卡片头「最近 15 条」对不上（2026-10-10 用户抓到）。
+const recentRows = computed(() => (data.value?.recent ?? []).slice(0, 15))
 
 /** 图标：取名字首字母。 */
 function initial(name: string) {
@@ -412,7 +414,7 @@ onUnmounted(() => {
     <div class="dh-card">
       <div class="dh-card-head">
         <span>最近执行记录</span>
-        <span class="ml-auto text-[12px] font-normal text-text-4">最近 15 条</span>
+        <span class="ml-auto text-[12px] font-normal text-text-4">最近 {{ recentRows.length }} 条</span>
       </div>
       <div v-if="!recentRows.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
       <div v-else class="dh-card-body flex flex-col py-1">
