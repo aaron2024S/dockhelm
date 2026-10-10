@@ -17,8 +17,8 @@ const (
 	// Tagline 一句话介绍。
 	Tagline = "看得清、控得准的 Docker 容器管理面板"
 	// Description 详细介绍（关于页展示）。
-	Description = "Dockhelm 是一个自托管的 Docker 容器管理面板：容器与镜像管理、同源更新的更新中心、" +
-		"定时启停计划任务、可自由配置的镜像加速源、配置快照备份与还原、以及多渠道事件通知。" +
+	Description = "Dockhelm 是一个自托管的 Docker 容器管理面板：容器与镜像管理、同源比对的镜像更新检测与自动更新、" +
+		"定时启停计划任务、可自由配置的镜像加速源、容器配置快照与 compose 项目文件备份还原、以及多渠道事件通知。" +
 		"它由 Docker 守护进程本身来解析镜像仓库，因此「检测到的更新」与「实际拉取的镜像」永远是同一个来源。"
 	// Author 作者。
 	Author = "aaron2024S"
@@ -33,7 +33,7 @@ const (
 // Version 语义化版本号。发新版时改这里。
 // 声明为 var 而不是 const，是为了让构建时可以用
 // `-ldflags "-X .../internal/version.Version=x.y.z"` 注入。
-var Version = "0.3.2"
+var Version = "0.4.0"
 
 // BuildInfo 由 ldflags 注入（见 Dockerfile / 构建脚本），默认值用于本地 `go run`。
 var (

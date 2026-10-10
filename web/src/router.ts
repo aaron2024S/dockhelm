@@ -31,12 +31,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '容器详情', hidden: true },
   },
   {
-    path: '/updates',
-    name: 'updates',
-    component: () => import('@/views/UpdatesView.vue'),
-    meta: { title: '更新中心', icon: 'download' },
-  },
-  {
     path: '/images',
     name: 'images',
     component: () => import('@/views/ImagesView.vue'),

@@ -103,9 +103,10 @@ func (s *Server) hGetAutoUpdate(w http.ResponseWriter, r *http.Request) {
 
 // hRunAutoUpdate 手动立即跑一轮自动更新。dryRun 为真时只巡检不执行。
 //
-// 全站唯一会真正动容器的手动入口（对应更新中心那颗「立即执行自动更新」）。
-// 页头只读的「重新检测」与容器页「检测更新」都已删除，检测一律走顶栏的只读接口。
-// 这里保留 dryRun：它是「完整跑一轮决策、但一个容器都不动」的唯一入口，
+// 全站唯一会真正动容器的手动入口。界面上不再有「立即执行自动更新」按钮（页面已删）——
+// 手动更新走容器页的「更新 N 个容器」，按周期自己跑的那轮由这里承载。
+// 检测一律走顶栏的只读接口（POST /api/updates/check）。
+// 保留 dryRun：它是「完整跑一轮决策、但一个容器都不动」的唯一入口，
 // 验证与排障都要用，去掉它等于把安全语义也删了。
 func (s *Server) hRunAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	var in struct {

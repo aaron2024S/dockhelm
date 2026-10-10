@@ -1,9 +1,13 @@
 package api
 
 import (
+	"archive/zip"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/aaron2024s/dockhelm/internal/backup"
@@ -27,8 +31,6 @@ func (s *Server) hBackupStats(w http.ResponseWriter, r *http.Request) {
 type snapshotReq struct {
 	Container string `json:"container"`
 	Reason    string `json:"reason"`
-	// WithVolumes 连 named volume 的数据一起打包。
-	WithVolumes bool `json:"withVolumes"`
 }
 
 func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -43,10 +45,7 @@ func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "manual"
 	}
-	item, err := s.bk.SnapshotWith(ctx, in.Container, backup.SnapshotOptions{
-		Reason:      reason,
-		WithVolumes: in.WithVolumes,
-	})
+	item, err := s.bk.SnapshotWith(ctx, in.Container, backup.SnapshotOptions{Reason: reason})
 	if err != nil {
 		s.nt.Emit("backup_failed", map[string]string{
 			"container": in.Container, "result": "备份失败", "message": err.Error(),
@@ -55,6 +54,52 @@ func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, item)
+}
+
+type snapshotAllReq struct {
+	// Containers 留空 = 备份全部容器。
+	Containers []string `json:"containers"`
+	Reason     string   `json:"reason"`
+}
+
+// hSnapshotAll 「立即备份全部容器」：一次动作 = 一批共用同一个时间戳的快照，
+// 列表里聚合成一行。单个容器失败不中断整批。
+func (s *Server) hSnapshotAll(w http.ResponseWriter, r *http.Request) {
+	in := snapshotAllReq{}
+	_ = decodeBody(r, &in)
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+
+	names := in.Containers
+	if len(names) == 0 {
+		list, err := s.dc.ListContainers(ctx)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "读取容器列表失败："+err.Error())
+			return
+		}
+		for _, c := range list {
+			names = append(names, c.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		writeErr(w, http.StatusBadRequest, "没有可备份的容器")
+		return
+	}
+	reason := in.Reason
+	if reason == "" {
+		reason = "manual"
+	}
+	res := s.bk.SnapshotMany(ctx, names, reason)
+	if len(res.Items) == 0 {
+		msg := "全部备份失败"
+		if len(res.Failed) > 0 {
+			msg = "备份失败：" + res.Failed[0].Error
+		}
+		writeErr(w, http.StatusBadGateway, msg)
+		return
+	}
+	writeOK(w, res)
 }
 
 type importBackupReq struct {
@@ -92,9 +137,82 @@ func (s *Server) hBackupDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// 卷数据的情况一并带上：前端要据此决定「含卷数据」这个勾选框给不给
-	vol := s.bk.LoadVolumes(container, ts)
-	writeOK(w, map[string]any{"diff": diff, "count": len(diff), "volumes": vol})
+	writeOK(w, map[string]any{"diff": diff, "count": len(diff)})
+}
+
+// hExportBackup 把一份快照原样导出成一个 json 文件（可再导入到别的实例）。
+func (s *Server) hExportBackup(w http.ResponseWriter, r *http.Request) {
+	container := r.URL.Query().Get("container")
+	ts := r.URL.Query().Get("ts")
+	if container == "" || ts == "" {
+		writeErr(w, http.StatusBadRequest, "需要提供 container 与 ts")
+		return
+	}
+	items, err := s.bk.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, it := range items {
+		if it.Container != container || it.TS != ts {
+			continue
+		}
+		b, err := os.ReadFile(it.Path)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf("attachment; filename=%q", container+"-"+ts+".json"))
+		_, _ = w.Write(b)
+		return
+	}
+	writeErr(w, http.StatusNotFound, "没有这份快照")
+}
+
+// hExportBatch 把「同一批（同一个时间戳）的全部快照」打包成一个 zip。
+//
+// 整批导出让浏览器下 24 次文件是不礼貌的（会被拦、也难整理），
+// 一次动作 = 一个压缩包，与列表里的「一批」恰好对应。
+func (s *Server) hExportBatch(w http.ResponseWriter, r *http.Request) {
+	ts := r.URL.Query().Get("ts")
+	if ts == "" {
+		writeErr(w, http.StatusBadRequest, "需要提供 ts")
+		return
+	}
+	items, err := s.bk.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	picked := []backup.SnapshotItem{}
+	for _, it := range items {
+		if it.TS == ts {
+			picked = append(picked, it)
+		}
+	}
+	if len(picked) == 0 {
+		writeErr(w, http.StatusNotFound, "没有这一批快照")
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "snapshots-"+ts+".zip"))
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	for _, it := range picked {
+		b, err := os.ReadFile(it.Path)
+		if err != nil {
+			continue
+		}
+		fw, err := zw.Create(fmt.Sprintf("%s-%s.json", it.Container, it.TS))
+		if err != nil {
+			return
+		}
+		if _, err := fw.Write(b); err != nil {
+			return
+		}
+	}
 }
 
 type restoreReq struct {
@@ -102,7 +220,6 @@ type restoreReq struct {
 	TS                  string `json:"ts"`
 	KeepBackupContainer *bool  `json:"keepBackupContainer"`
 	PreSnapshot         *bool  `json:"preSnapshot"`
-	WithVolumes         bool   `json:"withVolumes"`
 }
 
 // hRestore 用快照还原容器配置。高风险动作，前端会被要求二次确认。
@@ -123,7 +240,6 @@ func (s *Server) hRestore(w http.ResponseWriter, r *http.Request) {
 	if in.PreSnapshot != nil {
 		opt.PreSnapshot = *in.PreSnapshot
 	}
-	opt.WithVolumes = in.WithVolumes
 	ctx, cancel := s.ctx(r)
 	defer cancel()
 	res := s.bk.Restore(ctx, in.Container, in.TS, opt)
@@ -191,10 +307,126 @@ func (s *Server) hListProjects(w http.ResponseWriter, r *http.Request) {
 		"projects":     projects,
 		"roots":        s.cfg.HostRoots,
 		"pathMappings": s.cfg.PathMappings(),
-		"note": "compose 文件是项目的唯一事实源。列表里的「看得见 / 看不见」取决于宿主目录有没有" +
-			"挂进 Dockhelm —— 挂进来了（冒号右边随便叫什么，启动时会自动识别）就能读到；" +
-			"没挂进来就只能记录路径，请自行备份那份 yaml。",
+		"note": "compose 文件是项目的唯一事实源。备份 = 把它（含 .env / override）原样存一份副本，" +
+			"可下载、可还原。标「不可见」的文件是因为宿主目录没挂进 Dockhelm —— " +
+			"挂进来了（冒号右边随便叫什么，启动时会自动识别）就能读到并备份。",
 	})
+}
+
+type projectSnapshotReq struct {
+	Project string `json:"project"`
+}
+
+// hProjectSnapshot 备份单个 compose 项目。
+func (s *Server) hProjectSnapshot(w http.ResponseWriter, r *http.Request) {
+	var in projectSnapshotReq
+	if err := decodeBody(r, &in); err != nil || strings.TrimSpace(in.Project) == "" {
+		writeErr(w, http.StatusBadRequest, "需要指定项目名")
+		return
+	}
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+	item, err := s.bk.ProjectSnapshot(ctx, in.Project, "manual")
+	if err != nil {
+		s.nt.Emit("backup_failed", map[string]string{
+			"container": in.Project, "result": "项目备份失败", "message": err.Error(),
+		})
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeOK(w, item)
+}
+
+// hProjectSnapshotAll 备份全部「看得见文件」的项目；看不见的如实列在 failed 里。
+func (s *Server) hProjectSnapshotAll(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+	items, failed := s.bk.ProjectSnapshotAll(ctx)
+	if len(items) == 0 && len(failed) > 0 {
+		writeErr(w, http.StatusBadGateway, "没有可备份的项目："+failed[0].Error)
+		return
+	}
+	writeOK(w, map[string]any{"items": items, "failed": failed, "total": len(items) + len(failed)})
+}
+
+// hProjectBackupDownload 下载一份项目备份：带 file 参数下载单个文件，否则打包成 zip。
+func (s *Server) hProjectBackupDownload(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	project := q.Get("project")
+	ts := q.Get("ts")
+	if project == "" || ts == "" {
+		writeErr(w, http.StatusBadRequest, "需要提供 project 与 ts")
+		return
+	}
+	if name := strings.TrimSpace(q.Get("file")); name != "" {
+		// 只允许下载这份备份清单里的文件 —— 绝不能让 ?file=../../dockhelm.db 读出去
+		files, err := s.bk.ProjectBackupFiles(project, ts)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "没有这份备份")
+			return
+		}
+		for _, f := range files {
+			if f.Name != name {
+				continue
+			}
+			b, err := os.ReadFile(f.Path)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition",
+				fmt.Sprintf("attachment; filename=%q", f.Name))
+			_, _ = w.Write(b)
+			return
+		}
+		writeErr(w, http.StatusNotFound, "这份备份里没有该文件")
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename=%q", project+"-"+ts+".zip"))
+	if err := s.bk.WriteProjectBackupZip(w, project, ts); err != nil {
+		// 响应头已经发出去了，这里只能把错误写进日志
+		log.Printf("下载项目备份失败：%v", err)
+	}
+}
+
+type projectRestoreReq struct {
+	Project     string `json:"project"`
+	TS          string `json:"ts"`
+	PreSnapshot *bool  `json:"preSnapshot"`
+}
+
+// hProjectRestore 把项目备份里的 yaml / .env 写回原始宿主路径。
+func (s *Server) hProjectRestore(w http.ResponseWriter, r *http.Request) {
+	var in projectRestoreReq
+	if err := decodeBody(r, &in); err != nil || in.Project == "" || in.TS == "" {
+		writeErr(w, http.StatusBadRequest, "需要提供 project 与 ts")
+		return
+	}
+	pre := true
+	if in.PreSnapshot != nil {
+		pre = *in.PreSnapshot
+	}
+	ctx, cancel := s.ctx(r)
+	defer cancel()
+	res := s.bk.RestoreProject(ctx, in.Project, in.TS, pre)
+	status := http.StatusOK
+	if !res.OK {
+		status = http.StatusBadGateway
+	}
+	writeJSON(w, status, res)
+}
+
+func (s *Server) hDeleteProjectBackup(w http.ResponseWriter, r *http.Request) {
+	project := pathParam(r, "project")
+	ts := pathParam(r, "ts")
+	if err := s.bk.DeleteProjectBackup(project, ts); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"ok": true})
 }
 
 // hReadProjectFile 预览一个 compose 文件的内容。

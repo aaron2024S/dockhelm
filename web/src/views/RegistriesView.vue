@@ -255,7 +255,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-[1.3fr_1fr]">
+    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
       <!-- 我的加速源列表 -->
       <div class="dh-card">
         <div class="dh-card-head">

@@ -67,10 +67,10 @@ async function copyCommit() {
 const features = [
   { icon: Boxes, title: '容器管理', desc: '启停、重启、重命名、日志、实时资源占用、环境变量与挂载一览' },
   { icon: Layers, title: '镜像管理', desc: '列表、清理未使用镜像、一键删除；显示体积与被引用情况' },
-  { icon: Zap, title: '更新中心', desc: '先拉取再比对镜像 ID，镜像没变就完全不动容器；失败自动回滚' },
+  { icon: Zap, title: '更新检测与自动更新', desc: '先拉取再比对镜像 ID，镜像没变就完全不动容器；按周期自动更新、失败自动回滚；容器页可一键批量更新' },
   { icon: CalendarClock, title: '计划任务', desc: '标准 cron 表达式，定时启停 / 重启 / 更新 / 备份容器' },
   { icon: Rocket, title: '加速源', desc: '显示守护进程真实生效的镜像站、批量测速、生成 daemon.json 片段' },
-  { icon: HardDrive, title: '备份与恢复', desc: '容器配置快照、差异预览、一键还原；compose 文件可读可看' },
+  { icon: HardDrive, title: '备份与恢复', desc: '容器配置快照（含 docker run 创建的容器）、compose 项目文件整包备份与下载、差异预览、一键还原' },
   { icon: ShieldCheck, title: '登录鉴权', desc: '单用户密码 + bcrypt 哈希 + HttpOnly 会话 + 连续失败锁定' },
   { icon: Heart, title: '事件通知', desc: '10 类渠道预设 + 自定义 Webhook，事件订阅、静默时段、防轰炸' },
 ]

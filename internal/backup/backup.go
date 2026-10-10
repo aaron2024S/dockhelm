@@ -46,28 +46,102 @@ type SnapshotItem struct {
 	Image     string `json:"image"`
 	Running   bool   `json:"running"`
 	Created   string `json:"created"`
-	// Reason 快照的由来：manual / pre_update / scheduled。
+	// Reason 快照的由来：manual / pre_update / scheduled / restore-pre。
 	// 「更新前快照永不自动清理」这条保留策略靠它识别。
 	Reason string `json:"reason"`
-	// WithData 这份快照里是否真的打包了卷数据。
-	WithData bool `json:"withData"`
 }
 
 // SnapshotOptions 备份选项。
 type SnapshotOptions struct {
 	Reason string
-	// WithVolumes 同时把 named volume 的数据打包进来。
-	// 只有卷根目录被映射进 Dockhelm 时才真的打得到，打不到会在快照里写明原因。
-	WithVolumes bool
 }
 
-// Snapshot 给某个容器写一份配置快照（不含卷数据）。
+
+// Snapshot 给某个容器写一份配置快照。
 func (s *Service) Snapshot(ctx context.Context, nameOrID, reason string) (*SnapshotItem, error) {
 	return s.SnapshotWith(ctx, nameOrID, SnapshotOptions{Reason: reason})
 }
 
-// SnapshotWith 按选项写一份快照。
+// SnapshotWith 写一份快照，并如实记一条运行记录 / 通知。
 func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt SnapshotOptions) (*SnapshotItem, error) {
+	item, err := s.snapshotAt(ctx, nameOrID, opt.Reason, time.Now().Format("20060102-150405"))
+	if err != nil {
+		return nil, err
+	}
+	s.notify.Emit("backup_success", map[string]string{
+		"container": item.Container, "result": "配置快照已保存",
+		"message": fmt.Sprintf("%s（%.1f KB）", item.TS+".json", float64(item.Size)/1024),
+	})
+	s.st.AddRunLog("backup", item.Container, "success", "配置快照 "+item.TS+".json", "")
+	return item, nil
+}
+
+// BatchFailure 批量备份里某个容器的失败。
+type BatchFailure struct {
+	Container string `json:"container"`
+	Error     string `json:"error"`
+}
+
+// BatchResult 一次批量备份的结果。同一批共用 res.TS。
+type BatchResult struct {
+	TS     string         `json:"ts"`
+	Total  int            `json:"total"`
+	Items  []SnapshotItem `json:"items"`
+	Failed []BatchFailure `json:"failed"`
+}
+
+// SnapshotMany 给一批容器拍配置快照。
+//
+// 两个刻意的设计：
+//   - **同一批共用一个时间戳**。列表里就靠 ts 把这一批聚成一行「全量 · 24 个容器」，
+//     不额外引入批次 ID，既不用改快照文件格式，旧快照也自然各自成批。
+//   - **单个容器失败不中断整批**。24 个容器里有一个 inspect 失败（镜像坏了、
+//     守护进程返回 500），另外 23 个不该白拍 —— 失败的如实列出来。
+func (s *Service) SnapshotMany(ctx context.Context, names []string, reason string) BatchResult {
+	res := BatchResult{
+		TS:     time.Now().Format("20060102-150405"),
+		Items:  []SnapshotItem{},
+		Failed: []BatchFailure{},
+	}
+	if len(names) == 0 {
+		return res
+	}
+	// 只有一个容器时走单容器那条路（它自己会写记录 / 通知），
+	// 否则同一件事会出现两行 —— 「共 1 个容器」纯属重复。
+	if len(names) == 1 {
+		it, err := s.SnapshotWith(ctx, names[0], SnapshotOptions{Reason: reason})
+		if err != nil {
+			res.Failed = append(res.Failed, BatchFailure{Container: names[0], Error: err.Error()})
+			res.Total = 1
+			return res
+		}
+		res.Items = append(res.Items, *it)
+		res.Total = 1
+		return res
+	}
+	res.Total = len(names)
+	for _, n := range names {
+		it, err := s.snapshotAt(ctx, n, reason, res.TS)
+		if err != nil {
+			res.Failed = append(res.Failed, BatchFailure{Container: n, Error: err.Error()})
+			continue
+		}
+		res.Items = append(res.Items, *it)
+	}
+	summary := fmt.Sprintf("共 %d 个容器：成功 %d、失败 %d", res.Total, len(res.Items), len(res.Failed))
+	s.st.AddRunLog("backup", "batch", "success",
+		fmt.Sprintf("全量备份 %d 个容器", len(res.Items)), summary)
+	s.notify.Emit("backup_success", map[string]string{
+		"container": fmt.Sprintf("%d 个容器", res.Total),
+		"result":    "全量备份完成", "message": summary,
+	})
+	return res
+}
+
+// snapshotAt 用指定时间戳写一份快照（不带任何记录 / 通知副作用）。
+//
+// ts 参数存在的意义是批量备份：一批容器共用一个 ts，列表里才能聚合成一行。
+func (s *Service) snapshotAt(ctx context.Context, nameOrID, reason, ts string) (*SnapshotItem, error) {
 	insp, err := s.dc.Inspect(ctx, nameOrID)
 	if err != nil {
 		return nil, err
@@ -76,12 +150,16 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 	if name == "" {
 		name = nameOrID
 	}
+	// ts 为空时自己取当前时间（防御性：调用方传空不该写出 00000000-000000.json）
+	if ts == "" {
+		ts = time.Now().Format("20060102-150405")
+	}
 	dir := filepath.Join(s.cfg.ContainerBackupDir(), sanitize(name))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	ts := time.Now().Format("20060102-150405")
-	// 同一秒重复备份时加后缀，避免互相覆盖
+	// 同一秒重复备份时加后缀，避免互相覆盖。文件名、返回的 TS 必须同源 ——
+	// 以前卷目录固定用 ts，于是同一秒的第二份快照会把第一份的卷 tar 整个覆盖掉。
 	p := filepath.Join(dir, ts+".json")
 	for i := 1; ; i++ {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
@@ -89,24 +167,12 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 		}
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", ts, i))
 	}
-	// 磁盘上的真实标识（可能带 -1 后缀）。json 文件名、卷目录名、返回的 TS
-	// 三者必须同源 —— 以前卷目录固定用 ts，于是同一秒的第二份快照会把第一份的
-	// 卷 tar 整个覆盖掉（真正丢数据），而且返回的 TS 还指向不存在的文件名。
 	slot := strings.TrimSuffix(filepath.Base(p), ".json")
-
-	// 卷数据：先打包再写 json，这样 json 里记的 Packed/Bytes 一定是真的
-	var volumes VolumesMeta
-	if opt.WithVolumes {
-		volumes = s.PackVolumes(ctx, insp, filepath.Join(dir, slot+".volumes"))
-	}
 
 	meta := map[string]any{
 		"snapshotAt": time.Now().UTC().Format(time.RFC3339),
-		"reason":     opt.Reason,
+		"reason":     reason,
 		"version":    1,
-	}
-	if opt.WithVolumes {
-		meta["volumes"] = volumes
 	}
 	doc := map[string]any{"_dockhelm": meta, "inspect": insp}
 	b, err := json.MarshalIndent(doc, "", "  ")
@@ -117,42 +183,16 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 	if err := os.WriteFile(p, b, 0o600); err != nil {
 		return nil, err
 	}
-	total := int64(len(b))
-	for _, e := range volumes.Items {
-		total += e.Bytes
-	}
-	item := &SnapshotItem{
+	return &SnapshotItem{
 		Container: name,
 		TS:        slot,
 		Path:      p,
-		Size:      total,
+		Size:      int64(len(b)),
 		Image:     imageRef(insp),
 		Running:   isRunning(insp),
 		Created:   time.Now().UTC().Format(time.RFC3339),
-		Reason:    opt.Reason,
-		WithData:  len(volumes.Items) > 0 && volumes.Items[0].Packed,
-	}
-	for _, e := range volumes.Items {
-		if e.Packed {
-			item.WithData = true
-			break
-		}
-	}
-	msg := fmt.Sprintf("%s（%.1f KB）", filepath.Base(p), float64(total)/1024)
-	if opt.WithVolumes {
-		packed := 0
-		for _, e := range volumes.Items {
-			if e.Packed {
-				packed++
-			}
-		}
-		msg += fmt.Sprintf(" · 含 %d 个卷的数据", packed)
-	}
-	s.notify.Emit("backup_success", map[string]string{
-		"container": name, "result": "配置快照已保存", "message": msg,
-	})
-	s.st.AddRunLog("backup", name, "success", "配置快照 "+filepath.Base(p), "")
-	return item, nil
+		Reason:    reason,
+	}, nil
 }
 
 // List 列出全部快照（按容器名、时间倒序）。
@@ -211,22 +251,11 @@ func (s *Service) List() ([]SnapshotItem, error) {
 							it.Created = t.UTC().Format(time.RFC3339)
 						}
 					}
-					// 卷数据块存在且有任意一项 Packed ⇒ 这份快照含数据
-					if vm, ok := meta["volumes"].(map[string]any); ok {
-						if items, ok := vm["items"].([]any); ok {
-							for _, x := range items {
-								if m, ok := x.(map[string]any); ok {
-									if packed, _ := m["packed"].(bool); packed {
-										it.WithData = true
-										break
-									}
-								}
-							}
-						}
-					}
 				}
 			}
-			// 卷 tar 的体积要计进快照总体积，否则「占用空间」会明显偏小
+			// 老版本（≤0.3.2）的快照可能带 <ts>.volumes 卷数据目录。新版不再产生它，
+			// 但已经躺在磁盘上的那份必须继续计入占用、也继续跟着 json 一起被清理 ——
+			// 否则几 GB 的 tar 会变成没人看得见的孤儿，磁盘只涨不落。
 			if vdir := filepath.Join(dir, it.TS+".volumes"); dirExists(vdir) {
 				if entries, err := os.ReadDir(vdir); err == nil {
 					for _, ve := range entries {
@@ -393,14 +422,12 @@ func (s *Service) Diff(ctx context.Context, container, ts string) ([]DiffEntry, 
 }
 
 // RestoreOptions 还原选项。
+// RestoreOptions 还原选项。
 type RestoreOptions struct {
 	// KeepBackupContainer 是否保留被替换掉的旧容器（默认 true，改成 __bak_ 名字停下）。
 	KeepBackupContainer bool
 	// PreSnapshot 还原前是否先给当前状态也存一份（安全护栏，默认 true）。
 	PreSnapshot bool
-	// WithVolumes 连卷数据一起还原（覆盖现有文件）。
-	// 默认 false —— 覆盖数据不可逆，必须是用户显式勾选的结果。
-	WithVolumes bool
 }
 
 // RestoreResult 还原结果。
@@ -430,7 +457,9 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 
 	// 镜像必须已在本地，否则拒绝还原（不在还原流程里偷偷拉镜像）
 	if _, err := s.dc.ImageInspect(ctx, res.Image); err != nil {
-		res.Message = fmt.Sprintf("镜像 %s 不在本地，请先在「更新中心」拉取后再还原", res.Image)
+		// 只讲「怎么做」，别指某个页面 —— 手动拉取镜像没有对应的界面入口，
+		// 指过去用户只会空手而归。
+		res.Message = fmt.Sprintf("镜像 %s 不在本地，请先手动拉取该镜像（docker pull 或其他工具）后再还原", res.Image)
 		step("✗ %s", res.Message)
 		return res
 	}
@@ -505,12 +534,6 @@ func (s *Service) Restore(ctx context.Context, container, ts string, opt Restore
 		return res
 	}
 	step("新容器已创建（%s）", shortID(newID))
-
-	// 卷数据在「新容器已建好、但还没启动」的窗口里还原 —— 此刻没有任何进程
-	// 在读写这份卷，覆盖它才是安全的。
-	if opt.WithVolumes {
-		s.UnpackVolumes(ctx, container, ts, step)
-	}
 
 	if isRunning(snap) {
 		if err := s.dc.ContainerAction(ctx, newID, "start", nil); err != nil {
@@ -641,6 +664,11 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 			_ = os.Remove(dir)
 		}
 	}
+	// 项目（yaml）备份走同一套策略 —— 用户只配一次保留策略，
+	// 不该出现「快照被清了、项目备份无限涨」这种事。
+	pRemoved, pFreed := s.pruneProjectBackups(opt)
+	res.Removed += pRemoved
+	res.FreedBytes += pFreed
 	return res
 }
 
@@ -650,13 +678,16 @@ type Stats struct {
 	SizeBytes  int64  `json:"sizeBytes"`
 	Containers int    `json:"containers"`
 	Dir        string `json:"dir"`
-	// VolumeRootMounted 是否挂了 /var/lib/docker/volumes（决定卷数据能否备份）
+	// ProjectSnapshots 项目（compose yaml）备份的份数，与容器快照分开计。
+	ProjectSnapshots int   `json:"projectSnapshots"`
+	ProjectSizeBytes int64 `json:"projectSizeBytes"`
+	// VolumeRootMounted 是否挂了 /var/lib/docker/volumes
 	VolumeRootMounted bool `json:"volumeRootMounted"`
 	// DockerRootVisible 是否能看到 Docker 数据根目录
 	DockerRootVisible bool   `json:"dockerRootVisible"`
 	DockerRoot        string `json:"dockerRoot"`
 	// PathMappings 当前生效的「宿主机路径 → 容器内路径」映射，界面上直接展示，
-	// 免得用户猜 Dockhelm 到底看见了什么。
+	// 免得用户猜 Dockhelm 到底看见了什么。compose 文件备份完全依赖它。
 	PathMappings []config.PathMapping `json:"pathMappings"`
 }
 
@@ -671,6 +702,12 @@ func (s *Service) GetStats(ctx context.Context) Stats {
 	}
 	st.Containers = len(set)
 	st.PathMappings = s.cfg.PathMappings()
+	if pbs, err := s.ListProjectBackups(); err == nil {
+		st.ProjectSnapshots = len(pbs)
+		for _, pb := range pbs {
+			st.ProjectSizeBytes += pb.Size
+		}
+	}
 	// 具名卷的实体在宿主机的 /var/lib/docker/volumes，能不能读到得走映射判断
 	if local, ok := s.cfg.MapHostPath("/var/lib/docker/volumes"); ok {
 		st.VolumeRootMounted = dirExists(local)
@@ -696,6 +733,20 @@ type ProjectInfo struct {
 	// Unreadable 是「知道路径但看不见」的文件，UI 必须显式标出来
 	Unreadable []string `json:"unreadable"`
 	WorkDir    string   `json:"workDir"`
+	// Backups 这个项目的 yaml 备份历史（新 → 旧），列表里显示「N 份历史」与最近一次时间。
+	Backups []ProjectBackupItem `json:"backups"`
+}
+
+// ProjectBackupItem 一份项目（yaml）备份。
+type ProjectBackupItem struct {
+	Project string `json:"project"`
+	TS      string `json:"ts"`
+	Created string `json:"created"`
+	Size    int64  `json:"size"`
+	// Files 备份里包含的文件名（compose.yaml / .env / …）
+	Files []string `json:"files"`
+	// Reason manual / restore-pre
+	Reason string `json:"reason"`
 }
 
 // ProjectFile 一个可读的 compose 文件。
@@ -719,6 +770,7 @@ func newProjectInfo(proj string) *ProjectInfo {
 		ConfigFiles: []string{},
 		Readable:    []ProjectFile{},
 		Unreadable:  []string{},
+		Backups:     []ProjectBackupItem{},
 	}
 }
 
@@ -780,6 +832,19 @@ func (s *Service) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
 			}
 		}
 		out = append(out, *p)
+	}
+	// 备份历史一次读全，按项目分发 —— 每个项目各读一次目录是 N 次 IO，
+	// 而且列表页只需要「有几份、最近一次什么时候」。
+	if pbs, err := s.ListProjectBackups(); err == nil {
+		byProj := map[string][]ProjectBackupItem{}
+		for _, pb := range pbs {
+			byProj[pb.Project] = append(byProj[pb.Project], pb)
+		}
+		for i := range out {
+			if list, ok := byProj[out[i].Project]; ok {
+				out[i].Backups = list
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
 	return out, nil

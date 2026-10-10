@@ -193,10 +193,16 @@ export interface SnapshotItem {
   image: string
   running: boolean
   created: string
-  /** 快照来源：manual / pre_update / scheduled / imported。 */
+  /** 快照来源：manual / pre_update / scheduled / restore-pre。 */
   reason: string
-  /** 这份快照里是否真的打包了卷数据。 */
-  withData: boolean
+}
+
+/** 一次批量备份（「立即备份全部容器」）的结果。同一批的快照共用 ts。 */
+export interface BatchResult {
+  ts: string
+  total: number
+  items: SnapshotItem[]
+  failed: { container: string; error: string }[]
 }
 
 export interface DiffEntry {
@@ -210,6 +216,9 @@ export interface BackupStats {
   sizeBytes: number
   containers: number
   dir: string
+  /** 项目（compose yaml）备份的份数与占用，与容器快照分开计。 */
+  projectSnapshots: number
+  projectSizeBytes: number
   volumeRootMounted: boolean
   dockerRootVisible: boolean
   dockerRoot: string
@@ -233,6 +242,16 @@ export interface ProjectFile {
   size: number
 }
 
+/** 一份项目（compose yaml）备份。 */
+export interface ProjectBackupItem {
+  project: string
+  ts: string
+  created: string
+  size: number
+  files: string[]
+  reason: string
+}
+
 export interface ProjectInfo {
   project: string
   containers: string[]
@@ -240,6 +259,17 @@ export interface ProjectInfo {
   readable: ProjectFile[]
   unreadable: string[]
   workDir: string
+  /** 这个项目的 yaml 备份历史（新 → 旧）。 */
+  backups: ProjectBackupItem[]
+}
+
+/** 项目还原的结果（逐文件）。 */
+export interface ProjectRestoreResult {
+  project: string
+  ts: string
+  files: { name: string; hostPath: string; written: boolean; note: string }[]
+  ok: boolean
+  message: string
 }
 
 export interface RestoreResult {

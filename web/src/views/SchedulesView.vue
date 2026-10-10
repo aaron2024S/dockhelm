@@ -457,7 +457,7 @@ onUnmounted(() => closeStream?.())
     </div>
 
     <!-- 新建/编辑 + 时间轴 -->
-    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-[1fr_.72fr]">
+    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
       <div id="schedule-form" class="dh-card">
         <div class="dh-card-head">
           <span>{{ editingId ? '编辑任务' : '新建任务' }}</span>

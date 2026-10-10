@@ -263,7 +263,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 容器状态 + 待更新镜像 -->
-    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-[1.35fr_1fr]">
+    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
       <div class="dh-card">
         <div class="dh-card-head">
           <span>容器状态</span>
@@ -400,8 +400,8 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <button class="dh-btn dh-btn-primary mt-0.5" @click="router.push('/updates')">
-            前往更新中心
+          <button class="dh-btn dh-btn-primary mt-0.5" @click="router.push('/containers')">
+            前往容器页面
             <ArrowRight class="h-3.5 w-3.5" />
           </button>
         </div>

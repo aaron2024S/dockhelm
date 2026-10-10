@@ -8,7 +8,6 @@ import {
   CalendarClock,
   ChevronsLeft,
   ChevronsRight,
-  Download,
   Gauge,
   Info,
   Layers,
@@ -43,7 +42,7 @@ const themeTip = computed(() => {
 })
 
 /** 数量角标的取值来源。 */
-type CountKey = 'containers' | 'images' | 'updates' | 'schedules' | 'snapshots'
+type CountKey = 'containers' | 'images' | 'schedules' | 'snapshots'
 
 interface NavItem {
   name: string
@@ -55,9 +54,16 @@ interface NavItem {
 }
 
 /**
- * 导航顺序、分组与数量角标照设计稿来，共 10 项。
+ * 导航顺序、分组与数量角标照设计稿来，共 9 项。
  *
- * 与设计稿的两处刻意差别：
+ * 与设计稿的差别：
+ *
+ * ⓪ **没有「更新中心」这一项**（2026-10-10 删）。那一页只剩「检测结果清单 + 立即执行
+ *    自动更新」：检测结果在容器页每行就有徽标、有「有更新 N」筛选，手动更新走容器页
+ *    的「更新 N 个容器」，自动更新按周期自己跑 —— 它已经是一份到处都有替代品的
+ *    重复页面，留着只会让人以为「更新这件事得去那个页面办」。
+ *
+ * 与设计稿的三处刻意差别：
  *
  * ① **没有「网络与端口」这一项**。设计稿里它只是一个侧栏条目、没有对应屏；
  *    而端口信息在容器页逐个展示更有用（每个容器的端口就摆在它自己卡片上，
@@ -72,7 +78,6 @@ const nav: NavItem[] = [
   { name: 'overview', label: '总览', icon: Gauge },
   { name: 'containers', label: '容器', icon: Box, count: 'containers' },
   { name: 'images', label: '镜像', icon: Layers, count: 'images' },
-  { name: 'updates', label: '更新中心', icon: Download, count: 'updates' },
   { name: 'schedules', label: '计划任务', icon: CalendarClock, count: 'schedules' },
   { name: 'backup', label: '备份与恢复', icon: Archive, count: 'snapshots', group: '资源' },
   { name: 'registries', label: '镜像加速源', icon: Rocket, group: '系统' },
@@ -88,7 +93,6 @@ const hostName = ref('')
 const counts = ref<Record<CountKey, number>>({
   containers: 0,
   images: 0,
-  updates: 0,
   schedules: 0,
   snapshots: 0,
 })
@@ -131,12 +135,9 @@ function countOf(key?: CountKey) {
   return counts.value[key] ?? 0
 }
 
-/** 侧栏数量角标：更新中心恒为琥珀色（提醒），其余跟随是否高亮。 */
-function countClass(item: NavItem, n: number) {
-  if (item.count === 'updates' && n > 0) {
-    return 'bg-soft-warn text-warn-text'
-  }
-  return isActive(item) ? 'bg-accent-soft text-accent-text' : 'bg-ink-700 text-text-5'
+/** 侧栏数量角标配色：高亮项用强调色，其余用中性色。 */
+function countClass(active: boolean) {
+  return active ? 'bg-accent-soft text-accent-text' : 'bg-ink-700 text-text-5'
 }
 
 /**
@@ -158,9 +159,6 @@ async function loadCounts() {
   if (ov.status === 'fulfilled') {
     counts.value.containers = ov.value.containers.total
     counts.value.images = ov.value.images.total
-    // 角标数的是「有几个镜像待更新」而不是「几个容器」—— 原设计稿写的是「几台」，
-    // 2026-10-09 起全站统一用「个」计量容器
-    counts.value.updates = new Set((ov.value.updates.items ?? []).map((i) => i.image)).size
     hostName.value = ov.value.docker?.name ?? ''
     app.dockerOnline = !ov.value.dockerError
   }
@@ -220,9 +218,10 @@ const checking = ref(false)
 /**
  * 顶栏「检查更新」：**只读检测，永不更新容器**。
  *
- * 这是全站唯一的手动检测入口 —— 容器页、更新中心页头、总览空态原先各有一颗
- * 同功能按钮（三种叫法），已全部删除，避免同一个动作散在四处。
- * 真正会动容器的只有更新中心的「立即执行自动更新」。
+ * 这是全站唯一的手动检测入口 —— 容器页、总览空态原先各有一颗同功能按钮
+ * （三种叫法），已全部删除，避免同一个动作散在四处。
+ * 要知道更新谁，看容器页每行的「有新版本」徽标与「有更新 N」筛选。
+ * 真正会动容器的只有容器页的「更新 N 个容器」（自动更新按周期自己跑）。
  *
  * 检测完成后：① 刷侧栏角标；② 自增 app.checkTick，让当前页重载自己的检测结果。
  */
@@ -232,7 +231,7 @@ async function quickCheck() {
   try {
     const res = await api.post<{ results?: { status: string }[] }>('/api/updates/check', {})
     const n = (res.results ?? []).filter((r) => r.status === 'update_available').length
-    toast.success('检查完成', n ? `发现 ${n} 个容器有可用更新` : '所有容器都是最新的')
+    toast.success('检查完成', n ? `发现 ${n} 个容器有可用更新，可去容器页更新` : '所有容器都是最新的')
     await loadCounts()
     app.checkTick++
   } catch (e) {
@@ -348,7 +347,7 @@ async function quickCheck() {
               <span
                 v-if="!collapsed && item.count && countOf(item.count) > 0"
                 class="ml-auto flex-none rounded-[6px] px-1.5 text-[11px] leading-[18px]"
-                :class="countClass(item, countOf(item.count))"
+                :class="countClass(isActive(item))"
               >
                 {{ countOf(item.count) }}
               </span>

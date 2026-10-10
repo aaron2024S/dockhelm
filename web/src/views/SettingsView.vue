@@ -19,7 +19,7 @@ import {
   Zap,
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
-import type { ContainerView, RunLog, Settings } from '@/api/types'
+import type { AutoUpdateInfo, ContainerView, RunLog, Settings } from '@/api/types'
 import { formatDateTime, relativeTime, runKindLabel } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
@@ -51,6 +51,8 @@ const settings = ref<Settings>({
 const containers = ref<ContainerView[]>([])
 const logs = ref<RunLog[]>([])
 const account = ref<Record<string, any> | null>(null)
+/** 自动更新的运行状态（只读，用于「下次巡检」小字）。 */
+const auto = ref<AutoUpdateInfo | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const newExclude = ref('')
@@ -99,11 +101,14 @@ const pwError = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const [s, c, l, a] = await Promise.all([
+    const [s, c, l, a, au] = await Promise.all([
       api.get<Settings>('/api/settings'),
       api.get<{ containers: ContainerView[] }>('/api/containers'),
       api.get<{ logs: RunLog[] }>('/api/logs', { limit: 120 }),
       api.get<Record<string, any>>('/api/account'),
+      // 自动更新的运行状态（下次巡检时间）—— 原来只在已删除的「更新中心」页展示，
+      // 那个信息对「多久检测一次」有用，挪到本页检测频率那行。
+      api.get<AutoUpdateInfo>('/api/updates/auto').catch(() => null),
     ])
     settings.value = s
     // 记下进页面时的基线：之后点「保存」先和它对比，没有变化就不发请求、不弹提示。
@@ -111,12 +116,24 @@ async function load() {
     containers.value = c.containers ?? []
     logs.value = l.logs ?? []
     account.value = a
+    auto.value = au
   } catch (e) {
     toast.error('读取设置失败', e instanceof Error ? e.message : String(e))
   } finally {
     loading.value = false
   }
 }
+
+/** 下次巡检那行小字：改完频率保存后要重新取，否则显示的还是旧排期。 */
+async function loadAuto() {
+  auto.value = await api.get<AutoUpdateInfo>('/api/updates/auto').catch(() => null)
+}
+
+/** 检测频率那行的说明：频率 + 下次巡检时刻（取不到就只说频率）。 */
+const checkIntervalSub = computed(() => {
+  const base = `每 ${settings.value.checkIntervalHours} 小时自动扫描一次镜像仓库`
+  return auto.value?.nextCheckAt ? `${base} · 下次巡检 ${formatDateTime(auto.value.nextCheckAt)}` : base
+})
 
 /** 本页可编辑字段的中文对照 —— 保存成功时用来告诉用户到底改了哪几项。 */
 const FIELD_LABEL: Record<string, string> = {
@@ -174,6 +191,7 @@ async function save() {
     // 出现的键，其余保持原值。
     settings.value = await api.patch<Settings>('/api/settings', body)
     await app.loadSettings()
+    void loadAuto()
     // 列出真正变化的字段，提示语不再写死「并发度」。
     const prev = JSON.parse(savedSnapshot.value || '{}') as Record<string, unknown>
     const changed = Object.keys(body).filter((k) => JSON.stringify(body[k]) !== JSON.stringify(prev[k]))
@@ -250,7 +268,7 @@ onMounted(() => void load())
   <div class="flex flex-col gap-3.5 p-[18px]">
     <div class="dh-phead">
       <div class="dh-h1">设置</div>
-      <div class="dh-sub">更新与检测、排除列表与账户安全</div>
+      <div class="dh-sub">更新与检测（含排除列表）与账户安全</div>
     </div>
 
     <!-- 更新与检测 -->
@@ -275,7 +293,7 @@ onMounted(() => void load())
             <SearchCheck class="h-3.5 w-3.5 text-text-4" />检测
           </div>
           <div class="flex flex-col gap-2.5">
-            <SettingRow title="检测频率" :sub="`每 ${settings.checkIntervalHours} 小时自动扫描一次镜像仓库`">
+            <SettingRow title="检测频率" :sub="checkIntervalSub">
               <select v-model.number="settings.checkIntervalHours" class="dh-select !w-[120px] !py-[5px] !text-[11.5px]">
                 <option :value="1">每 1 小时</option>
                 <option :value="3">每 3 小时</option>
@@ -304,20 +322,51 @@ onMounted(() => void load())
               :sub="
                 settings.autoApply
                   ? '每轮巡检结束后，把有更新的容器（排除列表与自己除外）自动重建到新镜像'
-                  : '当前只检测、不动手 —— 发现更新后要你在更新中心手动点'
+                  : '当前只检测、不动手 —— 发现更新后去容器页手动更新'
               "
             >
               <ToggleSwitch v-model="settings.autoApply" label="自动更新" />
             </SettingRow>
-            <div
-              v-if="settings.autoApply"
-              class="flex items-start gap-2 rounded-[8px] border border-line-warn px-2.5 py-2 text-[11.5px] leading-relaxed text-warn-text"
-            >
-              <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none" />
-              <span>
-                自动更新会<b>真的重启容器</b>。建议保持「更新前自动备份容器配置」开启，并确认排除列表里
-                放好了数据库、反向代理这类不能随便重启的服务。更新中心页可以先看「本轮会更新哪几个」再决定。
+          </div>
+        </div>
+
+        <!-- 排除列表：自动更新「不动谁」的落点，与上面共用卡头那颗保存按钮 -->
+        <div class="rounded-[10px] border border-line-1 bg-ink-800 p-3">
+          <div class="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-text-3">
+            <Ban class="h-3.5 w-3.5 text-text-4" />排除列表
+            <span class="ml-auto text-[11px] font-normal text-text-5">
+              {{ settings.exclude.length }} 个容器永不自动更新
+            </span>
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <div class="flex flex-wrap gap-2">
+              <select v-model="newExclude" class="dh-select !w-auto !min-w-[190px]">
+                <option value="">选择容器…</option>
+                <option
+                  v-for="c in containers.filter((x) => !settings.exclude.includes(x.name))"
+                  :key="c.id"
+                  :value="c.name"
+                >
+                  {{ c.name }}
+                </option>
+              </select>
+              <button class="dh-btn" :disabled="!newExclude" @click="addExclude">加入排除</button>
+            </div>
+            <div v-if="app.settings === null && loading" class="text-[12px] text-text-5">正在载入…</div>
+            <div v-if="!settings.exclude.length" class="text-[12px] text-text-5">排除列表为空。</div>
+            <div v-else class="flex flex-wrap gap-1.5">
+              <span
+                v-for="n in settings.exclude"
+                :key="n"
+                class="inline-flex items-center gap-1.5 rounded-full border border-line-3 px-2.5 py-[3px] font-mono text-[11.5px] text-text-3"
+              >
+                {{ n }}
+                <button class="dh-tap text-text-5 hover:text-err-text" @click="removeExclude(n)">×</button>
               </span>
+            </div>
+            <div class="text-[11px] text-text-5">
+              加进这里的容器不会被自动更新，也不会被任何计划任务作用到（计划任务必须逐个勾选容器）。
+              改动和上面的开关一样，<b class="text-text-4">点右上角「保存」后才生效</b>。
             </div>
           </div>
         </div>
@@ -367,50 +416,9 @@ onMounted(() => void load())
         <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
           <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-warn-text" />
           <span>
-            这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及下面的排除列表。
+            这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及上面的排除列表。
             计划任务也只会作用于你在任务里<b class="text-text-3">明确勾选</b>的容器。
           </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 排除列表 -->
-    <div class="dh-card">
-      <div class="dh-card-head">
-        <Ban class="h-3.5 w-3.5 text-text-4" />
-        <span>排除列表</span>
-        <span class="ml-auto text-[11.5px] font-normal text-text-5">
-          {{ settings.exclude.length }} 个容器永不自动更新
-        </span>
-      </div>
-      <div class="flex flex-col gap-2.5 p-3.5">
-        <div class="flex flex-wrap gap-2">
-          <select v-model="newExclude" class="dh-select !w-auto !min-w-[190px]">
-            <option value="">选择容器…</option>
-            <option
-              v-for="c in containers.filter((x) => !settings.exclude.includes(x.name))"
-              :key="c.id"
-              :value="c.name"
-            >
-              {{ c.name }}
-            </option>
-          </select>
-          <button class="dh-btn" :disabled="!newExclude" @click="addExclude">加入排除</button>
-        </div>
-        <div v-if="app.settings === null && loading" class="text-[12px] text-text-5">正在载入…</div>
-        <div v-if="!settings.exclude.length" class="text-[12px] text-text-5">排除列表为空。</div>
-        <div v-else class="flex flex-wrap gap-1.5">
-          <span
-            v-for="n in settings.exclude"
-            :key="n"
-            class="inline-flex items-center gap-1.5 rounded-full border border-line-3 px-2.5 py-[3px] font-mono text-[11.5px] text-text-3"
-          >
-            {{ n }}
-            <button class="dh-tap text-text-5 hover:text-err-text" @click="removeExclude(n)">×</button>
-          </span>
-        </div>
-        <div class="text-[11px] text-text-5">
-          加进这里的容器不会被自动更新，也不会被任何计划任务作用到（计划任务必须逐个勾选容器）。
         </div>
       </div>
     </div>
