@@ -190,24 +190,17 @@ function stateText(name: string): string {
   }
 }
 function barFillClass(name: string): string {
+  // 整层均匀柔和渐变（12% → 20% → 12%），**不再有右缘高饱和亮带**：
+  // 原来那条 40% 的亮带横贯整张卡片，会在文字中间形成一条生硬的竖线，
+  // 峰值处对比过强，把字压得看不清。现在改成两端 12%、中间 20% 的缓坡，
+  // 再叠一层横向流光表示「正在进行」。同样走 CSS 变量，亮/暗主题自动跟随。
   switch (doneOf(name)) {
     case 'updated':
-      return 'bg-run/15'
+      return 'bg-gradient-to-r from-run/12 via-run/20 to-run/12'
     case 'failed':
-      return 'bg-err/15'
+      return 'bg-gradient-to-r from-err/12 via-err/20 to-err/12'
     default:
-      return 'bg-accent/12'
-  }
-}
-function barEdgeClass(name: string): string {
-  // 右缘用渐变淡出而不是实色边线：之前是 2px 全饱和竖线，横贯整张卡片太生硬
-  switch (doneOf(name)) {
-    case 'updated':
-      return 'bg-gradient-to-l from-run/40 to-transparent'
-    case 'failed':
-      return 'bg-gradient-to-l from-err/40 to-transparent'
-    default:
-      return 'bg-gradient-to-l from-accent/40 to-transparent'
+      return 'bg-gradient-to-r from-accent/12 via-accent/20 to-accent/12'
   }
 }
 function progressTextClass(name: string): string {
@@ -568,12 +561,12 @@ function closeMenu() {
              -z-10 + 父级 isolate ⇒ 压在卡片底色之上、文字之下。 -->
         <div
           v-if="isUpdating(c.name)"
-          class="pointer-events-none absolute inset-y-0 left-0 -z-10 transition-[width] duration-500 ease-out"
+          class="pointer-events-none absolute inset-y-0 left-0 -z-10 overflow-hidden transition-[width] duration-500 ease-out"
           :class="barFillClass(c.name)"
           :style="{ width: pctOf(c.name) + '%' }"
         >
-          <!-- 右缘 12px 渐变柔光（原为 2px 实线，太生硬） -->
-          <div class="absolute inset-y-0 right-0 w-3" :class="barEdgeClass(c.name)" />
+          <!-- 横向流光：只在进行中扫动，成功/失败就停下（别让"已经完事了"看着还在跑） -->
+          <div v-if="doneOf(c.name) === ''" class="dh-shimmer absolute inset-0" />
         </div>
 
         <div class="flex items-start gap-2.5">

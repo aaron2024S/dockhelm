@@ -880,4 +880,26 @@ html.light {
       transform: rotate(360deg);
     }
   }
+
+  /* 更新进度条上的横向流光：一条 10% 白带自左向右扫过，2s 一轮。
+     参考 dockerCopilot 的同名动画，但透明度减半（10% 已足够，再亮就压字）。
+     白带本身是透明的，只叠在进度填充层上，所以不影响亮/暗主题的底色。 */
+  .dh-shimmer {
+    background-image: linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: dh-shimmer 2s linear infinite;
+  }
+  @keyframes dh-shimmer {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
 }
