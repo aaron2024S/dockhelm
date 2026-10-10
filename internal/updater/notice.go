@@ -45,6 +45,37 @@ type BatchNotice struct {
 // NAS 上几十个容器同时拉挂的场景（比如断网后定时任务触发）不能刷出几十行推送。
 const maxFailureLines = 8
 
+// shortFailureLine 把「容器名：拉取失败：pull failed: read tcp [240e:…]:443: …」
+// 压成「容器名：拉取失败」—— 推送里刷一长串底层网络报错没人看得懂
+// （2026-10-11 用户反馈：就写哪些更新失败，不用写详细信息）。
+// 完整错误不丢：运行记录的 Detail 仍留全量，面板里随时可查。
+// 规则：取第一个全角冒号前的动作短语（拉取失败 / 读取容器信息失败 / 自检失败…），
+// 没有冒号结构的原文截到 40 字防意外超长。
+func shortFailureLine(f string) string {
+	i := strings.Index(f, "：")
+	if i < 0 {
+		return truncateRunes(f, 40)
+	}
+	name, msg := f[:i], f[i+len("："):]
+	return name + "：" + shortPhase(msg)
+}
+
+// shortPhase 从原始错误里提取动作短语。
+func shortPhase(msg string) string {
+	if i := strings.Index(msg, "："); i > 0 && i <= 30 {
+		return msg[:i]
+	}
+	return truncateRunes(msg, 40)
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // buildBatchNotice 把一轮批量结果合成唯一的一条通知。
 func buildBatchNotice(s batchStats) BatchNotice {
 	label := "批量更新完成"
@@ -78,7 +109,7 @@ func buildBatchNotice(s batchStats) BatchNotice {
 		}
 		lines = append(lines, "失败明细：")
 		for _, f := range shown {
-			lines = append(lines, "· "+f)
+			lines = append(lines, "· "+shortFailureLine(f))
 		}
 		if rest := len(s.failures) - len(shown); rest > 0 {
 			lines = append(lines, fmt.Sprintf("（其余 %d 台略，详见面板更新记录）", rest))

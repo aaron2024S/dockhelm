@@ -87,3 +87,42 @@ func TestNoticeReusedAndNoReclaim(t *testing.T) {
 		t.Fatalf("没有回收就不该提回收：%q", n.Message)
 	}
 }
+
+// 2026-10-11 用户反馈：推送里只写「哪些更新失败」，底层网络报错（read tcp […]）
+// 一概不要 —— 那串东西没人看得懂，还把消息撑到被转发链路腰斩。
+func TestNoticeShortensFailureDetail(t *testing.T) {
+	n := buildBatchNotice(batchStats{source: "auto", total: 3, updated: 0, skipped: 0, failed: 3,
+		failures: []string{
+			"music-assistant-server：拉取失败：pull failed: read tcp [240e:355:482f:5680:4006:3465:8422:e]:42218->[2606:4700:c800:2::154]:443: read: connection reset by peer",
+			"msedge：拉取失败：context deadline exceeded",
+			"rsshub：读取容器信息失败：Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.43/containers/rsshub/json\": dial unix /var/run/docker.sock: connect: connection refused",
+		}})
+	// 正文里只留动作短语，绝不出现底层报错片段。
+	for _, banned := range []string{"read tcp", "pull failed", "Get \"", "dial unix", "connection reset"} {
+		if strings.Contains(n.Message, banned) {
+			t.Fatalf("推送正文不该出现底层报错 %q：%q", banned, n.Message)
+		}
+	}
+	for _, want := range []string{
+		"· music-assistant-server：拉取失败",
+		"· msedge：拉取失败",
+		"· rsshub：读取容器信息失败",
+	} {
+		if !strings.Contains(n.Message, want) {
+			t.Fatalf("明细行缺失 %q：%q", want, n.Message)
+		}
+	}
+	// 运行记录 Detail 仍留全量 —— 面板里要能查到根因。
+	if !strings.Contains(n.Detail, "connection reset by peer") || !strings.Contains(n.Detail, "dial unix") {
+		t.Fatalf("Detail 应保留完整报错：%q", n.Detail)
+	}
+}
+
+// 没有冒号结构的错误原文也要压短，不能整段照搬。
+func TestShortFailureLineNoColon(t *testing.T) {
+	long := strings.Repeat("网络异常", 50) // 200 字
+	got := shortFailureLine("web：" + long)
+	if got != "web："+truncateRunes(long, 40) {
+		t.Fatalf("无结构错误应截到 40 字：%q", got)
+	}
+}

@@ -42,6 +42,8 @@ services:
       # DOCKHELM_PASSWORD: "改成你的新密码"
       # ── 路径映射：默认自动识别，一般不用配。识别不出来时才手写「宿主机路径=容器内路径」──
       # DOCKHELM_HOST_ROOTS: /volume1/docker=/host/docker
+      # ── 通知里的「主机」显示什么：默认自动取机器型号（如 dx4600），取不到用主机名 ──
+      # DOCKHELM_HOST_LABEL: "dx4600"
       # ── 排障时打开 ──
       # DOCKHELM_LOG_LEVEL: debug
     volumes:

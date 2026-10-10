@@ -197,7 +197,7 @@ var TemplateVars = []TemplateVar{
 	{"image", "镜像引用"},
 	{"result", "结果短语，如「更新成功」「已回滚」"},
 	{"time", "事件时间（本地时区）"},
-	{"host", "Dockhelm 主机名"},
+	{"host", "主机标识：机器型号优先（如 dx4600，取自 DMI/设备树，DOCKHELM_HOST_LABEL 可覆盖），取不到则为主机名"},
 	{"url", "面板地址（若已在设置里填写）"},
 	{"sound", "Bark 用：urgent 事件为 «» ，否则空"},
 	{"priority", "ntfy 用：urgent → 4，normal → 3"},

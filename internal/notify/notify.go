@@ -63,11 +63,10 @@ type buffered struct {
 
 // New 创建通知管理器。
 func New(st *store.Store, b *bus.Bus) *Manager {
-	host, _ := os.Hostname()
 	m := &Manager{
 		st:   st,
 		bus:  b,
-		host: host,
+		host: HostLabel(),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
@@ -383,6 +382,10 @@ func (m *Manager) sendToChannel(id int64, event string, vars map[string]string) 
 }
 
 // compose 组装标题与正文。
+//
+// 行序有意把「主机 / 时间」钉在头部（2026-10-11 用户反馈：主机原来挂在最后一行，
+// 消息一长被转发链路腰斩时就永远看不到是哪台机器）。详情/明细这类大块头放后面，
+// 超长截断砍的只会是它们的尾部。
 func (m *Manager) compose(event, titleOverride, textOverride string, vars map[string]string) (string, string) {
 	if titleOverride != "" && textOverride != "" {
 		return titleOverride, textOverride
@@ -398,7 +401,7 @@ func (m *Manager) compose(event, titleOverride, textOverride string, vars map[st
 	}
 	title := fmt.Sprintf("%s Dockhelm %s", icon, head)
 
-	lines := []string{title}
+	lines := []string{title, "主机：" + m.host, "时间：" + time.Now().Format("2006-01-02 15:04:05")}
 	if vars["result"] != "" {
 		lines = append(lines, "结果："+vars["result"])
 	}
@@ -408,11 +411,85 @@ func (m *Manager) compose(event, titleOverride, textOverride string, vars map[st
 	if vars["image"] != "" {
 		lines = append(lines, "镜像："+vars["image"])
 	}
-	lines = append(lines, "时间："+time.Now().Format("2006-01-02 15:04:05"), "主机："+m.host)
 	if u := m.st.GetSetting(KeyPanelURL, ""); u != "" {
 		lines = append(lines, "面板："+u)
 	}
-	return title, strings.Join(lines, "\n")
+	return title, truncateNotifyText(strings.Join(lines, "\n"))
+}
+
+// maxNotifyTextBytes 推送正文的安全上限（UTF-8 字节）。
+// 各渠道上限不一（企业微信 4096、Telegram 4096，一些转发链路更小），超长消息
+// 会被渠道或转发链静默截断 —— 用户实测批量失败明细一长，推送被腰斩在半句话上。
+// 在源头按行截断：主机/时间/结果在头部不会被切掉，砍的只会是明细尾部。
+const maxNotifyTextBytes = 1800
+
+func truncateNotifyText(text string) string {
+	if len(text) <= maxNotifyTextBytes {
+		return text
+	}
+	used := 0
+	for i, ln := range strings.Split(text, "\n") {
+		if used+len(ln) > maxNotifyTextBytes {
+			kept := strings.TrimSpace(strings.Join(strings.Split(text, "\n")[:i], "\n"))
+			if kept == "" {
+				// 第一行就装不下：硬切字节也要保住头部信息。
+				return string([]rune(text)[:maxNotifyTextBytes/4]) + "……（内容过长已截断）"
+			}
+			return kept + "\n……（内容过长已截断）"
+		}
+		used += len(ln) + 1
+	}
+	return text
+}
+
+// ---------- 主机标识 ----------
+
+// HostLabel 通知里显示的「主机」。
+//
+// 容器里 os.Hostname() 是随机的容器 ID（如 eba791308b83），用户根本认不出
+// 这是哪台机器 —— 用户原话：「主机名改为机器的具体型号，比如 dx4600」。
+// 读取顺序：
+//  1. DOCKHELM_HOST_LABEL 环境变量（用户显式指定，最高优先）
+//  2. DMI product_name / board_name（x86 NAS 与主板；容器里 /sys 就是宿主的，
+//     所以容器内通常照样读得到）
+//  3. 设备树 model（ARM 设备，挂载了才能读到）
+//  4. 回落 os.Hostname()
+func HostLabel() string {
+	if v := strings.TrimSpace(os.Getenv("DOCKHELM_HOST_LABEL")); v != "" {
+		return v
+	}
+	for _, p := range []string{
+		"/sys/class/dmi/id/product_name",
+		"/sys/class/dmi/id/board_name",
+		"/proc/device-tree/model",
+		"/sys/firmware/devicetree/base/model",
+	} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(strings.TrimRight(string(b), "\x00\n\r\t "))
+		if s == "" || genericBoardName(s) {
+			continue
+		}
+		return s
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "unknown"
+}
+
+// genericBoardName 过滤 DMI 里的占位值 —— 一堆 x86 主板出厂就写着
+// 「System Product Name」，拿它当主机标识等于没换。
+func genericBoardName(s string) bool {
+	switch strings.ToLower(s) {
+	case "system product name", "to be filled by o.e.m.", "default string",
+		"none", "empty", "not specified", "not defined", "undefined",
+		"unknown", "n/a", "type1", "product name", "generic", "oem":
+		return true
+	}
+	return false
 }
 
 // sendOne 投递到单个渠道，失败重试 3 次。返回 (是否成功, 错误信息)。
@@ -433,8 +510,7 @@ func (m *Manager) sendOne(ch store.Channel, event, title, text string, vars map[
 }
 
 func (m *Manager) sendHTTP(ch store.Channel, event, title, text string, vars map[string]string) (bool, string) {
-	host, _ := os.Hostname()
-	values := buildValues(event, vars, host, m.st.GetSetting(KeyPanelURL, ""), title, text)
+	values := buildValues(event, vars, m.host, m.st.GetSetting(KeyPanelURL, ""), title, text)
 	values["timestamp"] = strconv.FormatInt(time.Now().UnixMilli(), 10)
 	values["sign"] = dingtalkSign(ch, values["timestamp"])
 	// 飞书签名用的是另一套算法，单独放一个变量

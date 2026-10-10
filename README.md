@@ -217,6 +217,7 @@ environment:
 | `DOCKHELM_PASSWORD` | 空 | 设置后每次启动都强制把密码重置为该值。**忘记密码的兜底手段，用完请删掉这行** |
 | `DOCKHELM_HOST_ROOTS` | 空 | 手动声明路径映射，写法 `宿主机路径=容器内路径`（逗号分隔可多组；只写一个路径表示两边一致）。默认自动识别，一般不用填 |
 | `DOCKHELM_SELF` | 空 | 显式指定 Dockhelm 自身容器名。默认靠 hostname 反查 |
+| `DOCKHELM_HOST_LABEL` | 空 | 通知里「主机」显示什么。默认自动取机器型号（读 DMI/设备树，如 dx4600），取不到用主机名；想自定义就填这个 |
 | `DOCKHELM_TRUSTED_PROXIES` | 空 | 反代 IP 白名单。**只有填了它，后端才会信任 `X-Forwarded-For`** |
 | `DOCKHELM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
@@ -303,7 +304,8 @@ environment:
 自定义 Webhook 的 URL、请求头、请求体里都能用 `{{变量名}}`，URL 中的变量会自动 URL 转义：
 
 `event`、`eventLabel`、`level`、`title`、`text`、`message`、`container`、`image`、
-`result`、`time`、`host`、`url`、`sound`、`priority`、`tags`、`titleEncoded`、`textEncoded`
+`result`、`time`、`host`（主机标识：机器型号优先，如 dx4600；`DOCKHELM_HOST_LABEL` 可覆盖，取不到则为主机名）、
+`url`、`sound`、`priority`、`tags`、`titleEncoded`、`textEncoded`
 
 ---
 
