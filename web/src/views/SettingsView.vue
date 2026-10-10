@@ -11,7 +11,6 @@ import {
   Save,
   ScrollText,
   SearchCheck,
-  ShieldAlert,
   SlidersHorizontal,
   Trash2,
   User,
@@ -413,13 +412,6 @@ onMounted(() => void load())
           </div>
         </div>
 
-        <div class="flex items-start gap-2.5 rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[11.5px] leading-relaxed text-text-4">
-          <ShieldAlert class="mt-[1px] h-3.5 w-3.5 flex-none text-warn-text" />
-          <span>
-            这两类容器永远不会被自动更新：<b class="text-text-3">Dockhelm 自己</b>，以及上面的排除列表。
-            计划任务也只会作用于你在任务里<b class="text-text-3">明确勾选</b>的容器。
-          </span>
-        </div>
       </div>
     </div>
 
@@ -429,6 +421,19 @@ onMounted(() => void load())
         <div class="dh-card-head">
           <User class="h-3.5 w-3.5 text-text-4" />
           <span>账户</span>
+          <!--
+            会话本身没有「登出」按钮，被忘在旧浏览器/旧设备上时只能干等过期（最长 7 天）。
+            这里给一个主动清场的出口：保留当前登录，其余全部作废。
+          -->
+          <button
+            v-if="(account?.sessionCount ?? 0) > 1"
+            class="dh-btn dh-btn-sm ml-auto font-normal"
+            :disabled="revoking"
+            @click="confirmRevoke = true"
+          >
+            <LogOut class="h-3 w-3" />
+            登出其他会话（{{ (account?.sessionCount ?? 0) - 1 }}）
+          </button>
         </div>
         <div class="flex flex-col gap-3.5 p-3.5">
           <div class="grid grid-cols-2 gap-3 text-[12px]">
@@ -445,20 +450,6 @@ onMounted(() => void load())
               {{ account?.currentSession ? formatDateTime(account.currentSession.expiresAt) : '—' }}
             </div>
           </div>
-
-          <!--
-            会话本身没有「登出」按钮，被忘在旧浏览器/旧设备上时只能干等过期（最长 7 天）。
-            这里给一个主动清场的出口：保留当前登录，其余全部作废。
-          -->
-          <button
-            v-if="(account?.sessionCount ?? 0) > 1"
-            class="dh-btn !justify-start"
-            :disabled="revoking"
-            @click="confirmRevoke = true"
-          >
-            <LogOut class="h-3.5 w-3.5" />
-            强制登出其他会话（{{ (account?.sessionCount ?? 0) - 1 }} 个）
-          </button>
 
           <div class="border-t border-line-1 pt-3.5">
             <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-medium">
