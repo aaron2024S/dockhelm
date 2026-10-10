@@ -403,8 +403,8 @@ onMounted(() => void load())
             <ScrollText class="h-3.5 w-3.5 text-text-4" />面板与记录
           </div>
           <div class="flex flex-col gap-2.5">
-            <SettingRow title="面板地址" sub="通知模板里的 {{url}} 用它拼可点击的链接">
-              <input v-model="settings.panelURL" class="dh-input !w-[260px]" placeholder="http://192.168.1.10:5923" />
+            <SettingRow stack title="面板地址" sub="通知模板里的 {{url}} 用它拼可点击的链接">
+              <input v-model="settings.panelURL" class="dh-input !w-[260px] max-md:!w-full" placeholder="http://192.168.1.10:5923" />
             </SettingRow>
             <SettingRow title="运行记录保留条数" sub="超出后按时间滚动覆盖，只影响面板里的历史列表">
               <input v-model.number="settings.logRetention" type="number" min="50" class="dh-input !w-[110px]" />
