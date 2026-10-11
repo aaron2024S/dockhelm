@@ -439,7 +439,7 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 
 	// ---- 3. 总开关关着，或没有候选 ⇒ 到此为止 ----
 	if !execute || summary.Available == 0 {
-		s.finishCycle(summary, started, "仅巡检，未改动任何容器")
+		s.finishCycle(summary, started, true)
 		return summary
 	}
 
@@ -482,27 +482,29 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	}
 	s.mergeCheckResults(cacheRows)
 
-	s.finishCycle(summary, started, "")
+	s.finishCycle(summary, started, false)
 	return summary
 }
 
-func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, note string) {
+func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, checkOnly bool) {
 	summary.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	summary.DurationMs = time.Since(started).Milliseconds()
 	s.autoMu.Lock()
 	s.autoLast = summary
 	s.autoMu.Unlock()
 
-	// 巡检（note != ""）与真更新是两种动作，运行记录用不同 kind 记，
+	// 巡检（checkOnly）与真更新是两种动作，运行记录用不同 kind 记，
 	// 前端徽标才能分别显示「自动巡检 / 自动更新」，而不是一律 auto_update。
-	// 动作名已经由徽标表达，消息里不再重复前缀。
+	// 动作名已经由徽标表达，消息里不再重复前缀 —— 原先还拖了个
+	// 「（仅巡检，未改动任何容器）」尾巴，用户 2026-10-11 要求去掉：徽标已经
+	// 说明这是巡检了，每条记录再解释一遍纯属废话。
 	//
 	// 只有**纯巡检**才写运行记录：真更新的轮次里 updater 对每个容器各写了一条
 	// （「已更新」/「镜像已是最新，容器保持原样」），再写一条汇总就是
 	// 同一次更新的第二行记录 —— 总览页看起来像执行了两遍。
-	if note != "" {
+	if checkOnly {
 		s.st.AddRunLog("auto_check", summary.Trigger, "done",
-			itoa(summary.Available)+" 个容器有可用更新（"+note+"）", "")
+			itoa(summary.Available)+" 个容器有可用更新", "")
 	}
 	s.bus.Publish("update", "auto_done", "success", map[string]any{
 		"trigger": summary.Trigger,
