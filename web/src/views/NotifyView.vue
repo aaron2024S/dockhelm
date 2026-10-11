@@ -265,8 +265,17 @@ async function clearHistory() {
 }
 
 
-const levelBadge = (lv: string) =>
-  lv === 'urgent' ? 'dh-badge-err' : 'dh-badge-plain'
+const levelBadge = (lv: string) => (lv === 'urgent' ? 'dh-badge-err' : 'dh-badge-plain')
+
+/** 事件的中文显示名：优先查事件目录（与「事件」页签同一份 label），
+ *  目录里没有的老事件（已从产品里删掉、但历史记录里还躺着）走 legacy 映射，
+ *  都不命中才回落原始 key —— 保证任何情况下都不给用户看英文事件名。 */
+const legacyEventLabels: Record<string, string> = {
+  auto_update_done: '自动更新完成',
+}
+
+const eventLabel = (event: string) =>
+  catalog.value.find((e) => e.event === event)?.label ?? legacyEventLabels[event] ?? event
 
 /**
  * 在模板里安全地渲染「双花括号」变量写法。
@@ -527,8 +536,8 @@ onMounted(() => void load())
                 <td class="whitespace-nowrap text-[11.5px] text-text-5">{{ relativeTime(h.ts) }}</td>
                 <td class="text-[12px] text-text-3">{{ h.channel || '—' }}</td>
                 <td>
-                  <span class="dh-badge" :class="levelBadge(h.level)">
-                    {{ h.event }}
+                  <span class="dh-badge" :class="levelBadge(h.level)" :title="h.event">
+                    {{ eventLabel(h.event) }}
                   </span>
                 </td>
                 <td>
