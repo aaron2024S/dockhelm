@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -91,5 +92,117 @@ func TestTruncateNotifyText(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "……（内容过长已截断）") {
 		t.Fatalf("缺截断提示：%q", got[len(got)-60:])
+	}
+}
+
+// 2026-10-11 用户反馈：ntfy 配置失败、没有 Gotify 渠道。参照 course-learn
+// 的成熟做法把 ntfy 改成 JSON body，并修掉三个渲染层缺陷。
+func TestRenderNtfy(t *testing.T) {
+	vals := map[string]string{
+		"title":    "🚨 Dockhelm 容器更新失败 · app",
+		"text":     "详情：拉取失败\n时间：2026-10-11 09:00:00",
+		"priority": "4",
+		"tags":     "rotating_light",
+	}
+	cfg := map[string]any{"server": "https://ntfy.sh", "topic": "dockhelm-alerts", "token": "tk_xxx"}
+	method, u, headers, body, ct, err := RenderRequest("ntfy", cfg, vals)
+	if err != nil {
+		t.Fatalf("RenderRequest: %v", err)
+	}
+	if method != "POST" || ct != "application/json" {
+		t.Fatalf("method=%s ct=%s", method, ct)
+	}
+	// 修复①：server 变量不能被 QueryEscape，否则 https:// 变 %3A%2F%2F
+	if !strings.HasPrefix(u, "https://ntfy.sh") {
+		t.Fatalf("URL 被转义坏了：%q", u)
+	}
+	// 修复②：标题里的中文+emoji 走 JSON body，绝不能出现在请求头里
+	// （Go 的 http 客户端会拒绝非 ASCII 头值）。
+	for k, v := range headers {
+		if !isASCII(v) {
+			t.Fatalf("请求头 %s 含非 ASCII 值：%q", k, v)
+		}
+	}
+	if headers["Authorization"] != "Bearer tk_xxx" {
+		t.Fatalf("修复③：token 没进 Authorization 头：%v", headers)
+	}
+	for _, want := range []string{`"topic":"dockhelm-alerts"`, `"priority":4`, `"tags":["rotating_light"]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body 缺 %s：%q", want, body)
+		}
+	}
+
+	// token 留空 ⇒ 不带 Authorization 头（别发空 "Bearer " 出去）
+	_, _, headers2, _, _, _ := RenderRequest("ntfy", map[string]any{"server": "https://ntfy.sh", "topic": "t"}, vals)
+	if _, ok := headers2["Authorization"]; ok {
+		t.Fatalf("token 为空不该有 Authorization 头：%v", headers2)
+	}
+}
+
+func TestRenderGotify(t *testing.T) {
+	vals := map[string]string{
+		"title": "✅ Dockhelm 批量更新完成", "text": "详情：全部成功",
+		"gotifyPriority": "5",
+	}
+	// token 里的特殊字符必须转义（它在 query string 里）
+	cfg := map[string]any{"server": "https://push.example.com", "token": "Aabc 123/xyz"}
+	_, u, _, body, ct, err := RenderRequest("gotify", cfg, vals)
+	if err != nil {
+		t.Fatalf("RenderRequest: %v", err)
+	}
+	if ct != "application/json" {
+		t.Fatalf("ct=%s", ct)
+	}
+	if !strings.HasPrefix(u, "https://push.example.com/message?token=") || !strings.Contains(u, "Aabc+123%2Fxyz") {
+		t.Fatalf("URL 不对：%q", u)
+	}
+	for _, want := range []string{`"title":"✅ Dockhelm 批量更新完成"`, `"priority":5`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body 缺 %s：%q", want, body)
+		}
+	}
+}
+
+func TestPresetHasGotify(t *testing.T) {
+	if _, ok := PresetMap["gotify"]; !ok {
+		t.Fatal("gotify 预设缺失")
+	}
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// JSON 类预设：正文里的真实换行、引号、反斜杠必须被转义成合法 JSON 字符串内容。
+// 曾经的缺陷：原样嵌入 ⇒ 发出去的是非法 JSON，对方 400。
+func TestJSONBodyEscapesControlChars(t *testing.T) {
+	vals := map[string]string{
+		"title":    `带"引号"的标题`,
+		"text":     "第一行\n第二行 带\"引号\" 和 \\ 反斜杠\t制表",
+		"priority": "4",
+		"tags":     "rotating_light",
+	}
+	cfg := map[string]any{"server": "https://ntfy.sh", "topic": "t", "token": ""}
+	_, _, _, body, _, err := RenderRequest("ntfy", cfg, vals)
+	if err != nil {
+		t.Fatalf("RenderRequest: %v", err)
+	}
+	if !json.Valid([]byte(body)) {
+		t.Fatalf("body 不是合法 JSON：%q", body)
+	}
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	want := "第一行\n第二行 带\"引号\" 和 \\ 反斜杠\t制表"
+	if parsed.Message != want {
+		t.Fatalf("转义后还原的正文不一致：\n got %q\nwant %q", parsed.Message, want)
 	}
 }

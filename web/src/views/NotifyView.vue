@@ -336,7 +336,7 @@ onMounted(() => void load())
         v-if="!channels.length"
         :icon="BellOff"
         :title="loading ? '正在载入…' : '还没有配置通知渠道'"
-        description="支持 Telegram、Bark、ntfy、企业微信、钉钉、飞书、Server 酱、PushPlus、邮件 SMTP，以及任意自定义 Webhook。"
+        description="支持 Telegram、Bark、ntfy、Gotify、企业微信、钉钉、飞书、Server 酱、PushPlus、邮件 SMTP，以及任意自定义 Webhook。"
         action-label="添加第一个渠道"
         @action="openCreate"
       />

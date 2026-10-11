@@ -69,10 +69,20 @@ var Presets = []Preset{
 			{Key: "token", Label: "访问令牌", Type: "password", Help: "自建且开了鉴权时填写"},
 		},
 		Method:      "POST",
-		URL:         "{{server}}/{{topic}}",
-		ContentType: "text/plain",
-		Headers:     map[string]string{"Title": "{{title}}", "Priority": "{{priority}}", "Tags": "{{tags}}"},
-		Body:        "{{text}}",
+		URL:         "{{server}}",
+		ContentType: "application/json",
+		Body:        `{"topic":"{{topic}}","title":"{{title}}","message":"{{text}}","tags":["{{tags}}"],"priority":{{priority}}}`,
+	},
+	{
+		Type: "gotify", Label: "Gotify", Description: "Gotify 推送（可自建）",
+		Fields: []ChannelField{
+			{Key: "server", Label: "服务器", Type: "text", Required: true, Placeholder: "https://push.example.com"},
+			{Key: "token", Label: "应用令牌", Type: "password", Required: true, Placeholder: "Axxxxxxxxxx", Help: "Gotify「Apps」页创建的 App Token，不是 Client Token"},
+		},
+		Method:      "POST",
+		URL:         "{{server}}/message?token={{token}}",
+		ContentType: "application/json",
+		Body:        `{"title":"{{title}}","message":"{{text}}","priority":{{gotifyPriority}}}`,
 	},
 	{
 		Type: "wecom", Label: "企业微信机器人", Description: "企业微信群机器人 Webhook",
@@ -201,6 +211,7 @@ var TemplateVars = []TemplateVar{
 	{"url", "面板地址（若已在设置里填写）"},
 	{"sound", "Bark 用：urgent 事件为 «» ，否则空"},
 	{"priority", "ntfy 用：urgent → 4，normal → 3"},
+	{"gotifyPriority", "Gotify 用：urgent → 8，normal → 5"},
 	{"tags", "ntfy 用：urgent → rotating_light，normal → whale"},
 	{"titleEncoded", "URL 编码后的标题"},
 	{"textEncoded", "URL 编码后的正文"},
@@ -233,7 +244,14 @@ func render(tpl string, values map[string]string, inURL bool) string {
 			val = ""
 		}
 		if inURL {
-			b.WriteString(url.QueryEscape(val))
+			// server/url 变量装的是完整地址，绝不能转义 —— 否则 "https://"
+			// 会变成 "https%3A%2F%2F"，请求连协议头都解析不出来。
+			// 其余变量（token/key/topic…）仍按路径段转义。
+			if key == "server" || key == "url" {
+				b.WriteString(val)
+			} else {
+				b.WriteString(url.QueryEscape(val))
+			}
 		} else {
 			b.WriteString(val)
 		}
@@ -281,9 +299,11 @@ func buildValues(event string, vars map[string]string, host, panelURL, title, te
 	if level == LevelUrgent {
 		out["priority"] = "4"
 		out["tags"] = "rotating_light"
+		out["gotifyPriority"] = "8"
 	} else {
 		out["priority"] = "3"
 		out["tags"] = "whale"
+		out["gotifyPriority"] = "5"
 	}
 	out["titleEncoded"] = url.QueryEscape(title)
 	out["textEncoded"] = url.QueryEscape(text)
@@ -354,6 +374,11 @@ func RenderRequest(chType string, cfg map[string]any, values map[string]string) 
 	for k, v := range p.Headers {
 		headers[k] = render(v, merged, false)
 	}
+	// ntfy 的鉴权走 Bearer 头（token 是 ASCII，做请求头安全）；没填就不带，
+	// 别发一个空的 "Bearer " 出去让开鉴权的实例 401。
+	if chType == "ntfy" && strings.TrimSpace(merged["token"]) != "" {
+		headers["Authorization"] = "Bearer " + strings.TrimSpace(merged["token"])
+	}
 	if p.AllowCustomHeaders {
 		if raw, ok := cfg["headers"].(string); ok && strings.TrimSpace(raw) != "" {
 			var custom map[string]string
@@ -366,11 +391,36 @@ func RenderRequest(chType string, cfg map[string]any, values map[string]string) 
 	}
 
 	finalURL := render(rawURL, merged, true)
+	// JSON 请求体：先把每个变量转成合法的 JSON 字符串内容再替换 ——
+	// 正文里的真实换行、引号、反斜杠不转义的话，发出去的就是非法 JSON，
+	// 对方直接 400（这曾经坑过所有 JSON 类预设，不只是 ntfy）。
+	// 例外：以 Json 结尾的变量（如 mentionedJson）本身就是 JSON 片段，原样注入。
+	if ct == "application/json" {
+		escaped := make(map[string]string, len(merged))
+		for k, v := range merged {
+			if strings.HasSuffix(k, "Json") {
+				escaped[k] = v
+			} else {
+				escaped[k] = jsonEscapeValue(v)
+			}
+		}
+		merged = escaped
+	}
 	finalBody := render(bodyTpl, merged, false)
 	if ct == "" {
 		ct = "application/json"
 	}
 	return method, finalURL, headers, finalBody, ct, nil
+}
+
+// jsonEscapeValue 把一个字符串转成「能安全嵌进 JSON 字符串字面量」的内容
+//（去掉 json.Marshal 结果两头的引号）：换行变 \n、引号变 \"、控制字符全部转义。
+func jsonEscapeValue(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return string(b[1 : len(b)-1])
 }
 
 // buildMentionedJSON 把逗号分隔的手机号数组渲染成 JSON 数组字符串（企业微信用）。
