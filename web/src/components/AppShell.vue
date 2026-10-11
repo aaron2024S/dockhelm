@@ -24,7 +24,7 @@ import {
 import { useAppStore } from '@/stores/app'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useToastStore } from '@/stores/toast'
-import { api } from '@/api/client'
+import { api, openStream } from '@/api/client'
 import type { BackupStats, OverviewResponse, Schedule } from '@/api/types'
 
 const app = useAppStore()
@@ -42,7 +42,7 @@ const themeTip = computed(() => {
 })
 
 /** 数量角标的取值来源。 */
-type CountKey = 'containers' | 'images' | 'schedules' | 'snapshots'
+type CountKey = 'containers' | 'images' | 'schedules' | 'snapshots' | 'updates'
 
 interface NavItem {
   name: string
@@ -75,7 +75,7 @@ interface NavItem {
  *    也省掉了「进通知页就把『设置』改名成『设置 · 通知』」那套花招。
  */
 const nav: NavItem[] = [
-  { name: 'overview', label: '总览', icon: Gauge },
+  { name: 'overview', label: '总览', icon: Gauge, count: 'updates' },
   { name: 'containers', label: '容器', icon: Box, count: 'containers' },
   { name: 'images', label: '镜像', icon: Layers, count: 'images' },
   { name: 'schedules', label: '计划任务', icon: CalendarClock, count: 'schedules' },
@@ -95,9 +95,16 @@ const counts = ref<Record<CountKey, number>>({
   images: 0,
   schedules: 0,
   snapshots: 0,
+  updates: 0,
 })
-/** 有可用更新的容器数（来自 /api/overview 的 updates.available），驱动顶栏「有更新」徽标。 */
-const updatesAvailable = ref(0)
+/**
+ * 有可用更新的容器数（/api/overview 的 updates.available）。
+ *
+ * 徽标挂在侧栏「总览」上而不是顶栏「检查更新」按钮上：徽标的语义是
+ * 「有内容等你来看」，总览页的待更新卡片正好承接它；「检查更新」是动词按钮，
+ * 点了是重新检测 —— 徽标搁那儿会引诱人点错（2026-10-11 用户反馈「别捏」）。
+ */
+const updatesAvailable = computed(() => counts.value.updates)
 
 watch(collapsed, (v) => localStorage.setItem('dockhelm.side', v ? 'collapsed' : 'open'))
 
@@ -163,7 +170,7 @@ async function loadCounts() {
     counts.value.images = ov.value.images.total
     hostName.value = ov.value.docker?.name ?? ''
     app.dockerOnline = !ov.value.dockerError
-    updatesAvailable.value = ov.value.updates?.available ?? 0
+    counts.value.updates = ov.value.updates?.available ?? 0
   }
   if (sch.status === 'fulfilled') counts.value.schedules = (sch.value.schedules ?? []).length
   if (bk.status === 'fulfilled') counts.value.snapshots = bk.value.snapshots ?? 0
@@ -181,17 +188,29 @@ async function updateStatus() {
 
 let statusTimer = 0
 let countTimer = 0
+let closeEvents: (() => void) | null = null
 
 onMounted(() => {
   void loadCounts()
   void updateStatus()
   statusTimer = window.setInterval(updateStatus, 30000)
   countTimer = window.setInterval(loadCounts, 60000)
+  // 订阅事件流：后端自己跑的巡检/批量更新结束后立刻刷新角标，
+  // 不用等下一个 60 秒定时器 —— 否则刚跑完巡检侧栏数字还停在旧值。
+  // ⚠ 自动巡检发的是 auto_check_done，手动检测才是 check_done（曾只认后者，
+  // 于是启动/周期巡检跑完角标纹丝不动）。
+  closeEvents = openStream('/api/events/stream', (topic, ev) => {
+    if (topic !== 'update' && topic !== 'schedule') return
+    if (ev.kind === 'batch_done' || ev.kind === 'check_done' || ev.kind === 'auto_check_done') {
+      void loadCounts()
+    }
+  })
 })
 
 onUnmounted(() => {
   window.clearInterval(statusTimer)
   window.clearInterval(countTimer)
+  closeEvents?.()
 })
 
 // 换页时刷一次角标 —— 刚建完任务、删完快照，回到列表就能看到数字变了。
@@ -315,15 +334,6 @@ async function quickCheck() {
         >
           <RefreshCw class="h-[14px] w-[14px] flex-none" :class="checking ? 'dh-spin' : ''" />
           <span class="max-md:hidden">检查更新</span>
-          <!-- 有更新提示，两处渲染同一份数据：桌面 = 文字后的琥珀计数；手机 = 图标角上的数字泡 -->
-          <span
-            v-if="updatesAvailable > 0"
-            class="max-md:hidden flex-none rounded-[6px] bg-soft-warn px-1.5 text-[11px] leading-[18px] text-warn-text"
-          >{{ updatesAvailable }}</span>
-          <span
-            v-if="updatesAvailable > 0"
-            class="md:hidden absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warn px-1 text-[10px] leading-none text-white"
-          >{{ updatesAvailable > 99 ? '99+' : updatesAvailable }}</span>
         </button>
 
         <button type="button" class="dh-topbtn" title="退出登录" @click="doLogout">
@@ -363,9 +373,9 @@ async function quickCheck() {
               <span
                 v-if="!collapsed && item.count && countOf(item.count) > 0"
                 class="ml-auto flex-none rounded-[6px] px-1.5 text-[11px] leading-[18px]"
-                :class="countClass(isActive(item))"
+                :class="item.count === 'updates' ? 'bg-soft-warn text-warn-text' : countClass(isActive(item))"
               >
-                {{ countOf(item.count) }}
+                {{ countOf(item.count) > 99 && item.count === 'updates' ? '99+' : countOf(item.count) }}
               </span>
             </button>
           </template>

@@ -243,9 +243,11 @@ onMounted(() => {
   // 容器状态卡：每 10 秒刷新一次 CPU / 内存 / 磁盘（与后端缓存的 10 秒 TTL 对齐）
   usageTimer = window.setInterval(() => void pollUsage(), 10000)
   // 订阅事件只为「批次跑完 / 巡检结束」时自动刷新总览，界面本身不再展示活动流。
+  // ⚠ 自动/启动巡检发的是 auto_check_done，手动检测才是 check_done —— 只认后者时，
+  // 后端自己跑的巡检结束后本页要等下一次手动操作才更新（2026-10-11 修）。
   closeStream = openStream('/api/events/stream', (topic, ev) => {
     if (topic !== 'update' && topic !== 'schedule') return
-    if (ev.kind === 'batch_done' || ev.kind === 'check_done') {
+    if (ev.kind === 'batch_done' || ev.kind === 'check_done' || ev.kind === 'auto_check_done') {
       later(() => void load(), 800)
     }
   })
