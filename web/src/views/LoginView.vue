@@ -182,12 +182,12 @@ function onEnter() {
       <div
         class="grid h-[27px] w-[27px] flex-none place-items-center rounded-[9px] bg-accent text-accent-ink"
       >
-        <svg viewBox="0 0 32 32" class="h-[15px] w-[15px]">
+        <svg viewBox="0 0 32 32" class="h-[19px] w-[19px]">
           <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
           <path
             fill-rule="evenodd"
             fill="currentColor"
-            d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+            d="M16 5.9 18.76 13.24 26.1 16 18.76 18.76 16 26.1 13.24 18.76 5.9 16 13.24 13.24ZM18.2 16A2.2 2.2 0 1 0 13.8 16A2.2 2.2 0 1 0 18.2 16Z"
           />
         </svg>
       </div>
@@ -204,12 +204,12 @@ function onEnter() {
 
       <div class="relative flex w-[312px] flex-col gap-[13px] rounded-[16px] border border-line-1 bg-ink-700 p-[22px]">
         <div class="dh-lglogo">
-          <svg viewBox="0 0 32 32" class="h-[23px] w-[23px]">
-            <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.5" />
+          <svg viewBox="0 0 32 32" class="h-[29px] w-[29px]">
+            <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
             <path
               fill-rule="evenodd"
               fill="currentColor"
-              d="M16 6.6 18.5 13.5 25.4 16 18.5 18.5 16 25.4 13.5 18.5 6.6 16 13.5 13.5ZM18 16A2 2 0 1 0 14 16A2 2 0 1 0 18 16Z"
+              d="M16 5.9 18.76 13.24 26.1 16 18.76 18.76 16 26.1 13.24 18.76 5.9 16 13.24 13.24ZM18.2 16A2.2 2.2 0 1 0 13.8 16A2.2 2.2 0 1 0 18.2 16Z"
             />
           </svg>
         </div>
