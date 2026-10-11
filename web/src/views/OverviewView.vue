@@ -291,7 +291,10 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="dh-metric">
+      <div
+        class="dh-metric"
+        :class="updateGroups.length ? '!border-line-warn' : ''"
+      >
         <div class="k">待更新镜像</div>
         <div class="v" :class="updateGroups.length ? 'text-warn-text' : ''">
           {{ updateGroups.length }} <small>个</small>
