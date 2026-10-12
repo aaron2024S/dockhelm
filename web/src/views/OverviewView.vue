@@ -485,8 +485,10 @@ onUnmounted(() => {
               <div class="w-[86px] flex-none text-[11.5px] text-text-5 max-md:order-1">
                 {{ logTime(l.ts) }}
               </div>
-              <!-- 徽标与对象名一律定宽占位：行与行之间四列起点对齐，
-                   不因「更新/镜像」两字与「自动巡检/计划任务」四字之差而参差。 -->
+              <!-- 徽标定宽居中：行与行之间徽标列起点对齐，
+                   不因「更新/镜像」两字与「自动巡检/计划任务」四字之差而参差。
+                   对象名+消息是同一列的整体：对象名作消息格内的等宽前缀，
+                   中间不留空档。 -->
               <span class="dh-badge min-w-[64px] flex-none justify-center max-md:order-2" :class="kindClass(l.kind, l.status)">
                 {{ runKindLabel(l.kind) }}
               </span>
@@ -494,15 +496,12 @@ onUnmounted(() => {
                 {{ resultBadge(l).text }}
               </span>
               <span
-                class="w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3 max-md:order-4"
-                :title="refShown(l) ? l.ref : undefined"
-              >{{ refShown(l) ? l.ref : '' }}</span>
-              <span
-                class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-5"
-                :title="l.message"
-              >
-                {{ l.message }}
-              </span>
+                class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-4"
+                :title="refShown(l) ? `${l.ref} ${l.message}` : l.message"
+              ><span
+                  v-if="refShown(l)"
+                  class="mr-1.5 font-mono text-[11.5px] text-text-3"
+                >{{ l.ref }}</span>{{ l.message }}</span>
             </div>
           </div>
         </div>
