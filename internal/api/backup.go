@@ -47,8 +47,10 @@ func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.bk.SnapshotWith(ctx, in.Container, backup.SnapshotOptions{Reason: reason})
 	if err != nil {
+		// 推送用一句人话，原始错误留给接口返回（用户点那次操作时就看到了）。
 		s.nt.Emit("backup_failed", map[string]string{
-			"container": in.Container, "result": "备份失败", "message": err.Error(),
+			"container": in.Container, "result": "备份失败",
+			"message": backup.SnapshotFailReason(err),
 		})
 		writeErr(w, http.StatusBadGateway, "备份失败："+err.Error())
 		return
@@ -328,8 +330,11 @@ func (s *Server) hProjectSnapshot(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	item, err := s.bk.ProjectSnapshot(ctx, in.Project, "manual")
 	if err != nil {
+		// 项目备份的错误大多是中文的（见 projects.go），SnapshotFailReason 会原样
+		// 放行中文、只把英文的系统报错翻成人话 —— 两侧统一同一个入口。
 		s.nt.Emit("backup_failed", map[string]string{
-			"container": in.Project, "result": "项目备份失败", "message": err.Error(),
+			"container": in.Project, "result": "项目备份失败",
+			"message": backup.SnapshotFailReason(err),
 		})
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

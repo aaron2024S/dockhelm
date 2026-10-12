@@ -116,8 +116,14 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 			res.Total = 1
 			// 单容器的批量备份失败也必须告警：成功那条走 backup_success（默认不订阅），
 			// 失败若也静默，用户就只会以为「备份好了」。
+			//
+			// 2026-10-12 巡检：推送正文原来直塞 err.Error()，用户看到的是一句英文的
+			// docker 报错（No such container / permission denied）。改成一句人话，
+			// 原始错误仍进运行记录备查。
+			reasonText := SnapshotFailReason(err)
+			s.st.AddRunLog("backup", names[0], "failed", "配置快照失败", reasonText+"："+err.Error())
 			s.notify.Emit("backup_failed", map[string]string{
-				"container": names[0], "result": "备份失败", "message": err.Error(),
+				"container": names[0], "result": "备份失败", "message": reasonText,
 			})
 			return res
 		}
@@ -178,6 +184,39 @@ func batchNotice(total, ok int, failed []string) (event, result, status, message
 		names = append(names[:maxBackupNames], fmt.Sprintf("等 %d 个", len(names)))
 	}
 	return event, result, status, summary + "\n失败：" + strings.Join(names, "、")
+}
+
+// SnapshotFailReason 把快照/备份失败的原因翻译成一句人话。
+//
+// 原始错误多是英文的 docker 报错（No such container / permission denied /
+// no space left on device），直接塞进推送既刺眼又难懂。映射不成时给一句中性
+// 描述；原始错误由调用方写进运行记录 / 接口返回，不会丢。
+//
+// 导出是给 api 层复用（手动单容器备份失败也要发 backup_failed）。
+func SnapshotFailReason(err error) string {
+	if err == nil {
+		return "备份失败"
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "no such container"), strings.Contains(s, "not found"):
+		return "容器不存在或已被删除"
+	case strings.Contains(s, "permission denied"):
+		return "没有写入备份目录的权限"
+	case strings.Contains(s, "no space left"):
+		return "磁盘空间不足，无法写入快照"
+	case strings.Contains(s, "cannot connect"), strings.Contains(s, "connection refused"),
+		strings.Contains(s, "cannot connect to the docker daemon"), strings.Contains(s, "daemon"):
+		return "无法连接 Docker 守护进程"
+	case strings.Contains(s, "is a directory"), strings.Contains(s, "read-only file system"):
+		return "备份目录不可写"
+	}
+	// 兜底：我们自己写的错误本来就是中文（compose 项目那几条），原样保留；
+	// 只有英文 / 系统报错才套一句中性描述。
+	if strings.ContainsFunc(err.Error(), func(r rune) bool { return r >= 0x4E00 && r <= 0x9FFF }) {
+		return err.Error()
+	}
+	return "读取容器配置失败"
 }
 
 // snapshotAt 用指定时间戳写一份快照（不带任何记录 / 通知副作用）。

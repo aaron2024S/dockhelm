@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -53,5 +54,29 @@ func TestBatchNotice(t *testing.T) {
 	}
 	if strings.Index(msg, "c00") > strings.Index(msg, "c01") {
 		t.Fatalf("失败名单应先排序：%q", msg)
+	}
+}
+
+// 2026-10-12 用户反馈：backup_failed 的推送正文直塞 err.Error()，用户看到的
+// 是一句英文 docker 报错。这里钉住「翻成人话」的映射，以及「中文错误原样放行」
+// （compose 项目那几条错误本来就是我们自己写的中文，不能被模板覆盖掉）。
+func TestSnapshotFailReason(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Error response from daemon: No such container: web", "容器不存在或已被删除"},
+		{"mkdir /data/backup: permission denied", "没有写入备份目录的权限"},
+		{"write /data/backup/x.json: no space left on device", "磁盘空间不足，无法写入快照"},
+		{"Cannot connect to the Docker daemon at unix:///var/run/docker.sock", "无法连接 Docker 守护进程"},
+		{"unexpected EOF", "读取容器配置失败"},
+		// 中文错误原样保留
+		{"项目 blog 的 compose 文件在 Dockhelm 容器里读不到，请先把它的宿主目录挂进来",
+			"项目 blog 的 compose 文件在 Dockhelm 容器里读不到，请先把它的宿主目录挂进来"},
+	}
+	for _, c := range cases {
+		if got := SnapshotFailReason(errors.New(c.in)); got != c.want {
+			t.Errorf("SnapshotFailReason(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+	if got := SnapshotFailReason(nil); got != "备份失败" {
+		t.Errorf("nil 错误应返回「备份失败」，实际 %q", got)
 	}
 }

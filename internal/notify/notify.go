@@ -402,8 +402,11 @@ func (m *Manager) compose(event, titleOverride, textOverride string, vars map[st
 	title := fmt.Sprintf("%s Dockhelm %s", icon, head)
 
 	lines := []string{title, "主机：" + m.host, "时间：" + time.Now().Format("2006-01-02 15:04:05")}
-	if vars["result"] != "" {
-		lines = append(lines, "结果："+vars["result"])
+	// 「结果」与事件名相同就不另起一行 —— 标题里已经写着「容器意外退出 / Docker 连接
+	// 断开」，再来一句「结果：容器意外退出」纯属重复（2026-10-12 用户反馈）。
+	// 只有结果**补充了新信息**（如「全量备份有失败」「配置已还原」）才输出。
+	if r := vars["result"]; r != "" && r != label {
+		lines = append(lines, "结果："+r)
 	}
 	if vars["message"] != "" {
 		lines = append(lines, "详情："+vars["message"])

@@ -178,6 +178,38 @@ func isASCII(s string) bool {
 	return true
 }
 
+// 2026-10-12 用户反馈：推送标题与「结果：」那一行完全重复（Docker 连接断开 …）。
+// 规则：结果短语与事件名相同时不另起一行；只有补充了新信息（「全量备份有失败」）
+// 才输出「结果：」。
+func TestComposeDropsDuplicateResult(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "dx4600"
+
+	// 结果 == 事件名 ⇒ 不出现「结果：」行，详情照常保留
+	_, text := m.compose("docker_disconnected", "", "", map[string]string{
+		"result": "Docker 连接断开", "message": "Docker 守护进程当前不可达",
+	})
+	if strings.Contains(text, "结果：") {
+		t.Fatalf("结果与标题重复时不该出现「结果：」行：\n%s", text)
+	}
+	if !strings.Contains(text, "详情：Docker 守护进程当前不可达") {
+		t.Fatalf("详情行应保留：\n%s", text)
+	}
+
+	// 结果补充了新信息 ⇒ 保留
+	_, text = m.compose("backup_failed", "", "", map[string]string{
+		"container": "24 个容器", "result": "全量备份有失败", "message": "成功 1、失败 23",
+	})
+	if !strings.Contains(text, "结果：全量备份有失败") {
+		t.Fatalf("结果与事件名不同时必须保留：\n%s", text)
+	}
+}
+
 // JSON 类预设：正文里的真实换行、引号、反斜杠必须被转义成合法 JSON 字符串内容。
 // 曾经的缺陷：原样嵌入 ⇒ 发出去的是非法 JSON，对方 400。
 func TestJSONBodyEscapesControlChars(t *testing.T) {

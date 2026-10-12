@@ -4,6 +4,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -105,12 +106,12 @@ func (w *Watcher) handle(ev dockerx.Event) {
 		if w.exitedByExternalStop(name, time.Now()) {
 			return
 		}
-		w.recordDie(name)
 		image := ev.Actor.Attributes["image"]
+		w.recordDie(name, image)
 		w.nt.Emit("container_died", map[string]string{
 			"container": name, "image": image,
 			"result":  "容器意外退出",
-			"message": "退出码 " + code,
+			"message": "退出码 " + exitCodeHint(n),
 		})
 		w.st.AddRunLog("container", name, "failed", "容器意外退出，退出码 "+code, "")
 
@@ -176,7 +177,7 @@ func (w *Watcher) exitedByExternalStop(name string, now time.Time) bool {
 }
 
 // recordDie 记录退出时间，并在窗口内次数超阈值时发一次崩溃循环告警。
-func (w *Watcher) recordDie(name string) {
+func (w *Watcher) recordDie(name, image string) {
 	w.mu.Lock()
 	now := time.Now()
 	list := append(w.dieTimes[name], now)
@@ -193,11 +194,49 @@ func (w *Watcher) recordDie(name string) {
 
 	if count >= crashCount {
 		w.nt.Emit("container_crashloop", map[string]string{
-			"container": name,
-			"result":    "容器崩溃循环",
-			"message":   "最近 " + w.humanWindow() + " 内已退出 " + strconv.Itoa(count) + " 次",
+			"container": name, "image": image,
+			"result":  "容器崩溃循环",
+			"message": "最近 " + w.humanWindow() + " 内已退出 " + strconv.Itoa(count) + " 次",
 		})
 	}
+}
+
+// exitCodeHint 把退出码翻译成人能看懂的一句话。
+//
+// 「退出码 137」这种在推送里等于没说：137 = 128+9 = 被 SIGKILL 强制终止，
+// 而用户真正要看的是「被谁、以什么方式杀掉」。128+n 这个约定是 Docker 里最常见
+// 的一类退出码，统一按信号名解释；其余自解释（0/1/2）或原样返回。
+func exitCodeHint(code int) string {
+	if name, ok := signalNames[code-128]; code > 128 && ok {
+		return fmt.Sprintf("%d（被 %s 信号终止）", code, name)
+	}
+	switch code {
+	case 1:
+		return "1（应用自身报错退出）"
+	case 2:
+		return "2（命令行用法错误）"
+	case 126:
+		return "126（命令无法执行：没有可执行权限）"
+	case 127:
+		return "127（命令未找到：入口点或解释器缺失）"
+	default:
+		return strconv.Itoa(code)
+	}
+}
+
+// signalNames 128+n 里 n 对应的信号名（覆盖常见的前 16 个）。
+var signalNames = map[int]string{
+	1:  "SIGHUP",
+	2:  "SIGINT",
+	3:  "SIGQUIT",
+	4:  "SIGILL",
+	6:  "SIGABRT",
+	8:  "SIGFPE",
+	9:  "SIGKILL",
+	11: "SIGSEGV",
+	13: "SIGPIPE",
+	14: "SIGALRM",
+	15: "SIGTERM",
 }
 
 func (w *Watcher) humanWindow() string {
@@ -220,13 +259,15 @@ func (w *Watcher) pingLoop(ctx context.Context) {
 			w.mu.Unlock()
 			if err != nil && wasHealthy {
 				w.nt.Emit("docker_disconnected", map[string]string{
-					"result": "Docker 连接断开", "message": err.Error(),
+					"result":  "容器管理与事件监控暂时中断",
+					"message": "Docker 守护进程当前不可达，恢复后会自动再通知一次",
 				})
 				w.st.AddRunLog("system", "docker", "failed", "无法连接 Docker 守护进程："+err.Error(), "")
 				w.bus.Publish("system", "docker", "failed", map[string]any{"error": err.Error()})
 			} else if err == nil && !wasHealthy {
 				w.nt.Emit("docker_reconnected", map[string]string{
-					"result": "Docker 连接恢复", "message": "守护进程已恢复可用",
+					"result":  "容器管理与事件监控已恢复",
+					"message": "Docker 守护进程已恢复可用",
 				})
 				w.st.AddRunLog("system", "docker", "success", "Docker 守护进程已恢复", "")
 				w.bus.Publish("system", "docker", "success", map[string]any{})

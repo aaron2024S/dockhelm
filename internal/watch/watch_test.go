@@ -80,3 +80,25 @@ func TestMarkAtPrunesStale(t *testing.T) {
 		t.Fatal("未过期项应保留")
 	}
 }
+
+// 2026-10-12 用户反馈：「退出码 137」在推送里等于没说。
+// 128+n 要翻成信号名，自解释的小退出码给一句人话，其余原样。
+func TestExitCodeHint(t *testing.T) {
+	cases := map[int]string{
+		0:   "0",
+		1:   "1（应用自身报错退出）",
+		2:   "2（命令行用法错误）",
+		126: "126（命令无法执行：没有可执行权限）",
+		127: "127（命令未找到：入口点或解释器缺失）",
+		137: "137（被 SIGKILL 信号终止）",
+		139: "139（被 SIGSEGV 信号终止）",
+		143: "143（被 SIGTERM 信号终止）",
+		129: "129（被 SIGHUP 信号终止）",
+		42:  "42",
+	}
+	for code, want := range cases {
+		if got := exitCodeHint(code); got != want {
+			t.Errorf("exitCodeHint(%d) = %q，期望 %q", code, got, want)
+		}
+	}
+}
