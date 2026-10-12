@@ -242,8 +242,8 @@ environment:
 | `update_available` | 检测到有更新 | 普通 | 关 |
 | `update_success` | 容器更新成功 | 普通 | 关 |
 | `update_failed` | 容器更新失败 | 紧急 | 开 |
-| `batch_update_done` | 批量更新完成 | 普通 | 开 |
-| `batch_update_failed` | 批量更新有失败 | 紧急 | 开 |
+| `batch_update_done` | 更新完成 | 普通 | 开 |
+| `batch_update_failed` | 更新有失败 | 紧急 | 开 |
 
 > 一次更新（手动批量 / 自动更新）**只发一条结果回执**：全部成功走
 > `batch_update_done`，有失败走 `batch_update_failed`（正文逐行列失败容器与原因）。
