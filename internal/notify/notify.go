@@ -391,10 +391,9 @@ func (m *Manager) compose(event, titleOverride, textOverride string, vars map[st
 		return titleOverride, textOverride
 	}
 	label := Label(event)
-	icon := "🔔"
-	if LevelOf(event) == LevelUrgent {
-		icon = "🚨"
-	}
+	// 图标按「语气」（成功/失败/警告/提示）走，不再按打扰强度分铃铛/警灯：
+	// 「更新完成」配铃铛没有语义，「容器退出」配警灯又过重（2026-10-12 用户反馈）。
+	icon := Icon(event)
 	head := label
 	if c := vars["container"]; c != "" {
 		head = fmt.Sprintf("%s · %s", label, c)

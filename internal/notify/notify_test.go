@@ -238,3 +238,116 @@ func TestJSONBodyEscapesControlChars(t *testing.T) {
 		t.Fatalf("转义后还原的正文不一致：\n got %q\nwant %q", parsed.Message, want)
 	}
 }
+
+// 2026-10-12 用户反馈：标题里的 🔔 / 🚨 太丑且没有语义 —— 🔔 跟「更新完成」毫无
+// 关系，🚨 用在容器退出上又过重。改为按「语气」给图标：成功 ✅ / 失败 ❌ /
+// 警告 ⚠️ / 提示 ℹ️。Tone 与 Level 是两个正交的轴，下面前两条测试分别钉住。
+
+// 每个事件都必须显式标注 Tone。漏标会静默回落成 ℹ️，让「容器崩溃循环」这种
+// 坏消息配上一个平淡的提示图标 —— 加新事件时必须一并想清楚语气。
+func TestEveryEventHasTone(t *testing.T) {
+	valid := map[string]bool{ToneSuccess: true, ToneFailed: true, ToneWarning: true, ToneInfo: true}
+	for _, e := range EventCatalog {
+		if !valid[e.Tone] {
+			t.Errorf("事件 %s 的 Tone=%q 不合法（只能 success/failed/warning/info）", e.Event, e.Tone)
+		}
+		if e.Level == LevelUrgent && e.Tone == ToneInfo {
+			t.Errorf("事件 %s 既是 urgent 又是 info 语气：会打扰人却只给个提示图标，两者别搞反", e.Event)
+		}
+	}
+}
+
+func TestIconFollowsTone(t *testing.T) {
+	cases := map[string]string{
+		"batch_update_done":   "✅",
+		"backup_success":      "✅",
+		"docker_reconnected":  "✅",
+		"batch_update_failed": "❌",
+		"container_died":      "❌",
+		"container_crashloop": "❌",
+		"login_locked":        "❌",
+		"health_failed":       "⚠️",
+		"login_failed":        "⚠️",
+		"password_changed":    "⚠️",
+		"restore_done":        "⚠️",
+		"login_success":       "ℹ️",
+		"update_available":    "ℹ️",
+		"test":                "ℹ️",
+		"完全不存在的事件":           "ℹ️",
+	}
+	for ev, want := range cases {
+		if got := Icon(ev); got != want {
+			t.Errorf("Icon(%q)=%q，应为 %q", ev, got, want)
+		}
+	}
+}
+
+// 标题前缀要与 Icon 一致，且「图标 + Dockhelm + 事件名 · 容器」的形状不变。
+func TestComposeTitleUsesToneIcon(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "dx4600"
+
+	title, _ := m.compose("container_died", "", "", map[string]string{"container": "nginx"})
+	if title != "❌ Dockhelm 容器意外退出 · nginx" {
+		t.Fatalf("标题不对：%q", title)
+	}
+	title, _ = m.compose("batch_update_done", "", "", map[string]string{"container": "nginx"})
+	if title != "✅ Dockhelm 更新完成 · nginx" {
+		t.Fatalf("标题不对：%q", title)
+	}
+	title, _ = m.compose("health_failed", "", "", map[string]string{"container": "web"})
+	if title != "⚠️ Dockhelm 健康检查失败 · web" {
+		t.Fatalf("标题不对：%q", title)
+	}
+	// 无容器事件：不加「 · 」
+	title, _ = m.compose("login_success", "", "", nil)
+	if title != "ℹ️ Dockhelm 登录成功" {
+		t.Fatalf("标题不对：%q", title)
+	}
+	// 两个覆盖都给了 ⇒ 原样透传（测试按钮走这条路）
+	title, text := m.compose("test", "自定义标题", "自定义正文", nil)
+	if title != "自定义标题" || text != "自定义正文" {
+		t.Fatalf("覆盖未生效：%q / %q", title, text)
+	}
+}
+
+// ntfy 的通知栏图标（tags）跟语气走，优先级/提示音仍跟打扰强度走 ——
+// 否则会出现「标题是 ⚠️、通知栏却是警灯」的割裂，或者把 warning 误当成不用急。
+func TestBuildValuesToneVsLevel(t *testing.T) {
+	for _, c := range []struct{ event, tag string }{
+		{"batch_update_done", "white_check_mark"},
+		{"container_died", "x"},
+		{"health_failed", "warning"},
+		{"test", "information_source"},
+		{"完全不存在的事件", "information_source"},
+	} {
+		v := buildValues(c.event, map[string]string{}, "h", "", "t", "x")
+		if v["tags"] != c.tag {
+			t.Errorf("%s 的 tags=%q，应为 %q", c.event, v["tags"], c.tag)
+		}
+	}
+
+	// health_failed：警告语气，但仍是 urgent ⇒ 高优先级 + 提示音不打折
+	v := buildValues("health_failed", map[string]string{}, "h", "", "t", "x")
+	if v["priority"] != "4" || v["sound"] != "«" || v["gotifyPriority"] != "8" {
+		t.Fatalf("urgent 事件的优先级/提示音丢了：%v", v)
+	}
+	if v["tone"] != ToneWarning {
+		t.Fatalf("tone 变量应为 warning，实际 %q", v["tone"])
+	}
+	// login_success：提示语气 + normal ⇒ 低优先级、无提示音
+	v = buildValues("login_success", map[string]string{}, "h", "", "t", "x")
+	if v["priority"] != "3" || v["sound"] != "" || v["gotifyPriority"] != "5" {
+		t.Fatalf("normal 事件的优先级不对：%v", v)
+	}
+	// tone 与 level 一样可被 vars 覆盖（自定义模板需要）
+	v = buildValues("container_died", map[string]string{"tone": "info"}, "h", "", "t", "x")
+	if v["tags"] != "information_source" || v["priority"] != "4" {
+		t.Fatalf("tone 覆盖后 tags 应跟 tone、priority 应仍跟 level：%v", v)
+	}
+}

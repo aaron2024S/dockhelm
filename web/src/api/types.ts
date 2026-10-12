@@ -313,6 +313,7 @@ export interface EventDef {
   label: string
   group: string
   level: 'urgent' | 'normal'
+  tone: 'success' | 'failed' | 'warning' | 'info'
   default: boolean
   description: string
 }

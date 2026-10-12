@@ -199,7 +199,8 @@ type TemplateVar struct {
 var TemplateVars = []TemplateVar{
 	{"event", "事件代码，如 update_failed"},
 	{"eventLabel", "事件中文名，如「容器更新失败」"},
-	{"level", "级别：urgent / normal"},
+	{"level", "打扰强度：urgent / normal（决定静默时段是否放行、优先级、提示音）"},
+	{"tone", "语气：success / failed / warning / info（决定标题图标）"},
 	{"title", "标题（已含事件名与容器名）"},
 	{"text", "完整正文（标题 + 详情 + 时间 + 主机）"},
 	{"message", "详情文字"},
@@ -212,7 +213,7 @@ var TemplateVars = []TemplateVar{
 	{"sound", "Bark 用：urgent 事件为 «» ，否则空"},
 	{"priority", "ntfy 用：urgent → 4，normal → 3"},
 	{"gotifyPriority", "Gotify 用：urgent → 8，normal → 5"},
-	{"tags", "ntfy 用：urgent → rotating_light，normal → whale"},
+	{"tags", "ntfy 用：success → white_check_mark，failed → x，warning → warning，info → information_source"},
 	{"titleEncoded", "URL 编码后的标题"},
 	{"textEncoded", "URL 编码后的正文"},
 }
@@ -266,6 +267,10 @@ func buildValues(event string, vars map[string]string, host, panelURL, title, te
 	if v, ok := vars["level"]; ok && v != "" {
 		level = v
 	}
+	tone := ToneOf(event)
+	if v, ok := vars["tone"]; ok && v != "" {
+		tone = v
+	}
 	out := map[string]string{}
 	for k, v := range vars {
 		out[k] = v
@@ -273,6 +278,7 @@ func buildValues(event string, vars map[string]string, host, panelURL, title, te
 	out["event"] = event
 	out["eventLabel"] = Label(event)
 	out["level"] = level
+	out["tone"] = tone
 	out["title"] = title
 	out["text"] = text
 	out["host"] = host
@@ -296,14 +302,19 @@ func buildValues(event string, vars map[string]string, host, panelURL, title, te
 		sound = "«"
 	}
 	out["sound"] = sound
+	// 打扰强度（优先级 / 提示音 / gotify priority）看 level；
+	// 通知栏小图标（ntfy tags）看 tone —— 与标题里的图标保持一致。
 	if level == LevelUrgent {
 		out["priority"] = "4"
-		out["tags"] = "rotating_light"
 		out["gotifyPriority"] = "8"
 	} else {
 		out["priority"] = "3"
-		out["tags"] = "whale"
 		out["gotifyPriority"] = "5"
+	}
+	if tag, ok := toneTag[tone]; ok {
+		out["tags"] = tag
+	} else {
+		out["tags"] = toneTag[ToneInfo]
 	}
 	out["titleEncoded"] = url.QueryEscape(title)
 	out["textEncoded"] = url.QueryEscape(text)
