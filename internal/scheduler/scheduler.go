@@ -7,6 +7,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -186,95 +187,187 @@ func (s *Scheduler) runJob(id int64) (string, bool) {
 		"id": sc.ID, "name": sc.Name, "action": sc.Action,
 	})
 
-	msg, ok := s.runner.Execute(context.Background(), *sc)
+	out := s.runner.Execute(context.Background(), *sc)
 	status := "success"
-	if !ok {
+	if !out.OK {
 		status = "failed"
 	}
-	_ = s.st.SetScheduleResult(id, status, msg)
-	s.st.AddRunLog("schedule", sc.Name, status, msg, "")
+	// 运行记录/上次结果只放单行简报；完整正文（含名单）留给推送，原始报错留给记录详情。
+	_ = s.st.SetScheduleResult(id, status, out.Brief)
+	s.st.AddRunLog("schedule", sc.Name, status, out.Brief, out.Detail)
 	s.bus.Publish("schedule", "done", status, map[string]any{
 		"id": sc.ID, "name": sc.Name, "action": sc.Action,
-		"message": msg, "durationMs": time.Since(started).Milliseconds(),
+		"message": out.Brief, "durationMs": time.Since(started).Milliseconds(),
 	})
 
-	if ok {
-		s.nt.Emit("schedule_success", map[string]string{
-			"result":  "计划任务执行成功",
-			"message": fmt.Sprintf("「%s」%s", sc.Name, msg),
-		})
-	} else {
-		s.nt.Emit("schedule_failed", map[string]string{
-			"result":  "计划任务执行失败",
-			"message": fmt.Sprintf("「%s」%s", sc.Name, msg),
-		})
+	event := "schedule_success"
+	if !out.OK {
+		event = "schedule_failed"
 	}
-	return msg, ok
+	// 标题用**任务名**（compose 把 container 拼在事件名后面）：
+	//   ① 定时任务一多，光看「计划任务执行成功」分不清是哪个任务；
+	//   ② 去重键是 event+":"+container，原来 container 恒为空 ⇒ 同一窗口内
+	//      两个不同任务的通知会互相顶掉（10 分钟内只发得出第一条）。
+	label := ActionMap[sc.Action].Label
+	if label == "" {
+		label = "计划任务"
+	}
+	s.nt.Emit(event, map[string]string{
+		"container": sc.Name,
+		"result":    label,
+		"message":   out.Full,
+	})
+	return out.Brief, out.OK
+}
+
+// Outcome 一次任务执行的产出。三个字段各司其职，别再挤进一个字符串：
+//
+//   - Brief  单行简报 → 运行记录、总览的「上次结果」（那里只显示一行）
+//   - Full   多行完整正文 → 推送的「详情」（点名容器、逐项失败）
+//   - Detail 原始错误 → 只进运行记录详情，**不进推送**
+//
+// 2026-10-12：以前只有一句「执行完成：成功 N 个，跳过 M 个」——看不出是哪几台，
+// 失败还把 `Error response from daemon: …` 原样甩进推送（用户 10-11 明确要求去掉）。
+type Outcome struct {
+	Brief  string
+	Full   string
+	Detail string
+	OK     bool
+}
+
+// outcome 简报与正文相同的结果（没有名单可列的场合）。
+func outcome(msg string, ok bool) Outcome { return Outcome{Brief: msg, Full: msg, OK: ok} }
+
+// maxScheduleNames 回执里最多点名几个容器，超出折叠成「等 N 个」。
+const maxScheduleNames = 12
+
+// foldNames 输出容器名单：先排序（遍历/完成顺序不定，排序后才稳定），
+// 超过 maxScheduleNames 个折叠。
+func foldNames(names []string) string {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	if len(sorted) > maxScheduleNames {
+		return strings.Join(sorted[:maxScheduleNames], "、") + fmt.Sprintf(" 等 %d 个", len(sorted))
+	}
+	return strings.Join(sorted, "、")
+}
+
+// summarize 把一次任务的结果拼成推送正文：统计行 + 已动作名单 + 跳过名单 + 失败名单。
+func summarize(action string, total, done, skipped int, doneNames, skippedNames, failedNames []string) string {
+	verb := map[string]string{
+		"start": "已启动", "stop": "已停止", "restart": "已重启",
+		"update": "已更新", "backup": "已备份",
+	}[action]
+	if verb == "" {
+		verb = "已完成"
+	}
+	skipWhy := map[string]string{
+		"start": "本就已运行", "stop": "本就已停止", "update": "已是最新",
+	}[action]
+
+	head := fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个", total, done, skipped)
+	if len(failedNames) > 0 {
+		head = fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个、失败 %d 个",
+			total, done, skipped, len(failedNames))
+	}
+	lines := []string{head}
+	if len(doneNames) > 0 {
+		lines = append(lines, verb+"："+foldNames(doneNames))
+	}
+	if len(skippedNames) > 0 {
+		note := "跳过"
+		if skipWhy != "" {
+			note = "跳过（" + skipWhy + "）"
+		}
+		lines = append(lines, note+"："+foldNames(skippedNames))
+	}
+	if len(failedNames) > 0 {
+		lines = append(lines, "失败："+foldNames(failedNames))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// countLine 单行简报（统计部分），进运行记录与总览。
+func countLine(total, done, skipped int, failed int) string {
+	if failed > 0 {
+		return fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个、失败 %d 个", total, done, skipped, failed)
+	}
+	return fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个", total, done, skipped)
 }
 
 // Execute 执行一次任务定义（供调度器与「立即运行」共用）。
-func (r *Runner) Execute(ctx context.Context, sc store.Schedule) (string, bool) {
+func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 	switch sc.Action {
 	case "prune_images":
 		freed, err := r.dc.PruneImages(ctx)
 		if err != nil {
-			return "清理未使用镜像失败：" + err.Error(), false
+			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}
-		return fmt.Sprintf("已清理未使用镜像，释放 %.1f MB", float64(freed)/1024/1024), true
+		return outcome(fmt.Sprintf("已清理未使用镜像，释放 %.1f MB", float64(freed)/1024/1024), true)
 	}
 
 	// 其余动作都必须有明确目标。空目标曾经等于「全部容器」，已于 0.2.x 取消 ——
 	// 老版本存下来的任务会走到这里，给一句说得清的话，而不是含糊的「没有匹配到任何容器」。
 	if len(sc.Targets) == 0 {
-		return "任务没有选择任何容器，已跳过", false
+		return outcome("任务没有选择任何容器，请检查任务配置", false)
 	}
 
 	if sc.Action == "backup" {
 		targets, err := r.resolveTargets(ctx, sc.Targets)
 		if err != nil {
-			return err.Error(), false
+			return outcome(err.Error(), false)
 		}
 		if len(targets) == 0 {
-			return "没有匹配到任何容器", false
+			return outcome("没有匹配到任何容器（可能已被删除或改名）", false)
 		}
-		done, failed := 0, []string{}
+		done := 0
+		doneNames, failedNames, raw := []string{}, []string{}, []string{}
 		for _, t := range targets {
 			if _, err := r.bk.Snapshot(ctx, t.name, "schedule:"+sc.Name); err != nil {
-				failed = append(failed, t.name)
+				failedNames = append(failedNames, t.name)
+				raw = append(raw, fmt.Sprintf("%s（%v）", t.name, err))
 			} else {
 				done++
+				doneNames = append(doneNames, t.name)
 			}
 		}
-		if len(failed) > 0 {
-			return fmt.Sprintf("已备份 %d 个，失败 %d 个（%s）", done, len(failed), strings.Join(failed, ",")), false
+		return Outcome{
+			Brief:  countLine(len(targets), done, 0, len(failedNames)),
+			Full:   summarize("backup", len(targets), done, 0, doneNames, nil, failedNames),
+			Detail: strings.Join(raw, "\n"),
+			OK:     len(failedNames) == 0,
 		}
-		return fmt.Sprintf("已备份 %d 个容器的配置快照", done), true
 	}
 
 	targets, err := r.resolveTargets(ctx, sc.Targets)
 	if err != nil {
-		return err.Error(), false
+		return outcome(err.Error(), false)
 	}
 	if len(targets) == 0 {
-		return "没有匹配到任何容器", false
+		return outcome("没有匹配到任何容器（可能已被删除或改名）", false)
 	}
 
-	done, skipped, failed := 0, 0, []string{}
+	done, skipped := 0, 0
+	doneNames, skippedNames, failedNames, raw := []string{}, []string{}, []string{}, []string{}
 	for _, t := range targets {
 		switch sc.Action {
 		case "start":
 			if t.running {
 				skipped++
+				skippedNames = append(skippedNames, t.name)
 				continue
 			}
 			if err := r.dc.ContainerAction(ctx, t.id, "start", nil); err != nil {
-				failed = append(failed, fmt.Sprintf("%s(%v)", t.name, err))
+				failedNames = append(failedNames, t.name)
+				raw = append(raw, fmt.Sprintf("%s（%v）", t.name, err))
 			} else {
 				done++
+				doneNames = append(doneNames, t.name)
 			}
 		case "stop":
 			if !t.running {
 				skipped++
+				skippedNames = append(skippedNames, t.name)
 				continue
 			}
 			timeout := 30
@@ -282,38 +375,48 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) (string, bool) 
 			intent.Mark(t.name)
 			if err := r.dc.ContainerAction(ctx, t.id, "stop", &timeout); err != nil {
 				intent.Release(t.name) // 没停成、不会有 die 事件，撤销豁免
-				failed = append(failed, fmt.Sprintf("%s(%v)", t.name, err))
+				failedNames = append(failedNames, t.name)
+				raw = append(raw, fmt.Sprintf("%s（%v）", t.name, err))
 			} else {
 				done++
+				doneNames = append(doneNames, t.name)
 			}
 		case "restart":
 			timeout := 30
 			intent.Mark(t.name)
 			if err := r.dc.ContainerAction(ctx, t.id, "restart", &timeout); err != nil {
 				intent.Release(t.name)
-				failed = append(failed, fmt.Sprintf("%s(%v)", t.name, err))
+				failedNames = append(failedNames, t.name)
+				raw = append(raw, fmt.Sprintf("%s（%v）", t.name, err))
 			} else {
 				done++
+				doneNames = append(doneNames, t.name)
 			}
 		case "update":
 			res := r.up.Update(ctx, t.id, false)
 			switch res.Status {
 			case updater.ResultUpdated:
 				done++
+				doneNames = append(doneNames, t.name)
 			case updater.ResultUpToDate, updater.ResultSkipped:
 				skipped++
+				skippedNames = append(skippedNames, t.name)
 			default:
-				failed = append(failed, fmt.Sprintf("%s(%s)", t.name, res.Message))
+				// 推送里只写「容器名：动作短语」；底层报错留给运行记录详情。
+				failedNames = append(failedNames, t.name+"："+updater.ShortPhase(res.Message))
+				raw = append(raw, fmt.Sprintf("%s（%s）", t.name, res.Message))
 			}
 		default:
-			return "未知的动作：" + sc.Action, false
+			return outcome("未知的动作："+sc.Action, false)
 		}
 	}
-	summary := fmt.Sprintf("执行完成：成功 %d 个，跳过 %d 个", done, skipped)
-	if len(failed) > 0 {
-		return summary + fmt.Sprintf("，失败 %d 个（%s）", len(failed), strings.Join(failed, "; ")), false
+
+	return Outcome{
+		Brief:  countLine(len(targets), done, skipped, len(failedNames)),
+		Full:   summarize(sc.Action, len(targets), done, skipped, doneNames, skippedNames, failedNames),
+		Detail: strings.Join(raw, "\n"),
+		OK:     len(failedNames) == 0,
 	}
-	return summary, true
 }
 
 type target struct {

@@ -23,11 +23,12 @@ var EventCatalog = []EventDef{
 	// —— 更新 ——
 	{Event: "update_available", Label: "检测到有更新", Group: "更新", Level: LevelNormal, Default: false,
 		Description: "例行检测发现有新镜像时提醒（批量巡检可能较频繁，默认关闭）"},
-	{Event: "update_success", Label: "容器更新成功", Group: "更新", Level: LevelNormal, Default: false,
-		Description: "计划任务更新单台容器成功时提醒（面板上的手动更新与自动更新走「更新完成」汇总那条，不再单独发）"},
-	{Event: "update_failed", Label: "容器更新失败", Group: "更新", Level: LevelUrgent, Default: true,
-		Description: "计划任务更新单台容器失败时提醒；手动/自动更新里的失败并入汇总条目，不单独推送"},
-	// ⚠ 这两个事件承载**所有**更新轮次（手动 / 自动、1 台 / 多台，见 updater.UpdateMany）：
+	// update_success / update_failed 已于 2026-10-12 删除：它们的唯一生产者是
+	// 计划任务里的单容器更新，而那批信息现在由 schedule_success / schedule_failed
+	// 一条承载（正文点名到容器），两个事件并存只会让一次计划任务更新失败发两条
+	// 紧急推送。历史记录里若还有这两个 key，前端 legacyEventLabels 会兜底成中文。
+	//
+	// ⚠ 下列两个事件承载**所有**更新轮次（手动 / 自动、1 台 / 多台，见 updater.UpdateMany）：
 	// Label 不能带「批量」二字，否则 1 台时标题会出现「批量更新完成 · 1 个容器」这种组合。
 	{Event: "batch_update_done", Label: "更新完成", Group: "更新", Level: LevelNormal, Default: true,
 		Description: "一次更新的结果汇总：共几个容器、更新了几个（点名）、失败几个（点名）——一次更新只有这一条，1 台也一样"},
@@ -44,9 +45,9 @@ var EventCatalog = []EventDef{
 
 	// —— 计划任务 ——
 	{Event: "schedule_success", Label: "计划任务执行成功", Group: "计划任务", Level: LevelNormal, Default: false,
-		Description: "定时启停/重启/更新任务执行成功"},
+		Description: "定时启停/重启/更新/备份任务成功时提醒，正文点名到具体容器"},
 	{Event: "schedule_failed", Label: "计划任务执行失败", Group: "计划任务", Level: LevelUrgent, Default: true,
-		Description: "定时任务执行出错"},
+		Description: "定时任务执行出错（含计划任务里的容器更新失败），正文点名失败容器；这是计划任务唯一的回执"},
 
 	// —— 备份 ——
 	{Event: "backup_success", Label: "备份完成", Group: "备份", Level: LevelNormal, Default: false,

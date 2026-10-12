@@ -240,8 +240,6 @@ environment:
 | 事件代码 | 名称 | 级别 | 默认 |
 | --- | --- | --- | --- |
 | `update_available` | 检测到有更新 | 普通 | 关 |
-| `update_success` | 容器更新成功 | 普通 | 关 |
-| `update_failed` | 容器更新失败 | 紧急 | 开 |
 | `batch_update_done` | 更新完成 | 普通 | 开 |
 | `batch_update_failed` | 更新有失败 | 紧急 | 开 |
 
@@ -249,7 +247,6 @@ environment:
 > `batch_update_done`，有失败走 `batch_update_failed`。正文对所有台数写法一致：
 > 共几个容器、更新了几个（点名）、失败几个（点名失败容器与原因）。
 > **哪怕这一轮只更新了一台，也照样有这一条** —— 台数不该决定有没有回执。
-> `update_success` / `update_failed` 只用于计划任务里的单容器更新。
 
 **容器**
 
@@ -273,6 +270,12 @@ environment:
 | `schedule_success` | 计划任务执行成功 | 普通 | 关 |
 | `schedule_failed` | 计划任务执行失败 | 紧急 | 开 |
 
+> 计划任务是**每条任务、每次执行一条回执**（标题带任务名）。正文点名到容器：
+> `共 3 个容器：成功 2 个、跳过 1 个` + `已停止：jellyfin、qbittorrent` +
+> `跳过（本就已停止）：immich-server`；有失败时追加 `失败：…`。
+> 计划任务里的**更新**动作也走这一条，不再另发 `update_success` / `update_failed`
+> —— 那会让一次失败发两条紧急推送。
+
 **备份**
 
 | 事件代码 | 名称 | 级别 | 默认 |
@@ -280,6 +283,9 @@ environment:
 | `backup_success` | 备份完成 | 普通 | 关 |
 | `backup_failed` | 备份失败 | 紧急 | 开 |
 | `restore_done` | 还原完成 | 紧急 | 开 |
+
+> 全量备份**只要有容器失败就升级成 `backup_failed`**（紧急、默认订阅），
+> 正文点名失败的容器；全部成功才走 `backup_success`（普通、默认关）。
 
 **系统**
 

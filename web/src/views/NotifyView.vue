@@ -272,6 +272,12 @@ const levelBadge = (lv: string) => (lv === 'urgent' ? 'dh-badge-err' : 'dh-badge
  *  都不命中才回落原始 key —— 保证任何情况下都不给用户看英文事件名。 */
 const legacyEventLabels: Record<string, string> = {
   auto_update_done: '自动更新完成',
+  // 「静默时段汇总」用的伪事件名：标题/正文由后端覆盖，但推送历史里存的是原始
+  // key，不映射就会在中文界面里冒出一个英文「digest」。
+  digest: '静默时段汇总',
+  // 2026-10-12 起已从事件目录删除（信息并入计划任务回执），历史记录里可能还躺着。
+  update_success: '容器更新成功',
+  update_failed: '容器更新失败',
 }
 
 const eventLabel = (event: string) =>

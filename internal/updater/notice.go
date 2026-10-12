@@ -85,6 +85,10 @@ func shortFailureLine(f string) string {
 	return name + "：" + shortPhase(msg)
 }
 
+// ShortPhase 从原始错误串里提取动作短语（「拉取失败：pull failed: …」→「拉取失败」）。
+// 导出是给计划任务复用的：它也要把底层报错压成短语，不该再写第二套规则。
+func ShortPhase(msg string) string { return shortPhase(msg) }
+
 // shortPhase 从原始错误里提取动作短语。
 func shortPhase(msg string) string {
 	if i := strings.Index(msg, "："); i > 0 && i <= 30 {

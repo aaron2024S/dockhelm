@@ -2,12 +2,36 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/updater"
 )
+
+// maxAvailableNames 「检测到有更新」正文里最多点名几个容器，超出折叠。
+const maxAvailableNames = 12
+
+// availableMessage 「检测到有更新」事件的正文（手动巡检与自动巡检共用一套措辞）。
+//
+// 2026-10-12 之前两条来源不一致：手动巡检把容器名单用 ", " 拼进 `container`
+// ⇒ 标题变成「检测到有更新 · a, b, c」，容器一多标题就爆；自动巡检则另写一句
+// 而且不带名单。现在统一成：标题不塞名单，正文写数量 + 点名（「、」分隔）。
+func availableMessage(count int, names []string) string {
+	msg := "共 " + itoa(count) + " 个容器有可用更新"
+	if len(names) == 0 {
+		return msg
+	}
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	if len(sorted) > maxAvailableNames {
+		return msg + "\n有更新的容器：" + strings.Join(sorted[:maxAvailableNames], "、") +
+			fmt.Sprintf(" 等 %d 个", len(sorted))
+	}
+	return msg + "\n有更新的容器：" + strings.Join(sorted, "、")
+}
 
 func (s *Server) hListUpdates(w http.ResponseWriter, r *http.Request) {
 	s.checkMu.RLock()
@@ -105,9 +129,8 @@ func (s *Server) hCheckUpdates(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.nt.Emit("update_available", map[string]string{
-			"container": strings.Join(names, ", "),
-			"result":    "检测到新版本",
-			"message":   "共 " + itoa(avail) + " 个容器有可用更新",
+			"result":  "检测到新版本",
+			"message": availableMessage(avail, names),
 		})
 	}
 	writeOK(w, map[string]any{"results": results, "checkedAt": time.Now().UTC().Format(time.RFC3339)})

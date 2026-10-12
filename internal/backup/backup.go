@@ -114,6 +114,11 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 		if err != nil {
 			res.Failed = append(res.Failed, BatchFailure{Container: names[0], Error: err.Error()})
 			res.Total = 1
+			// 单容器的批量备份失败也必须告警：成功那条走 backup_success（默认不订阅），
+			// 失败若也静默，用户就只会以为「备份好了」。
+			s.notify.Emit("backup_failed", map[string]string{
+				"container": names[0], "result": "备份失败", "message": err.Error(),
+			})
 			return res
 		}
 		res.Items = append(res.Items, *it)
@@ -129,14 +134,50 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 		}
 		res.Items = append(res.Items, *it)
 	}
-	summary := fmt.Sprintf("共 %d 个容器：成功 %d、失败 %d", res.Total, len(res.Items), len(res.Failed))
-	s.st.AddRunLog("backup", "batch", "success",
+	// 有失败就必须升级成 backup_failed（紧急、出厂默认订阅）。
+	//
+	// 2026-10-12 巡检发现：这里原来无论失败几台都发 backup_success（普通级、
+	// 出厂默认**不订阅**），失败数只写在正文里 —— 「24 台只成功 1 台」也是一条
+	// 默认收不到的「备份完成」，整体失败却悄无声息。更新那边是「有失败即升级
+	// 成紧急事件」，备份必须对齐。判定抽成 batchNotice 以便单测钉住。
+	event, result, status, summary := batchNotice(res.Total, len(res.Items), failedNames(res.Failed))
+	s.st.AddRunLog("backup", "batch", status,
 		fmt.Sprintf("全量备份 %d 个容器", len(res.Items)), summary)
-	s.notify.Emit("backup_success", map[string]string{
+	s.notify.Emit(event, map[string]string{
 		"container": fmt.Sprintf("%d 个容器", res.Total),
-		"result":    "全量备份完成", "message": summary,
+		"result":    result, "message": summary,
 	})
 	return res
+}
+
+// maxBackupNames 备份汇总里最多点名几个失败容器，超出折叠成「等 N 个」。
+const maxBackupNames = 12
+
+// failedNames 从批量失败列表里取容器名（纯函数，便于单测）。
+func failedNames(failed []BatchFailure) []string {
+	out := make([]string, 0, len(failed))
+	for _, f := range failed {
+		out = append(out, f.Container)
+	}
+	return out
+}
+
+// batchNotice 由「总数 / 成功数 / 失败容器名」决定整批备份的事件、结果短语、运行
+// 记录状态与正文。**只要有失败就升级成 backup_failed**（紧急、出厂默认订阅）——
+// 全部成功才走 backup_success（普通、出厂默认关）。
+func batchNotice(total, ok int, failed []string) (event, result, status, message string) {
+	summary := fmt.Sprintf("共 %d 个容器：成功 %d、失败 %d", total, ok, len(failed))
+	event, result, status = "backup_success", "全量备份完成", "success"
+	if len(failed) == 0 {
+		return event, result, status, summary
+	}
+	event, result, status = "backup_failed", "全量备份有失败", "failed"
+	names := append([]string(nil), failed...)
+	sort.Strings(names)
+	if len(names) > maxBackupNames {
+		names = append(names[:maxBackupNames], fmt.Sprintf("等 %d 个", len(names)))
+	}
+	return event, result, status, summary + "\n失败：" + strings.Join(names, "、")
 }
 
 // snapshotAt 用指定时间戳写一份快照（不带任何记录 / 通知副作用）。

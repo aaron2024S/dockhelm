@@ -130,13 +130,6 @@ type Updater struct {
 	// 漏到下一次，那会让「刚推了新版本却检测不到」变成偶发问题。
 	batchMu   sync.Mutex
 	batchPull map[string]*dockerx.PullResult
-
-	// inBatch 标记「正在跑一轮更新」。一轮里每个容器的成败由轮次末尾的
-	// 一条汇总通知统一报告，Update 里逐容器的 update_success/update_failed
-	// 必须闭嘴 —— 否则一台失败容器能发出两条推送、四个容器一轮就是六条，
-	// 用户要的是一条。**单容器批次同样置位**：逐条的 update_success 出厂默认
-	// 不订阅，靠它兜底会让「自动更新只命中 1 台」彻底没有推送。
-	inBatch atomic.Bool
 }
 
 // New 创建更新引擎。
@@ -335,15 +328,13 @@ func (u *Updater) lockForContainer(ctx context.Context, nameOrID string) (*sync.
 	return u.lockFor(key), nil
 }
 
-// emitResult 投递单个容器的更新结果通知。
-// 批量更新期间不投：那部分信息由批次末尾的一条汇总统一承载，
-// 否则一台失败容器会产生「逐条 + 汇总」两份重复推送。
-func (u *Updater) emitResult(event string, vars map[string]string) {
-	if u.inBatch.Load() {
-		return
-	}
-	u.notify.Emit(event, vars)
-}
+// 逐容器的更新结果通知（update_success / update_failed）已整体移除。
+//
+// 2026-10-12：`Update` 的直接调用者只有计划任务（面板上的手动/自动更新都走
+// UpdateMany），所以这两个事件与 `schedule_success` / `schedule_failed` 必然
+// 重复 —— 一次计划任务的更新失败会同时发「容器更新失败 · shell-town」和
+// 「计划任务执行失败 · 任务名」两条紧急推送。现在统一由计划任务那条承载
+// （正文点名到容器），这两个事件也随之从事件目录里删掉。
 
 // IsSelf 判断是否是 Dockhelm 自身。
 func (u *Updater) IsSelf(nameOrID string) bool {
@@ -625,9 +616,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	if err != nil {
 		u.status(res, ResultFailed, "拉取失败："+err.Error())
 		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
-		u.emitResult("update_failed", map[string]string{
-			"container": name, "image": res.Image, "result": "拉取失败", "message": err.Error(),
-		})
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -683,11 +671,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 			u.status(res, ResultBroken, failMsg+"（回滚失败，请手工处理）")
 		}
 		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
-		u.emitResult("update_failed", map[string]string{
-			"container": name, "image": res.Image,
-			"result":  map[bool]string{true: "已回滚", false: "回滚失败"}[rb],
-			"message": failMsg,
-		})
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -701,9 +684,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
 	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)
 
-	u.emitResult("update_success", map[string]string{
-		"container": name, "image": res.Image, "result": "更新成功",
-	})
 	res.Duration = time.Since(started).Milliseconds()
 	return res
 }
@@ -989,9 +969,7 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 // UpdateMany 更新入口（有界并发），并把这一轮的结果汇总成**一条**通知。
 //
 // source 只影响文案前缀："auto" = 定时/启动自动更新（写「自动更新…」），其余写「更新…」。
-// 一轮期间逐容器的 update_success/update_failed 一律被抑制（见 inBatch），
-// 成败统一由末尾那条汇总（batch_update_done / batch_update_failed）承载 ——
-// 那几个逐条事件出厂默认不订阅，承担不了回执职责。
+// 一轮的成败统一由末尾那条汇总（batch_update_done / batch_update_failed）承载，
 // 文案对一台和多台完全一致（统计 + 更新名单 + 失败名单），不再按台数换写法。
 func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, source string) []Result {
 	if len(names) == 0 {
@@ -1007,17 +985,6 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	// 留着会让「刚推的新版本」在下一轮里被上一次的旧结论吃掉。
 	u.resetBatchPull()
 	defer u.resetBatchPull()
-
-	// 逐容器通知一律让位给轮次末尾的汇总 —— **任何台数都置位**（1 台也一样）。
-	//
-	// 这里以前写的是 `if len(names) > 1`，理由是「单容器时逐条的 update_success
-	// 就是那条回执」。但 update_success 出厂默认**不订阅**（见 EventCatalog），
-	// 于是「自动更新这一轮恰好只命中 1 台」时用户收不到任何推送 ——
-	// 同一件事，命中 2 台有「自动更新完成」、命中 1 台却石沉大海（2026-10-12 反馈）。
-	// 汇总事件 batch_update_done/failed 是出厂订阅的，用它承载才稳定；
-	// 现在文案也不再按台数分叉（见 buildBatchNotice）。
-	u.inBatch.Store(true)
-	defer u.inBatch.Store(false)
 
 	batch := u.bus.Publish("update", "batch_start", "running", map[string]any{
 		"total": len(names),

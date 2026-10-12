@@ -431,9 +431,8 @@ func (s *Server) runAutoCycle(ctx context.Context, trigger string, execute bool)
 	})
 	if cfg.NotifyOnCheck && summary.Available > 0 {
 		s.nt.Emit("update_available", map[string]string{
-			"container": "",
-			"result":    "检测到新版本",
-			"message":   "本轮巡检发现 " + itoa(summary.Available) + " 个容器有可用更新",
+			"result":  "检测到新版本",
+			"message": availableMessage(summary.Available, autoupdate.Names(cands)),
 		})
 	}
 

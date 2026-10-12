@@ -271,7 +271,11 @@ func (m *Manager) Verify(password, ip, ua string, keep bool) (string, error) {
 		if n := m.store.CountRecentFailures(ip, LockWindow); n >= MaxFailures {
 			if m.Notify != nil {
 				m.Notify("login_locked", map[string]string{
-					"message": fmt.Sprintf("来源 %s 连续 %d 次密码错误，已临时锁定 %s", ip, n, LockWindow),
+					// 文案不要直接格式化 time.Duration —— 会输出「5m0s」这种 Go 原文，
+					// 在中文消息里很突兀；也别漏了 result（其余 19 个事件都有）。
+					"result": "登录连续失败，已临时锁定",
+					"message": fmt.Sprintf("来源 %s 连续 %d 次密码错误，已锁定 %d 分钟",
+						ip, n, int(LockWindow.Minutes())),
 				})
 			}
 			return "", ErrLocked
