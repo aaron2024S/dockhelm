@@ -14,11 +14,13 @@ import (
 	"strings"
 )
 
-// batchStats 一轮批量更新的统计与失败明细，全部由 UpdateMany 从结果集里数出来。
+// batchStats 一轮更新的统计与失败明细，全部由 UpdateMany 从结果集里数出来。
 type batchStats struct {
 	// source 触发来源："auto" = 定时/启动自动更新，其余按手动批量表述。
 	source string
 	total  int
+	// only 单容器批次时的容器名：非空则改用「一句话」文案，不摆统计句。
+	only string
 	// updated 成功重建；skipped 已是最新或被跳过；failed 拉取/重建失败。
 	updated  int
 	skipped  int
@@ -76,17 +78,50 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// buildBatchNotice 把一轮批量结果合成唯一的一条通知。
+// buildBatchNotice 把一轮更新的结果合成唯一的一条通知。
 func buildBatchNotice(s batchStats) BatchNotice {
+	auto := s.source == "auto"
+
+	// 单容器：一句话说清结果。
+	//
+	// 以前单容器根本不走汇总（UpdateMany 里按 len>1 判定），靠逐容器的
+	// update_success 当回执 —— 而那个事件出厂默认不订阅，于是「自动更新这轮
+	// 只命中 1 台」时用户什么都收不到。现在单容器也走汇总，但不能再套
+	// 「共 1 个容器：更新 1、已是最新/跳过 0、失败 0」那套统计句。
+	if s.total == 1 && s.only != "" {
+		if s.failed > 0 {
+			label := "更新失败"
+			if auto {
+				label = "自动更新有失败"
+			}
+			msg := s.only + " 更新失败"
+			if len(s.failures) > 0 {
+				if reason := shortPhase(strings.TrimPrefix(s.failures[0], s.only+"：")); reason != "" {
+					msg += "：" + reason
+				}
+			}
+			return BatchNotice{Event: "batch_update_failed", Result: label, Message: msg, Detail: msg}
+		}
+		label := "更新完成"
+		if auto {
+			label = "自动更新完成"
+		}
+		msg := s.only + " 已更新到最新镜像"
+		if s.updated == 0 {
+			msg = s.only + " 无需更新"
+		}
+		return BatchNotice{Event: "batch_update_done", Result: label, Message: msg, Detail: msg}
+	}
+
 	label := "批量更新完成"
-	if s.source == "auto" {
+	if auto {
 		label = "自动更新完成"
 	}
 	event := "batch_update_done"
 	if s.failed > 0 {
 		event = "batch_update_failed"
 		label = "批量更新有失败"
-		if s.source == "auto" {
+		if auto {
 			label = "自动更新有失败"
 		}
 	}

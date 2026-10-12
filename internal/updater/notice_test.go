@@ -6,8 +6,57 @@ import (
 	"testing"
 )
 
-// 汇总通知是用户唯一能收到的一条批量结果，格式错了就是信息丢了。
+// 汇总通知是用户唯一能收到的一条更新结果，格式错了就是信息丢了。
 // 这组用例把 buildBatchNotice 的输出钉住：事件名、级别语义、失败明细与折叠。
+
+// 2026-10-12 用户反馈：自动更新这一轮恰好只命中 1 台容器时，一条推送都没有。
+// 根因是单容器批次以前不走汇总，只发逐容器的 update_success，而该事件出厂
+// 默认不订阅（EventCatalog 里 Default:false）。现在单容器也走汇总。
+// 文案上不能再套「共 1 个容器：更新 1、已是最新/跳过 0、失败 0」那串统计。
+func TestNoticeSingleContainerAutoSuccess(t *testing.T) {
+	n := buildBatchNotice(batchStats{source: "auto", total: 1, only: "jellyfin", updated: 1})
+	if n.Event != "batch_update_done" {
+		t.Fatalf("事件应为 batch_update_done，实际 %s", n.Event)
+	}
+	if n.Result != "自动更新完成" {
+		t.Fatalf("结果短语应为「自动更新完成」，实际 %q", n.Result)
+	}
+	if n.Message != "jellyfin 已更新到最新镜像" {
+		t.Fatalf("单容器文案不符：%q", n.Message)
+	}
+	if strings.Contains(n.Message, "共 1 个容器") {
+		t.Fatalf("单容器不该出现统计句：%q", n.Message)
+	}
+}
+
+func TestNoticeSingleContainerAutoFailure(t *testing.T) {
+	n := buildBatchNotice(batchStats{source: "auto", total: 1, only: "shell-town", failed: 1,
+		failures: []string{"shell-town：拉取失败：pull failed: read tcp [240e::1]:443: connection reset"}})
+	if n.Event != "batch_update_failed" {
+		t.Fatalf("事件应为 batch_update_failed，实际 %s", n.Event)
+	}
+	if n.Result != "自动更新有失败" {
+		t.Fatalf("结果短语应为「自动更新有失败」，实际 %q", n.Result)
+	}
+	if n.Message != "shell-town 更新失败：拉取失败" {
+		t.Fatalf("单容器失败文案不符：%q", n.Message)
+	}
+	for _, banned := range []string{"read tcp", "pull failed", "240e"} {
+		if strings.Contains(n.Message, banned) {
+			t.Fatalf("推送正文不该出现底层报错 %q：%q", banned, n.Message)
+		}
+	}
+}
+
+func TestNoticeSingleContainerManualUpToDate(t *testing.T) {
+	n := buildBatchNotice(batchStats{source: "manual", total: 1, only: "web", skipped: 1})
+	if n.Result != "更新完成" {
+		t.Fatalf("手动单容器结果短语应为「更新完成」，实际 %q", n.Result)
+	}
+	if n.Message != "web 无需更新" {
+		t.Fatalf("已是最新/跳过的单容器文案不符：%q", n.Message)
+	}
+}
 
 func TestNoticeAllSuccess(t *testing.T) {
 	n := buildBatchNotice(batchStats{

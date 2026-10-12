@@ -24,13 +24,13 @@ var EventCatalog = []EventDef{
 	{Event: "update_available", Label: "检测到有更新", Group: "更新", Level: LevelNormal, Default: false,
 		Description: "例行检测发现有新镜像时提醒（批量巡检可能较频繁，默认关闭）"},
 	{Event: "update_success", Label: "容器更新成功", Group: "更新", Level: LevelNormal, Default: false,
-		Description: "单个容器成功更新到新镜像（手动更新单台、计划任务单容器）"},
+		Description: "计划任务更新单台容器成功时提醒（面板上的手动更新与自动更新走「更新完成」汇总那条，不再单独发）"},
 	{Event: "update_failed", Label: "容器更新失败", Group: "更新", Level: LevelUrgent, Default: true,
-		Description: "单个容器更新失败（手动单台、计划任务）；批量更新里的失败会并入批量汇总，不单独推送"},
+		Description: "计划任务更新单台容器失败时提醒；手动/自动更新里的失败并入汇总条目，不单独推送"},
 	{Event: "batch_update_done", Label: "批量更新完成", Group: "更新", Level: LevelNormal, Default: true,
-		Description: "一次批量/自动更新全部成功后的汇总，整批只有这一条"},
+		Description: "一次更新（手动批量或自动，哪怕只更新一台）全部成功后的汇总，一次更新只有这一条"},
 	{Event: "batch_update_failed", Label: "批量更新有失败", Group: "更新", Level: LevelUrgent, Default: true,
-		Description: "批量或自动更新里有容器失败时的汇总（整批只有这一条），正文逐行列出失败的容器与原因"},
+		Description: "一次更新里有容器失败时的汇总（整次只有这一条），正文逐行列出失败的容器与原因"},
 
 	// —— 容器 ——
 	{Event: "container_died", Label: "容器意外退出", Group: "容器", Level: LevelUrgent, Default: true,
