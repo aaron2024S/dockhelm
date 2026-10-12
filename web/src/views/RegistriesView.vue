@@ -422,7 +422,8 @@ onMounted(() => {
                 <th class="w-[175px]">连通性</th>
                 <th class="w-[130px]">上次测速</th>
                 <th class="w-[70px] text-right">启用</th>
-                <th class="w-[130px] text-right">操作</th>
+                <!-- 操作列左对齐：表头压在第一个动作（测速）上，与计划任务页同一规则 -->
+                <th class="w-[130px]">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -468,7 +469,7 @@ onMounted(() => {
                     @update:model-value="(v: boolean) => (m.enabled = v)"
                   />
                 </td>
-                <td class="text-right whitespace-nowrap">
+                <td class="whitespace-nowrap">
                   <button class="dh-link" :disabled="testingUrl === m.url" @click="testOne(m.url)">
                     {{ testingUrl === m.url ? '测速中…' : '测速' }}
                   </button>

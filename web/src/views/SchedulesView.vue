@@ -398,7 +398,8 @@ onUnmounted(() => closeStream?.())
               <th class="w-[11%]">上次执行</th>
               <th class="w-[13%]">下次执行</th>
               <th class="w-[7%] text-right">启用</th>
-              <th class="w-[16%] text-right">操作</th>
+              <!-- 操作列左对齐：表头要压在第一个按钮（运行）上，而不是悬在最后的删除上 -->
+              <th class="w-[16%]">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -439,7 +440,8 @@ onUnmounted(() => closeStream?.())
                 />
               </td>
               <td>
-                <div class="flex justify-end gap-1.5">
+                <!-- 与表头同一条左缘：别用 justify-end，否则表头对不到运行按钮 -->
+                <div class="flex gap-1.5">
                   <button class="dh-btn dh-btn-sm" :disabled="running === s.id" @click="runNow(s)">
                     <Loader2 v-if="running === s.id" class="h-3 w-3 dh-spin" />
                     <Play v-else class="h-3 w-3" />运行
