@@ -28,6 +28,8 @@ type Watcher struct {
 
 	mu       sync.Mutex
 	dieTimes map[string][]time.Time // 容器 -> 最近退出时间
+	killAt   map[string]time.Time   // 容器 -> 最近一次收到停止信号（kill 事件）的时间
+	oomAt    map[string]time.Time   // 容器 -> 最近一次 OOM 的时间
 	healthy  bool
 }
 
@@ -36,6 +38,8 @@ func New(dc *dockerx.Client, nt *notify.Manager, st *store.Store, b *bus.Bus, se
 	return &Watcher{
 		dc: dc, nt: nt, st: st, bus: b, self: selfFn,
 		dieTimes: map[string][]time.Time{},
+		killAt:   map[string]time.Time{},
+		oomAt:    map[string]time.Time{},
 		healthy:  true,
 	}
 }
@@ -45,6 +49,11 @@ const (
 	crashWindow = 10 * time.Minute
 	crashCount  = 3
 )
+
+// 外部主动停止的判定窗口。docker stop 先发 SIGTERM（kill 事件）再等宽限期，
+// compose 的 stop_grace_period 可能配到分钟级，窗口要盖得住整段等待。
+// 判定只在这个窗口内成立，过期即失效 —— 免得把随后的一次真崩溃也掩护掉。
+const stopWindow = 3 * time.Minute
 
 // Run 启动事件循环与连通性巡检，直到 ctx 取消。
 func (w *Watcher) Run(ctx context.Context) {
@@ -86,9 +95,14 @@ func (w *Watcher) handle(ev dockerx.Event) {
 			return
 		}
 		// dockhelm 自己发起的停止（更新 / 还原 / 计划任务 / 手动停）不是「意外退出」
-		// —— stop 宽限期一到 Docker 发 SIGKILL，退出码就是 137。没登记的 die
-		// （docker CLI、OOM、程序崩溃）照常告警。
+		// —— stop 宽限期一到 Docker 发 SIGKILL，退出码就是 137。
 		if intent.Consume(name) {
+			return
+		}
+		// 不是 dockhelm 发起的，但可能仍是**外部主动停止**：NAS 面板 / docker CLI /
+		// compose 重新部署都会走 docker stop，而它会先发 kill 事件（SIGTERM）再 die。
+		// 真崩溃与 OOM 不经过这条路（后者另有 oom 事件），照常告警。
+		if w.exitedByExternalStop(name, time.Now()) {
 			return
 		}
 		w.recordDie(name)
@@ -115,11 +129,50 @@ func (w *Watcher) handle(ev dockerx.Event) {
 			w.st.AddRunLog("container", name, "failed", "健康检查失败（unhealthy）", "")
 		}
 
+	case ev.Action == "kill":
+		// 主动停止的第一步：docker stop 发 SIGTERM、docker kill 发 SIGKILL，
+		// 守护进程都会先推一条 kill（Attributes.signal）。记下来给 die 判定用。
+		w.markAt(w.killAt, name, time.Now())
+
+	case ev.Action == "oom":
+		// 内核 OOM 杀的容器：这是真告警，不能因为「有 kill 事件」被掩护掉
+		// （个别守护进程版本在 OOM 时也会补一条 kill）。
+		w.markAt(w.oomAt, name, time.Now())
+
 	case ev.Action == "start", ev.Action == "restart":
 		w.bus.Publish("container", "event", "info", map[string]any{
 			"name": name, "action": ev.Action,
 		})
 	}
+}
+
+// markAt 记录「容器 -> 时间」，并顺手清掉过期项（容器多了也不让 map 无限长）。
+func (w *Watcher) markAt(m map[string]time.Time, name string, now time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	m[name] = now
+	for k, t := range m {
+		if now.Sub(t) > stopWindow {
+			delete(m, k)
+		}
+	}
+}
+
+// exitedByExternalStop 判断这次非零退出是否由「外部主动停止」引起：
+// stopWindow 内该容器出现过 kill 事件，且同期没有 oom 事件。
+// 命中后清掉 kill 记录 —— 后续窗口内若再来一次没有 kill 前置的退出，照常告警。
+func (w *Watcher) exitedByExternalStop(name string, now time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	k, ok := w.killAt[name]
+	if !ok || now.Sub(k) > stopWindow {
+		return false
+	}
+	if o, ok := w.oomAt[name]; ok && now.Sub(o) <= stopWindow {
+		return false
+	}
+	delete(w.killAt, name)
+	return true
 }
 
 // recordDie 记录退出时间，并在窗口内次数超阈值时发一次崩溃循环告警。

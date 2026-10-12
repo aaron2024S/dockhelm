@@ -252,6 +252,13 @@ environment:
 | `container_crashloop` | 容器崩溃循环 | 紧急 | 开 |
 | `health_failed` | 健康检查失败 | 紧急 | 开 |
 
+> `container_died` 只在**非零退出码**时触发，并且会把「有人主动停它」排除在外：
+> dockhelm 自己发起的停止（更新 / 还原 / 计划任务 / 界面上的停止按钮），以及
+> 外部的主动停止 —— NAS 面板、`docker compose` 重新部署、命令行 `docker stop`
+> （这些会先发一条带 SIGTERM 的 kill 事件再发 die，dockhelm 据此判定）。
+> 程序崩溃与容器被 OOM 杀死没有 kill 前置，照常告警。
+> 换句话说：报出来的都是真意外，被停下来的不会报。
+
 **计划任务**
 
 | 事件代码 | 名称 | 级别 | 默认 |
