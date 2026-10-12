@@ -6,83 +6,111 @@ import (
 	"testing"
 )
 
-// 汇总通知是用户唯一能收到的一条更新结果，格式错了就是信息丢了。
-// 这组用例把 buildBatchNotice 的输出钉住：事件名、级别语义、失败明细与折叠。
+// 一轮更新的结果通知是用户唯一能收到的一条更新回执，格式错了就是信息丢了。
+// 这组用例把 buildBatchNotice 的输出钉住：一台与多台文案完全同构、更新/失败名单、
+// 事件名与级别语义、明细折叠、底层报错不外泄。
 
-// 2026-10-12 用户反馈：自动更新这一轮恰好只命中 1 台容器时，一条推送都没有。
-// 根因是单容器批次以前不走汇总，只发逐容器的 update_success，而该事件出厂
-// 默认不订阅（EventCatalog 里 Default:false）。现在单容器也走汇总。
-// 文案上不能再套「共 1 个容器：更新 1、已是最新/跳过 0、失败 0」那串统计。
-func TestNoticeSingleContainerAutoSuccess(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "auto", total: 1, only: "jellyfin", updated: 1})
-	if n.Event != "batch_update_done" {
-		t.Fatalf("事件应为 batch_update_done，实际 %s", n.Event)
+// 2026-10-12 用户要求：不要按台数换文案，就统一写「共几个容器、更新了几个、
+// 更新的容器是哪些、失败了几个、失败的是哪些」。下面两条分别钉住 1 台与多台
+// 的输出 —— 除了数字与名单，结构必须逐行一致。
+func TestNoticeSingleContainerUsesSameShape(t *testing.T) {
+	one := buildBatchNotice(batchStats{
+		source: "auto", total: 1, updated: 1, updatedNames: []string{"jellyfin"},
+	})
+	if one.Event != "batch_update_done" {
+		t.Fatalf("事件应为 batch_update_done，实际 %s", one.Event)
 	}
-	if n.Result != "自动更新完成" {
-		t.Fatalf("结果短语应为「自动更新完成」，实际 %q", n.Result)
+	if one.Result != "自动更新完成" {
+		t.Fatalf("结果短语应为「自动更新完成」，实际 %q", one.Result)
 	}
-	if n.Message != "jellyfin 已更新到最新镜像" {
-		t.Fatalf("单容器文案不符：%q", n.Message)
+	lines := strings.Split(one.Message, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("一台的正文应为「统计 + 更新名单」两行，实际 %d 行：%q", len(lines), one.Message)
 	}
-	if strings.Contains(n.Message, "共 1 个容器") {
-		t.Fatalf("单容器不该出现统计句：%q", n.Message)
+	if lines[0] != "共 1 个容器：更新 1 个、失败 0 个、已是最新/跳过 0 个" {
+		t.Fatalf("统计行不符：%q", lines[0])
+	}
+	if lines[1] != "更新的容器：jellyfin" {
+		t.Fatalf("更新名单行不符：%q", lines[1])
+	}
+
+	// 多台：同样的两行结构，只是数字与名单不同。
+	many := buildBatchNotice(batchStats{
+		source: "auto", total: 3, updated: 2, skipped: 1,
+		updatedNames: []string{"jellyfin", "immich-server"},
+	})
+	mlines := strings.Split(many.Message, "\n")
+	if len(mlines) != 2 {
+		t.Fatalf("多台正文行数应与单台一致（2 行），实际 %d：%q", len(mlines), many.Message)
+	}
+	if mlines[0] != "共 3 个容器：更新 2 个、失败 0 个、已是最新/跳过 1 个" {
+		t.Fatalf("多台统计行不符：%q", mlines[0])
+	}
+	if mlines[1] != "更新的容器：immich-server、jellyfin" {
+		t.Fatalf("多台更新名单不符（应按名字排序）：%q", mlines[1])
+	}
+	if strings.Contains(many.Message, "批量") {
+		t.Fatalf("文案不该再出现「批量」：%q", many.Message)
 	}
 }
 
-func TestNoticeSingleContainerAutoFailure(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "auto", total: 1, only: "shell-town", failed: 1,
-		failures: []string{"shell-town：拉取失败：pull failed: read tcp [240e::1]:443: connection reset"}})
+func TestNoticeSingleContainerFailure(t *testing.T) {
+	n := buildBatchNotice(batchStats{
+		source: "auto", total: 1, failed: 1,
+		failures: []string{"shell-town：拉取失败：pull failed: read tcp [240e::1]:443: connection reset"},
+	})
 	if n.Event != "batch_update_failed" {
 		t.Fatalf("事件应为 batch_update_failed，实际 %s", n.Event)
 	}
 	if n.Result != "自动更新有失败" {
 		t.Fatalf("结果短语应为「自动更新有失败」，实际 %q", n.Result)
 	}
-	if n.Message != "shell-town 更新失败：拉取失败" {
-		t.Fatalf("单容器失败文案不符：%q", n.Message)
+	if !strings.Contains(n.Message, "共 1 个容器：更新 0 个、失败 1 个、已是最新/跳过 0 个") {
+		t.Fatalf("统计行不符：%q", n.Message)
 	}
-	for _, banned := range []string{"read tcp", "pull failed", "240e"} {
+	if !strings.Contains(n.Message, "失败的容器：") || !strings.Contains(n.Message, "· shell-town：拉取失败") {
+		t.Fatalf("失败名单不符：%q", n.Message)
+	}
+	if strings.Contains(n.Message, "更新的容器") {
+		t.Fatalf("没有成功的容器就不该有更新名单行：%q", n.Message)
+	}
+	for _, banned := range []string{"read tcp", "pull failed", "240e", "批量"} {
 		if strings.Contains(n.Message, banned) {
-			t.Fatalf("推送正文不该出现底层报错 %q：%q", banned, n.Message)
+			t.Fatalf("推送正文不该出现 %q：%q", banned, n.Message)
 		}
-	}
-}
-
-func TestNoticeSingleContainerManualUpToDate(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "manual", total: 1, only: "web", skipped: 1})
-	if n.Result != "更新完成" {
-		t.Fatalf("手动单容器结果短语应为「更新完成」，实际 %q", n.Result)
-	}
-	if n.Message != "web 无需更新" {
-		t.Fatalf("已是最新/跳过的单容器文案不符：%q", n.Message)
 	}
 }
 
 func TestNoticeAllSuccess(t *testing.T) {
 	n := buildBatchNotice(batchStats{
 		source: "manual", total: 4, updated: 3, skipped: 1,
-		reclaimed: 1610612736,
+		updatedNames: []string{"a", "b", "c"},
+		reclaimed:    1610612736,
 	})
 	if n.Event != "batch_update_done" {
 		t.Fatalf("全部成功应发 batch_update_done，实际 %s", n.Event)
 	}
-	if n.Result != "批量更新完成" {
-		t.Fatalf("手动批量文案不应带「自动」，实际 %q", n.Result)
+	if n.Result != "更新完成" {
+		t.Fatalf("手动轮次文案不应带「自动」或「批量」，实际 %q", n.Result)
 	}
-	if !strings.Contains(n.Message, "共 4 个容器：更新 3、已是最新/跳过 1、失败 0") {
+	if !strings.Contains(n.Message, "共 4 个容器：更新 3 个、失败 0 个、已是最新/跳过 1 个") {
 		t.Fatalf("统计句不符：%q", n.Message)
+	}
+	if !strings.Contains(n.Message, "更新的容器：a、b、c") {
+		t.Fatalf("更新名单缺失：%q", n.Message)
 	}
 	if !strings.Contains(n.Message, "回收 1.5 GB") {
 		t.Fatalf("应包含回收空间：%q", n.Message)
 	}
-	if strings.Contains(n.Message, "失败明细") {
-		t.Fatalf("没有失败就不该有明细段：%q", n.Message)
+	if strings.Contains(n.Message, "失败的容器") {
+		t.Fatalf("没有失败就不该有失败段：%q", n.Message)
 	}
 }
 
 func TestNoticeAutoSourceWording(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "auto", total: 4, updated: 2, skipped: 0, failed: 2,
-		failures: []string{"msedge：拉取失败", "music-assistant-server：拉取失败"}})
+	n := buildBatchNotice(batchStats{source: "auto", total: 4, updated: 2, failed: 2,
+		updatedNames: []string{"a", "b"},
+		failures:     []string{"msedge：拉取失败", "music-assistant-server：拉取失败"}})
 	if n.Event != "batch_update_failed" {
 		t.Fatalf("有失败应发 batch_update_failed，实际 %s", n.Event)
 	}
@@ -90,21 +118,22 @@ func TestNoticeAutoSourceWording(t *testing.T) {
 		t.Fatalf("自动触发文案应为「自动更新有失败」，实际 %q", n.Result)
 	}
 	// 用户投诉的场景：两条失败 + 两条重复汇总。合并后必须一条里能看全。
-	for _, want := range []string{"更新 2", "失败 2", "msedge", "music-assistant-server"} {
+	for _, want := range []string{"更新 2 个", "失败 2 个", "更新的容器：a、b",
+		"· msedge：拉取失败", "· music-assistant-server：拉取失败"} {
 		if !strings.Contains(n.Message, want) {
 			t.Fatalf("汇总里缺 %q：%q", want, n.Message)
 		}
 	}
 	if strings.Count(n.Message, "· ") != 2 {
-		t.Fatalf("失败明细应恰好两行：%q", n.Message)
+		t.Fatalf("失败名单应恰好两行：%q", n.Message)
 	}
 }
 
 func TestNoticeManualFailureWording(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "manual", total: 2, updated: 1, skipped: 0, failed: 1,
-		failures: []string{"web：启动失败"}})
-	if n.Result != "批量更新有失败" {
-		t.Fatalf("手动批量失败文案不符：%q", n.Result)
+	n := buildBatchNotice(batchStats{source: "manual", total: 2, updated: 1, failed: 1,
+		updatedNames: []string{"web"}, failures: []string{"db：启动失败"}})
+	if n.Result != "更新有失败" {
+		t.Fatalf("手动失败文案不符：%q", n.Result)
 	}
 }
 
@@ -127,20 +156,39 @@ func TestNoticeFailureFold(t *testing.T) {
 	}
 }
 
-func TestNoticeReusedAndNoReclaim(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "manual", total: 3, updated: 3, reused: 2})
-	if !strings.Contains(n.Message, "2 个容器复用了本轮已拉取的镜像") {
-		t.Fatalf("复用句缺失：%q", n.Message)
+// 更新名单也要有上限：一轮几十台时名单本身就能把推送撑爆。
+func TestNoticeNameListFold(t *testing.T) {
+	names := make([]string, 0, maxNameList+5)
+	for i := 0; i < maxNameList+5; i++ {
+		names = append(names, fmt.Sprintf("c%d", i))
 	}
-	if strings.Contains(n.Message, "回收") {
-		t.Fatalf("没有回收就不该提回收：%q", n.Message)
+	n := buildBatchNotice(batchStats{source: "manual", total: len(names), updated: len(names), updatedNames: names})
+	if !strings.Contains(n.Message, fmt.Sprintf("等 %d 个", len(names))) {
+		t.Fatalf("超长名单应折叠成「等 N 个」：%q", n.Message)
+	}
+	// 名单用一个「、」多一个名字：折叠后恰好点名 maxNameList 个。
+	listLine := ""
+	for _, l := range strings.Split(n.Message, "\n") {
+		if strings.HasPrefix(l, "更新的容器：") {
+			listLine = l
+		}
+	}
+	if listLine == "" {
+		t.Fatalf("缺更新名单行：%q", n.Message)
+	}
+	if got := strings.Count(listLine, "、"); got != maxNameList-1 {
+		t.Fatalf("折叠后应恰好点名 %d 个，实际 %d 个：%q", maxNameList, got+1, listLine)
+	}
+	// 运行记录里不折叠，方便面板点名。
+	if !strings.Contains(n.Detail, fmt.Sprintf("c%d", len(names)-1)) {
+		t.Fatalf("Detail 应保留全部名单：%q", n.Detail)
 	}
 }
 
 // 2026-10-11 用户反馈：推送里只写「哪些更新失败」，底层网络报错（read tcp […]）
 // 一概不要 —— 那串东西没人看得懂，还把消息撑到被转发链路腰斩。
 func TestNoticeShortensFailureDetail(t *testing.T) {
-	n := buildBatchNotice(batchStats{source: "auto", total: 3, updated: 0, skipped: 0, failed: 3,
+	n := buildBatchNotice(batchStats{source: "auto", total: 3, failed: 3,
 		failures: []string{
 			"music-assistant-server：拉取失败：pull failed: read tcp [240e:355:482f:5680:4006:3465:8422:e]:42218->[2606:4700:c800:2::154]:443: read: connection reset by peer",
 			"msedge：拉取失败：context deadline exceeded",

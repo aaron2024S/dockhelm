@@ -988,10 +988,11 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 
 // UpdateMany 更新入口（有界并发），并把这一轮的结果汇总成**一条**通知。
 //
-// source 只影响文案："auto" = 定时/启动自动更新（通知写「自动更新…」），其余按手动批量表述。
+// source 只影响文案前缀："auto" = 定时/启动自动更新（写「自动更新…」），其余写「更新…」。
 // 一轮期间逐容器的 update_success/update_failed 一律被抑制（见 inBatch），
 // 成败统一由末尾那条汇总（batch_update_done / batch_update_failed）承载 ——
 // 那几个逐条事件出厂默认不订阅，承担不了回执职责。
+// 文案对一台和多台完全一致（统计 + 更新名单 + 失败名单），不再按台数换写法。
 func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, source string) []Result {
 	if len(names) == 0 {
 		return nil
@@ -1007,13 +1008,14 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	u.resetBatchPull()
 	defer u.resetBatchPull()
 
-	// 逐容器通知一律让位给批次末尾的汇总 —— **包括只有一个容器的批次**。
+	// 逐容器通知一律让位给轮次末尾的汇总 —— **任何台数都置位**（1 台也一样）。
 	//
 	// 这里以前写的是 `if len(names) > 1`，理由是「单容器时逐条的 update_success
 	// 就是那条回执」。但 update_success 出厂默认**不订阅**（见 EventCatalog），
 	// 于是「自动更新这一轮恰好只命中 1 台」时用户收不到任何推送 ——
 	// 同一件事，命中 2 台有「自动更新完成」、命中 1 台却石沉大海（2026-10-12 反馈）。
-	// 汇总事件 batch_update_done/failed 是出厂订阅的，用它承载才稳定。
+	// 汇总事件 batch_update_done/failed 是出厂订阅的，用它承载才稳定；
+	// 现在文案也不再按台数分叉（见 buildBatchNotice）。
 	u.inBatch.Store(true)
 	defer u.inBatch.Store(false)
 
@@ -1040,6 +1042,7 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	var reclaimed int64
 	reused := 0
 	failures := []string{}
+	updatedNames := []string{}
 	for _, r := range out {
 		reclaimed += r.ReclaimedBytes
 		if r.PullReused {
@@ -1048,6 +1051,7 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 		switch r.Status {
 		case ResultUpdated:
 			updated++
+			updatedNames = append(updatedNames, r.Container)
 		case ResultUpToDate, ResultSkipped:
 			skipped++
 		default:
@@ -1060,35 +1064,26 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 		"reclaimedBytes": reclaimed, "pullReused": reused,
 	})
 	stats := batchStats{
-		source:    source,
-		total:     len(names),
-		updated:   updated,
-		skipped:   skipped,
-		failed:    failed,
-		reused:    reused,
-		reclaimed: reclaimed,
-		failures:  failures,
-	}
-	// 单容器批次：把容器名透给文案层，免得推送里出现「共 1 个容器：更新 1、
-	// 已是最新/跳过 0、失败 0」——只有一台时那串统计全是废话。
-	if len(names) == 1 && len(out) == 1 {
-		stats.only = out[0].Container
+		source:       source,
+		total:        len(names),
+		updatedNames: updatedNames,
+		updated:      updated,
+		skipped:      skipped,
+		failed:       failed,
+		reclaimed:    reclaimed,
+		failures:     failures,
 	}
 	notice := buildBatchNotice(stats)
 
-	// 运行记录只在**多容器**时补一条批次汇总：单容器在上面的 Update 里已经各写了一条
+	// 运行记录只在**多容器**时补一条批次汇总：单容器在上面的 Update 里已经写了一条
 	// （「已更新」/「失败」），再补汇总就是同一次更新在总览里出现两行。
 	if len(names) > 1 {
 		u.log("update", "batch", "done", notice.Result, notice.Detail)
 	}
 
-	// 通知**无论几个容器都要发**：这是这一轮更新的唯一回执。
-	label := fmt.Sprintf("%d 个容器", len(names))
-	if stats.only != "" {
-		label = stats.only
-	}
+	// 通知**无论几个容器都要发**：这是这一轮更新的唯一回执，单台与多台同一条文案。
 	u.notify.Emit(notice.Event, map[string]string{
-		"container": label,
+		"container": fmt.Sprintf("%d 个容器", len(names)),
 		"result":    notice.Result,
 		"message":   notice.Message,
 	})

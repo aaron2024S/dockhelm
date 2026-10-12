@@ -27,12 +27,12 @@ var EventCatalog = []EventDef{
 		Description: "计划任务更新单台容器成功时提醒（面板上的手动更新与自动更新走「更新完成」汇总那条，不再单独发）"},
 	{Event: "update_failed", Label: "容器更新失败", Group: "更新", Level: LevelUrgent, Default: true,
 		Description: "计划任务更新单台容器失败时提醒；手动/自动更新里的失败并入汇总条目，不单独推送"},
-	// ⚠ 这两个事件现在也承载**单容器**轮次（见 updater.UpdateMany）：Label 不能带
-	// 「批量」二字，否则推送标题会出现「批量更新完成 · jellyfin」这种自相矛盾的组合。
+	// ⚠ 这两个事件承载**所有**更新轮次（手动 / 自动、1 台 / 多台，见 updater.UpdateMany）：
+	// Label 不能带「批量」二字，否则 1 台时标题会出现「批量更新完成 · 1 个容器」这种组合。
 	{Event: "batch_update_done", Label: "更新完成", Group: "更新", Level: LevelNormal, Default: true,
-		Description: "一次更新（手动批量或自动，哪怕只更新一台）全部成功后的汇总，一次更新只有这一条"},
+		Description: "一次更新的结果汇总：共几个容器、更新了几个（点名）、失败几个（点名）——一次更新只有这一条，1 台也一样"},
 	{Event: "batch_update_failed", Label: "更新有失败", Group: "更新", Level: LevelUrgent, Default: true,
-		Description: "一次更新里有容器失败时的汇总（整次只有这一条），正文逐行列出失败的容器与原因"},
+		Description: "一次更新里有容器失败时的汇总（整次只有这一条），正文列出失败的容器与原因"},
 
 	// —— 容器 ——
 	{Event: "container_died", Label: "容器意外退出", Group: "容器", Level: LevelUrgent, Default: true,

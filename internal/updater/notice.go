@@ -1,31 +1,42 @@
-// 批量更新的汇总通知：一轮多容器批量（手动批量、定时自动更新共用）
+// 一轮更新的结果通知（手动更新、定时自动更新共用）。
 // 无论多少台、成败几何，**只发一条推送**。
+//
+// 文案**不区分单台与多台**：一台和十台用同一套结构 ——
+//
+//	共 4 个容器：更新 2 个、失败 1 个、已是最新/跳过 1 个
+//	更新的容器：jellyfin、immich-server
+//	失败的容器：
+//	· shell-town：拉取失败
 //
 // 2026-10-10 之前的行为是「每台失败各一条 + 批量汇总一条 + 自动更新再汇总一条」，
 // 一轮 4 台失败 2 台的自动更新能炸出 4 条推送，其中两条汇总内容几乎一样 ——
 // 用户原话：「1 和 3 看着就像有点重复，这些内容不是完全可以合并为一条吗」。
-// 现在统一为：全部成功 → batch_update_done（普通）；有失败 → batch_update_failed
-// （紧急，静默时段照发），失败容器与原因逐行列在正文里。
+// 于是合并成一条，但留下了「按台数换文案」的分支（1 台走一句话、多台走统计句）。
+// 2026-10-12 用户再次要求抹平：「不用刻意强调是批量更新……就写共几个容器更新、
+// 更新了几个、更新的容器是哪些、失败了几个、失败的是哪些，单个和多个完全统一」。
+// 现在没有 only 分支了：任何台数都是「统计行 + 更新名单 + 失败名单」。
+//
+// 事件仍是 batch_update_done（普通）/ batch_update_failed（紧急，静默时段照发）。
 
 package updater
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
-// batchStats 一轮更新的统计与失败明细，全部由 UpdateMany 从结果集里数出来。
+// batchStats 一轮更新的统计与明细，全部由 UpdateMany 从结果集里数出来。
 type batchStats struct {
-	// source 触发来源："auto" = 定时/启动自动更新，其余按手动批量表述。
+	// source 触发来源："auto" = 定时/启动自动更新，其余按手动表述（只影响结果短语）。
 	source string
 	total  int
-	// only 单容器批次时的容器名：非空则改用「一句话」文案，不摆统计句。
-	only string
+	// updatedNames 本轮成功重建的容器名（按结果集顺序），正文点名用。
+	updatedNames []string
 	// updated 成功重建；skipped 已是最新或被跳过；failed 拉取/重建失败。
-	updated  int
-	skipped  int
-	failed   int
-	reused   int // 本轮复用了同批已拉取镜像的容器数
+	updated   int
+	skipped   int
+	failed    int
 	reclaimed int64
 	// failures 每台失败容器一行：「容器名：原因」。
 	failures []string
@@ -46,6 +57,18 @@ type BatchNotice struct {
 // maxFailureLines 汇总里最多逐行列出的失败条数；超出折叠成一行提示。
 // NAS 上几十个容器同时拉挂的场景（比如断网后定时任务触发）不能刷出几十行推送。
 const maxFailureLines = 8
+
+// maxNameList 正文「更新的容器：」最多点名几个，超出折叠成「等 N 个」。
+// 一轮更新几十台时，名单本身就能把推送撑爆。
+const maxNameList = 12
+
+// joinNameList 用「、」连接容器名，超过 limit 个则截断并补「等 N 个」。
+func joinNameList(names []string, limit int) string {
+	if len(names) <= limit {
+		return strings.Join(names, "、")
+	}
+	return strings.Join(names[:limit], "、") + fmt.Sprintf(" 等 %d 个", len(names))
+}
 
 // shortFailureLine 把「容器名：拉取失败：pull failed: read tcp [240e:…]:443: …」
 // 压成「容器名：拉取失败」—— 推送里刷一长串底层网络报错没人看得懂
@@ -79,83 +102,70 @@ func truncateRunes(s string, n int) string {
 }
 
 // buildBatchNotice 把一轮更新的结果合成唯一的一条通知。
+// 一台和多台走**同一套**文案，不再有台数分支。
 func buildBatchNotice(s batchStats) BatchNotice {
 	auto := s.source == "auto"
 
-	// 单容器：一句话说清结果。
-	//
-	// 以前单容器根本不走汇总（UpdateMany 里按 len>1 判定），靠逐容器的
-	// update_success 当回执 —— 而那个事件出厂默认不订阅，于是「自动更新这轮
-	// 只命中 1 台」时用户什么都收不到。现在单容器也走汇总，但不能再套
-	// 「共 1 个容器：更新 1、已是最新/跳过 0、失败 0」那套统计句。
-	if s.total == 1 && s.only != "" {
-		if s.failed > 0 {
-			label := "更新失败"
-			if auto {
-				label = "自动更新有失败"
-			}
-			msg := s.only + " 更新失败"
-			if len(s.failures) > 0 {
-				if reason := shortPhase(strings.TrimPrefix(s.failures[0], s.only+"：")); reason != "" {
-					msg += "：" + reason
-				}
-			}
-			return BatchNotice{Event: "batch_update_failed", Result: label, Message: msg, Detail: msg}
-		}
-		label := "更新完成"
-		if auto {
-			label = "自动更新完成"
-		}
-		msg := s.only + " 已更新到最新镜像"
-		if s.updated == 0 {
-			msg = s.only + " 无需更新"
-		}
-		return BatchNotice{Event: "batch_update_done", Result: label, Message: msg, Detail: msg}
-	}
+	// 结果集来自并发更新，完成顺序不确定 —— 名单先排序，同一轮重跑文案才稳定
+	// （否则「jellyfin、immich-server」和「immich-server、jellyfin」会随机出现）。
+	updatedNames := append([]string(nil), s.updatedNames...)
+	sort.Strings(updatedNames)
+	failures := append([]string(nil), s.failures...)
+	sort.Strings(failures)
 
-	label := "批量更新完成"
+	label := "更新完成"
 	if auto {
 		label = "自动更新完成"
 	}
 	event := "batch_update_done"
 	if s.failed > 0 {
 		event = "batch_update_failed"
-		label = "批量更新有失败"
+		label = "更新有失败"
 		if auto {
 			label = "自动更新有失败"
 		}
 	}
 
-	summary := fmt.Sprintf("共 %d 个容器：更新 %d、已是最新/跳过 %d、失败 %d",
-		s.total, s.updated, s.skipped, s.failed)
+	summary := fmt.Sprintf("共 %d 个容器：更新 %d 个、失败 %d 个、已是最新/跳过 %d 个",
+		s.total, s.updated, s.failed, s.skipped)
 	if s.reclaimed > 0 {
 		summary += "，清理旧镜像回收 " + humanBytes(s.reclaimed)
 	}
-	if s.reused > 0 {
-		summary += fmt.Sprintf("，%d 个容器复用了本轮已拉取的镜像", s.reused)
-	}
 
 	lines := []string{summary}
-	detail := summary
-	if len(s.failures) > 0 {
-		shown := s.failures
+	if len(updatedNames) > 0 {
+		lines = append(lines, "更新的容器："+joinNameList(updatedNames, maxNameList))
+	}
+	if len(failures) > 0 {
+		shown := failures
 		if len(shown) > maxFailureLines {
 			shown = shown[:maxFailureLines]
 		}
-		lines = append(lines, "失败明细：")
+		lines = append(lines, "失败的容器：")
 		for _, f := range shown {
 			lines = append(lines, "· "+shortFailureLine(f))
 		}
-		if rest := len(s.failures) - len(shown); rest > 0 {
+		if rest := len(failures) - len(shown); rest > 0 {
 			lines = append(lines, fmt.Sprintf("（其余 %d 台略，详见面板更新记录）", rest))
 		}
-		detail = strings.Join(append([]string{summary}, s.failures...), "\n")
+	}
+
+	// 运行记录用全量：推送会被转发链路截断（见 truncateNotifyText），面板里不必。
+	detailLines := []string{summary}
+	if len(updatedNames) > 0 {
+		detailLines = append(detailLines, "更新的容器："+strings.Join(updatedNames, "、"))
+	}
+	if len(failures) > 0 {
+		detailLines = append(detailLines, "失败的容器：")
+		for _, f := range failures {
+			detailLines = append(detailLines, "· "+f)
+		}
 	}
 
 	return BatchNotice{
 		Event:   event,
 		Result:  label,
 		Message: strings.Join(lines, "\n"),
-		Detail:  detail,
+		Detail:  strings.Join(detailLines, "\n"),
 	}
 }
