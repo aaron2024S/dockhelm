@@ -485,17 +485,18 @@ onUnmounted(() => {
               <div class="w-[86px] flex-none text-[11.5px] text-text-5 max-md:order-1">
                 {{ logTime(l.ts) }}
               </div>
-              <span class="dh-badge flex-none max-md:order-2" :class="kindClass(l.kind, l.status)">
+              <!-- 徽标与对象名一律定宽占位：行与行之间四列起点对齐，
+                   不因「更新/镜像」两字与「自动巡检/计划任务」四字之差而参差。 -->
+              <span class="dh-badge min-w-[64px] flex-none justify-center max-md:order-2" :class="kindClass(l.kind, l.status)">
                 {{ runKindLabel(l.kind) }}
               </span>
-              <span class="dh-badge flex-none max-md:order-3" :class="resultBadge(l).cls">
+              <span class="dh-badge min-w-[42px] flex-none justify-center max-md:order-3" :class="resultBadge(l).cls">
                 {{ resultBadge(l).text }}
               </span>
               <span
-                v-if="refShown(l)"
-                class="max-w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3 max-md:order-4"
-                :title="l.ref"
-              >{{ l.ref }}</span>
+                class="w-[110px] flex-none truncate font-mono text-[11.5px] text-text-3 max-md:order-4"
+                :title="refShown(l) ? l.ref : undefined"
+              >{{ refShown(l) ? l.ref : '' }}</span>
               <span
                 class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-5"
                 :title="l.message"
