@@ -527,8 +527,9 @@ func (c *Client) RemoveImage(ctx context.Context, ref string, force, noprune boo
 //	{"Deleted":"sha256:..."}  删掉的镜像层（悬空镜像通常只有这个）
 //	{"Untagged":"repo:tag"}   顺手摘掉的标签
 //
-// Deleted 是裸 ID，直接展示没有信息量（悬空镜像本来就没有名字），所以
-// Count 才是给用户看的「清理了几个」；Untagged 拿得到名字时点名用。
+// Deleted 是裸 ID，直接展示没有信息量 —— 且里面混着随镜像一起删掉的中间层
+// ID（它们从没出现在镜像列表里），所以 Count 才是给用户看的「清理了几个」；
+// Untagged 拿得到名字时点名用。
 type PruneImageResult struct {
 	Deleted  []string
 	Untagged []string
@@ -552,25 +553,56 @@ func (r PruneImageResult) Summary() string {
 	return fmt.Sprintf("清理未使用镜像 %d 个，释放 %s", r.Count(), HumanBytes(r.Freed))
 }
 
-// Names 输出本次被删镜像的名单（运行记录的「对象行」用，已排序）。
+// Names 输出本次被删对象的名单（运行记录的「对象行」用，已排序）。
 //
-// byID 是**清理前**抓的一份 短ID → 可读名 对照 —— 删完就查不到了，顺序不能反。
+// idx 是**清理前**抓的对照表（BuildPruneNameIndex）—— 删完就查不到了，顺序不能反。
 // 名字怎么来：
 //   - 有标签的镜像 → 用它自己的标签（nginx:1.26）；
 //   - 掉过标签、但还记得仓库的 → 仓库@短摘要（aaron2024s/dockhelm@2c75e866d5a5）；
-//   - 曾经匿名（中间层）→ 「无标签镜像 <短ID>」。**不写裸 ID**：一个没有名字的
-//     东西也要说清它是什么，否则用户看到的又是一串不懂的十六进制。
+//   - 无标签的顶层镜像（本地构建、从没推送过）→ 「无标签镜像 <短ID>」；
+//   - 中间层（prune 的 Deleted 里混着的层 ID，从没出现在镜像列表里）→
+//     「中间层 <短ID>」。**不写裸 ID**：一个没有名字的东西也要说清它是什么，
+//     否则用户看到的又是一串不懂的十六进制。
 //
-// Untagged 条目（Docker 顺手摘掉的标签）本身就带名字，直接用。
-func (r PruneImageResult) Names(byID map[string]string) []string {
-	out := make([]string, 0, len(r.Untagged)+len(r.Deleted))
-	out = append(out, r.Untagged...)
+// Untagged 条目（Docker 顺手摘掉的标签）本身就带名字，直接用；摘要引用
+// （repo@sha256:...）归一成短摘要，且与 Deleted 里同一个镜像去重。
+func (r PruneImageResult) Names(idx PruneNameIndex) []string {
+	deleted := make([]string, 0, len(r.Deleted))
+	seenID := make(map[string]bool, len(r.Deleted))
 	for _, id := range r.Deleted {
-		if n := byID[ShortID(id)]; n != "" {
+		sid := ShortID(id)
+		if sid != "" && !seenID[sid] {
+			seenID[sid] = true
+			deleted = append(deleted, sid)
+		}
+	}
+	out := make([]string, 0, len(r.Untagged)+len(deleted))
+	for _, u := range r.Untagged {
+		if at := strings.LastIndex(u, "@"); at >= 0 {
+			dg := ShortID(u[at+1:])
+			if sid, ok := idx.Digests[dg]; ok && seenID[sid] {
+				continue // 这个镜像在 Deleted 里已经点过名，别列两遍
+			}
+			if dg != "" {
+				u = u[:at] + "@" + dg
+			}
+		}
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	for _, sid := range deleted {
+		if n := idx.Names[sid]; n != "" {
 			out = append(out, n)
 			continue
 		}
-		out = append(out, "无标签镜像 "+ShortID(id))
+		// ImageIDs 为 nil 说明清理前的列举失败了，无从区分镜像和层，
+		// 按最保守的说法兜底（见 BuildPruneNameIndex）。
+		if idx.ImageIDs == nil || idx.ImageIDs[sid] {
+			out = append(out, "无标签镜像 "+sid)
+		} else {
+			out = append(out, "中间层 "+sid)
+		}
 	}
 	sort.Strings(out)
 	return out

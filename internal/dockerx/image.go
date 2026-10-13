@@ -168,20 +168,46 @@ func HumanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
-// DanglingImageNames 列出「没有标签的镜像」（悬空层）的 短ID → 可读名 对照。
+// PruneNameIndex 清理镜像**之前**抓的对照表，给 PruneImageResult.Names 用。
 //
-// 用途：清理镜像**之前**抓一份名字，清理之后点名用 —— 删完这些镜像就查不到了，
-// 记录里只能剩一串裸 ID（用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」）。
-// 真正的匿名层取不到名字，**不写进 map**，由调用方兜底成「无标签镜像 <短ID>」。
-//
-// 只收没有标签的：有标签的镜像不会被 prune 删掉，收进来只是噪音。
-func (c *Client) DanglingImageNames(ctx context.Context) map[string]string {
+// 用途：清理之后这些镜像就查不到了，记录里只能剩一串裸 ID
+// （用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」）。
+type PruneNameIndex struct {
+	// Names 顶层镜像短ID → 可读名。只收没有标签的：有标签的镜像不会被
+	// 悬空清理删掉，收进来只是噪音；没名字的由 Names 兜底说明。
+	Names map[string]string
+	// ImageIDs 清理前**真实存在**的顶层镜像短ID。prune 返回的 Deleted 里
+	// 混着随镜像一起删掉的中间层 ID（官方文档示例就是两条 Deleted：一条是
+	// 镜像本身、一条是它的层）—— 中间层从没出现在 /images/json 里，靠这个
+	// 集合把「无标签镜像」和「中间层」区分开，别把层说成镜像。
+	ImageIDs map[string]bool
+	// Digests 12 位摘要 → 顶层镜像短ID。Untagged 里可能混着摘要引用
+	// （repo@sha256:...），用来归一化、以及和 Deleted 里同一个镜像去重。
+	Digests map[string]string
+}
+
+// BuildPruneNameIndex 在清理之前扫一遍镜像列表，抓回 Names 里能抓到的名字。
+// 抓不到不影响清理本身：列举失败返回零值，由调用方兜底。
+func (c *Client) BuildPruneNameIndex(ctx context.Context) PruneNameIndex {
+	idx := PruneNameIndex{}
 	list, err := c.ListImages(ctx, false)
 	if err != nil {
-		return nil
+		return idx // 零值 = 什么都不知道，Names 走最保守的兜底
 	}
-	byID := make(map[string]string, len(list))
+	idx.Names = make(map[string]string, len(list))
+	idx.ImageIDs = make(map[string]bool, len(list))
+	idx.Digests = make(map[string]string)
 	for _, im := range list {
+		sid := ShortID(im.ID)
+		idx.ImageIDs[sid] = true
+		for _, d := range im.RepoDigests {
+			if at := strings.LastIndex(d, "@"); at >= 0 {
+				dg := ShortID(d[at+1:])
+				if dg != "" {
+					idx.Digests[dg] = sid
+				}
+			}
+		}
 		tagged := false
 		for _, t := range im.RepoTags {
 			if t != "" && t != "<none>:<none>" {
@@ -193,10 +219,10 @@ func (c *Client) DanglingImageNames(ctx context.Context) map[string]string {
 			continue
 		}
 		if name := ImageDisplayName(im); name != "" {
-			byID[ShortID(im.ID)] = name
+			idx.Names[sid] = name
 		}
 	}
-	return byID
+	return idx
 }
 
 // ---------- 拉取 ----------

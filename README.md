@@ -108,8 +108,10 @@ Dockhelm 的流程是：
 | 清理镜像 | 清理未使用镜像 3 个，释放 1.2 GB | nginx:1.26、aaron2024s/dockhelm@2c75e866d5a5、无标签镜像 beef12345678 |
 | 删除卷 | 已删除卷 qbittorrent-downloads | — |
 
-镜像的名字要在**清理之前**抓（`dockerx.DanglingImageNames`）—— 删完就查不到了，
-只能剩一串裸 ID；真正的匿名层没有名字，写成「无标签镜像 <短ID>」而不是光摆 ID。
+镜像的名字要在**清理之前**抓（`dockerx.BuildPruneNameIndex`）—— 删完就查不到了，
+只能剩一串裸 ID。查不到名字的也说清它是什么：本地构建、从没推送过的顶层镜像写成
+「无标签镜像 <短ID>」，随镜像一起删掉的层（镜像页从不显示，Docker 也没给过它名字）
+写成「中间层 <短ID>」，而不是光摆一串 ID 让用户猜。
 
 ---
 

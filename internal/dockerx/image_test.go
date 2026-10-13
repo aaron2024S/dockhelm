@@ -205,17 +205,30 @@ func TestPruneImageSummary(t *testing.T) {
 // PruneImageResult.Names 输出「这次删了哪些镜像」—— 运行记录的对象行。
 //
 // 用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」。所以这里必须给名字，
-// 且绝不出现裸 ID：没有名字的匿名层也要说成「无标签镜像 <短ID>」。
+// 且绝不出现裸 ID：查不到名字的也要说清它是什么 —— 无标签的顶层镜像说成
+// 「无标签镜像 <短ID>」，prune 混进 Deleted 的中间层 ID 说成「中间层 <短ID>」
+// （用户 2026-10-13 追问「镜像页能读到名字，怎么记录里不行」——因为那是层，
+// 镜像页根本不显示，Docker 也没给过它任何名字）。
 func TestPruneImageNames(t *testing.T) {
 	res := PruneImageResult{
-		// 两个删掉的层：一个能从清理前的对照里查到名字，一个查不到（匿名层）
-		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa", "sha256:beef12345678bbbb"},
+		// 三个删掉的对象：一个查得到名字，一个是无标签的顶层镜像，
+		// 一个不在清理前的镜像列表里（随镜像一起删掉的中间层）。
+		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa", "sha256:beef12345678bbbb", "sha256:c0ffee0000001111"},
 		Untagged: []string{"nginx:1.26"},
 	}
-	byID := map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"}
+	idx := PruneNameIndex{
+		Names:    map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"},
+		ImageIDs: map[string]bool{"2c75e866d5a5": true, "beef12345678": true},
+		Digests:  map[string]string{},
+	}
 
-	got := res.Names(byID)
-	want := []string{"aaron2024s/dockhelm@2c75e866d5a5", "nginx:1.26", "无标签镜像 beef12345678"}
+	got := res.Names(idx)
+	want := []string{
+		"aaron2024s/dockhelm@2c75e866d5a5",
+		"nginx:1.26",
+		"中间层 c0ffee000000",
+		"无标签镜像 beef12345678",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("名单条数 = %d（%v），want %d", len(got), got, len(want))
 	}
@@ -225,15 +238,40 @@ func TestPruneImageNames(t *testing.T) {
 		}
 	}
 	for _, n := range got {
-		if n == "2c75e866d5a5" || n == "beef12345678" {
+		if n == "2c75e866d5a5" || n == "beef12345678" || n == "c0ffee000000" {
 			t.Errorf("名单里不该出现裸 ID：%q", n)
 		}
 	}
 
-	// byID 为 nil（清理前那次列举失败）也不能崩，且仍不出现裸 ID。
-	for _, n := range (PruneImageResult{Deleted: []string{"sha256:feedface0000"}}).Names(nil) {
+	// Untagged 里的摘要引用：归一成 仓库@短摘要；指向的镜像已在 Deleted
+	// 里点过名时去重，不让同一个镜像占两行。
+	res2 := PruneImageResult{
+		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa"},
+		Untagged: []string{"aaron2024s/dockhelm@sha256:2c75e866d5a5ffffffffffffffffffffffffffffffff", "redis@sha256:fedcba987654ffffffffffffffffffffffffffffffff"},
+	}
+	idx2 := PruneNameIndex{
+		Names:    map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"},
+		ImageIDs: map[string]bool{"2c75e866d5a5": true},
+		Digests:  map[string]string{"2c75e866d5a5": "2c75e866d5a5", "fedcba987654": "fedcba987654"},
+	}
+	got2 := res2.Names(idx2)
+	want2 := []string{
+		"aaron2024s/dockhelm@2c75e866d5a5",
+		"redis@fedcba987654",
+	}
+	if len(got2) != len(want2) {
+		t.Fatalf("去重后名单条数 = %d（%v），want %d", len(got2), got2, len(want2))
+	}
+	for i := range want2 {
+		if got2[i] != want2[i] {
+			t.Errorf("名单[%d] = %q, want %q（已排序）", i, got2[i], want2[i])
+		}
+	}
+
+	// 对照表整体缺失（清理前那次列举失败）也不能崩，且仍不出现裸 ID。
+	for _, n := range (PruneImageResult{Deleted: []string{"sha256:feedface0000"}}).Names(PruneNameIndex{}) {
 		if !strings.HasPrefix(n, "无标签镜像 ") {
-			t.Errorf("取不到名字时应兜底成「无标签镜像 <短ID>」，got %q", n)
+			t.Errorf("取不到对照时应兜底成「无标签镜像 <短ID>」，got %q", n)
 		}
 	}
 }

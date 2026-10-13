@@ -325,14 +325,14 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 	switch sc.Action {
 	case "prune_images":
 		// 同 api 的手动清理：名字要在清理**之前**抓，否则记录里只剩裸 ID。
-		byID := r.dc.DanglingImageNames(ctx)
+		idx := r.dc.BuildPruneNameIndex(ctx)
 		res, err := r.dc.PruneImages(ctx)
 		if err != nil {
 			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}
 		// 与手动清理（镜像页 / 设置页的按钮）共用同一句统计；名字也一起点上。
 		msg := res.Summary()
-		if names := dockerx.FoldNames(res.Names(byID), maxBriefNames); names != "" {
+		if names := dockerx.FoldNames(res.Names(idx), maxBriefNames); names != "" {
 			msg += "：" + names
 		}
 		return outcome(msg, true)

@@ -684,15 +684,15 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// 名字要在清理**之前**抓：删完这些镜像就查不到了，运行记录里只能剩一串裸 ID
 	// （用户 2026-10-13 的原话：「原 ID 行就要显示出删除了哪些镜像」）。
-	// 抓不到不影响清理本身，兜底是「无标签镜像 <短ID>」。
-	byID := s.dc.DanglingImageNames(ctx)
+	// 抓不到不影响清理本身，兜底是「无标签镜像 / 中间层 <短ID>」。
+	idx := s.dc.BuildPruneNameIndex(ctx)
 	res, err := s.dc.PruneImages(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	// 说明 = 几个 + 多大；对象行 = 具体删了哪些镜像。两层分工，不再让用户猜。
-	names := res.Names(byID)
+	names := res.Names(idx)
 	s.st.AddRunLog("image", dockerx.FoldNames(names, 8), "success", res.Summary(), "")
 	writeOK(w, map[string]any{
 		"ok": true, "count": res.Count(), "freedBytes": res.Freed,
