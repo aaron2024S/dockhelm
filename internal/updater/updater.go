@@ -281,15 +281,6 @@ func (u *Updater) log(kind, ref, status, message, detail string) {
 	}
 }
 
-// imageRunLog 运行记录的一行说明：前缀 + 镜像引用。
-// 镜像引用取不到（容器没有镜像字段等）时退回裸前缀，不留一个悬空的冒号。
-func imageRunLog(prefix, image string) string {
-	if image == "" {
-		return strings.TrimSuffix(strings.TrimSuffix(prefix, "："), " ")
-	}
-	return prefix + image
-}
-
 // lockFor 取某容器的串行锁（同一容器不会被两个任务同时更新）。
 //
 // key 必须是**容器名**。调用方不要直接用它 —— 用 lockForContainer，
@@ -640,7 +631,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	if res.NewImageID != "" && res.NewImageID == res.OldImageID && !force {
 		u.status(res, ResultUpToDate, "镜像已是最新")
 		u.step(res, "镜像 ID 未变化（%s），跳过重建", dockerx.ShortID(res.OldImageID))
-		u.log("update", name, "up_to_date", imageRunLog("镜像已是最新：", res.Image), strings.Join(res.Steps, "\n"))
+		u.log("update", name, "up_to_date", "镜像已是最新", strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -652,7 +643,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	}
 	if pr.UpToDate && !force && !fromCache {
 		u.status(res, ResultUpToDate, "镜像已是最新")
-		u.log("update", name, "up_to_date", imageRunLog("镜像已是最新：", res.Image), strings.Join(res.Steps, "\n"))
+		u.log("update", name, "up_to_date", "镜像已是最新", strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -689,7 +680,7 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	// 用户 2026-10-13 的要求是「一看知道是哪个镜像发生了什么」。
 	// 注意带的是**镜像引用**（nginx:1.27）而不是镜像 ID：同 tag 反复更新时
 	// ID 每次都变，那才是纯噪音；完整过程仍在 detail 里。
-	u.log("update", name, "success", imageRunLog("已更新镜像 ", res.Image), strings.Join(res.Steps, "\n"))
+	u.log("update", name, "success", "镜像已更新", strings.Join(res.Steps, "\n"))
 
 	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
 	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)

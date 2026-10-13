@@ -179,7 +179,7 @@ func TestPruneImageSummary(t *testing.T) {
 		Freed:   1536 * 1024 * 1024,
 	}
 	got := res.Summary()
-	want := "清理未使用镜像 2 个，释放 1.5 GB"
+	want := "清理未使用镜像 2 个，释放空间 1.5 GB"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

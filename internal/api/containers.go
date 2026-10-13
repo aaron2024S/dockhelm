@@ -691,9 +691,14 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// 说明 = 几个 + 多大；对象行 = 具体删了哪些镜像。两层分工，不再让用户猜。
+	// 说明 = 几个 + 多大 + 名单接在句尾；对象行留空 —— 名单跟在说明后面
+	// 是 2026-10-13 用户定的形状，不再拆成两列让眼睛来回对。
 	names := res.Names(idx)
-	s.st.AddRunLog("image", dockerx.FoldNames(names, 8), "success", res.Summary(), "")
+	detail := res.Summary()
+	if folded := dockerx.FoldNames(names, 8); folded != "" {
+		detail += "：" + folded
+	}
+	s.st.AddRunLog("image", "", "success", detail, "")
 	writeOK(w, map[string]any{
 		"ok": true, "count": res.Count(), "freedBytes": res.Freed,
 		"images": names,

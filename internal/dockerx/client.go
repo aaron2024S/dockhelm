@@ -541,8 +541,9 @@ func (r PruneImageResult) Count() int { return len(r.Deleted) + len(r.Untagged) 
 
 // Summary 把一次清理说成一句人话（运行记录 / 计划任务回执共用）。
 //
-// 形状是「几个 + 多大」：清理的对象是**悬空镜像**（<none>:<none>），逐个点名要
-// 靠 Names 里的名字，一句话里放不下。名字单独出（见 Names）。
+// 形状是「几个 + 多大」，名单由调用方接在句尾（见 Names）：
+// 「清理未使用镜像 3 个，释放空间 1.2 GB：nginx:1.26、…」—— 2026-10-13
+// 用户定的形状：统计在前，后面**跟着**具体镜像名称，不拆成两列。
 //
 // 放在这里而不是 api / scheduler：两边都要用，而 scheduler 不能反向依赖 api
 // （api → scheduler 已有依赖）。手动清理与计划任务清理从此同一句话。
@@ -550,7 +551,7 @@ func (r PruneImageResult) Summary() string {
 	if r.Count() == 0 {
 		return "没有可清理的未使用镜像"
 	}
-	return fmt.Sprintf("清理未使用镜像 %d 个，释放 %s", r.Count(), HumanBytes(r.Freed))
+	return fmt.Sprintf("清理未使用镜像 %d 个，释放空间 %s", r.Count(), HumanBytes(r.Freed))
 }
 
 // Names 输出本次被删对象的名单（运行记录的「对象行」用，已排序）。
