@@ -123,7 +123,9 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 			// docker 报错（No such container / permission denied）。改成一句人话，
 			// 原始错误仍进运行记录备查。
 			reasonText := SnapshotFailReason(err)
-			s.st.AddRunLog("backup", names[0], "failed", "配置快照失败", reasonText+"："+err.Error())
+			// 说明就是「备份失败」：对象列已是容器名，连读正好「qbittorrent 备份失败」
+			// —— 说明里再念一遍容器名就是重复（2026-10-13 定下的口径）。
+			s.st.AddRunLog("backup", names[0], "failed", "备份失败", reasonText+"："+err.Error())
 			s.notify.Emit("backup_failed", map[string]string{
 				"container": names[0], "result": "备份失败", "message": reasonText,
 			})
@@ -149,13 +151,22 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 	// 默认收不到的「备份完成」，整体失败却悄无声息。更新那边是「有失败即升级
 	// 成紧急事件」，备份必须对齐。判定抽成 batchNotice 以便单测钉住。
 	event, result, status, summary := batchNotice(res.Total, len(res.Items), failedNames(res.Failed))
-	// 说明 = 「全量备份 N 个容器，成功 X、失败 Y」（原先只说「全量备份 N 个容器」，
-	// 连成没成功都看不出来）；失败名单放**对象行** —— 那正是「这次涉及哪些容器」的位置，
-	// 而且原来这里塞的是内部占位符 "batch"，界面上既不显示也没信息量。
-	s.st.AddRunLog("backup",
-		dockerx.FoldNames(failedNames(res.Failed), maxBackupNames), status,
-		fmt.Sprintf("全量备份 %d 个容器，成功 %d、失败 %d", res.Total, len(res.Items), len(res.Failed)),
-		summary)
+	// 说明的形状（2026-10-13 用户定的）：失败名单**接在句尾**，对象行留空，
+	// 不再拆成两列 —— 和清理镜像（「清理未使用镜像 3 个，释放空间 1.2 GB：名单」）同款。
+	//   全军覆没 → 「3 个容器备份失败：a、b」（用户原话「x个容器备份失败: xxx、xxxx」）
+	//   有成有败 → 「备份 5 个容器，成功 4、失败 1：a」
+	//   全部成功 → 「全量备份 5 个容器，成功 5、失败 0」
+	var msg string
+	folded := dockerx.FoldNames(failedNames(res.Failed), maxBackupNames)
+	switch {
+	case len(res.Items) == 0 && len(res.Failed) > 0:
+		msg = fmt.Sprintf("%d 个容器备份失败：%s", res.Total, folded)
+	case len(res.Failed) > 0:
+		msg = fmt.Sprintf("备份 %d 个容器，成功 %d、失败 %d：%s", res.Total, len(res.Items), len(res.Failed), folded)
+	default:
+		msg = fmt.Sprintf("全量备份 %d 个容器，成功 %d、失败 %d", res.Total, len(res.Items), len(res.Failed))
+	}
+	s.st.AddRunLog("backup", "", status, msg, summary)
 	s.notify.Emit(event, map[string]string{
 		"container": fmt.Sprintf("%d 个容器", res.Total),
 		"result":    result, "message": summary,

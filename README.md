@@ -107,6 +107,7 @@ Dockhelm 的流程是：
 | 删除镜像 | 已删除镜像 nginx:1.27 | — |
 | 清理镜像 | 清理未使用镜像 3 个，释放空间 1.2 GB：nginx:1.26、aaron2024s/dockhelm@2c75e866d5a5、无标签镜像 beef12345678 | — |
 | 删除卷 | 已删除卷 qbittorrent-downloads | — |
+| 备份失败 | 3 个容器备份失败：qbittorrent、nginx（全军覆没）；有成有败则写「备份 5 个容器，成功 4、失败 1：nginx」 | — |
 
 镜像的名字要在**清理之前**抓（`dockerx.BuildPruneNameIndex`）—— 删完就查不到了，
 只能剩一串裸 ID。查不到名字的也说清它是什么：本地构建、从没推送过的顶层镜像写成
