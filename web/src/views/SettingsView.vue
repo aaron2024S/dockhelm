@@ -426,7 +426,10 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+    <!-- items-start：卡片高度贴合各自内容。默认 stretch 会把两卡拉到同高，
+         而运行记录列表有 max-h 封顶 —— 左卡更高时多出的高度全变成卡内空白
+         （列表下面一截纯白，看起来像没渲染完）。 -->
+    <div class="grid grid-cols-1 items-start gap-3.5 xl:grid-cols-2">
       <!-- 账户 -->
       <div class="dh-card">
         <div class="dh-card-head">
