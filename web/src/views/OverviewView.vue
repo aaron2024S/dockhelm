@@ -3,8 +3,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { AlertTriangle, ArrowRight } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
-import type { OverviewResponse, RunLog, Schedule } from '@/api/types'
-import { formatBytes, formatDayTime, runKindLabel, runRefShown } from '@/utils/format'
+import type { OverviewResponse, Schedule } from '@/api/types'
+import { formatBytes, formatDayTime } from '@/utils/format'
+import RunLogRow from '@/components/RunLogRow.vue'
 import { useAppStore } from '@/stores/app'
 
 const app = useAppStore()
@@ -178,14 +179,6 @@ function onRecentScroll() {
 // 数据换一批（含首次加载）后重算：等 DOM 落地再量（flush: 'post'）。
 watch(recentRows, syncRecentScroll, { flush: 'post' })
 
-/**
- * 总览行要不要显示对象名（ref 里存的是容器 / 计划任务 / 快照名）。
- * 规则与设置页记录表共用一份（utils/format.ts 的 runRefShown），别再各写一套。
- */
-function refShown(l: RunLog): boolean {
-  return runRefShown(l.kind, l.ref)
-}
-
 /** 图标：取名字首字母。 */
 function initial(name: string) {
   return (name[0] ?? '?').toUpperCase()
@@ -198,36 +191,12 @@ function imageShort(image: string) {
   return colon > 0 ? noTag.slice(0, colon) : noTag
 }
 
-function kindClass(kind: string, status: string) {
-  if (status === 'failed') return 'dh-badge-err'
-  if (kind === 'schedule') return 'dh-badge-accent'
-  return 'dh-badge-plain'
-}
+// 行的渲染（时间 / 类型徽标 / 结果徽标 / 对象名+说明一行）与设置页运行记录
+// 共用同一个组件 RunLogRow.vue —— 用户 2026-10-13：「运行记录就是最近执行记录
+// 更多的展示…显示内容保持一致就好了」。徽标配色、时间格式、对象名规则
+// （utils/format.ts 的 runRefShown）都在那边，两页不会再分叉。
 
-function resultBadge(l: RunLog) {
-  if (l.status === 'success') return { text: '成功', cls: 'dh-badge-run' }
-  if (l.status === 'up_to_date') return { text: '跳过', cls: 'dh-badge-accent' }
-  if (l.status === 'failed') return { text: '失败', cls: 'dh-badge-err' }
-  if (l.status === 'done') return { text: '完成', cls: 'dh-badge-run' }
-  return { text: l.status || '—', cls: 'dh-badge-plain' }
-}
-
-/** 时间列：今天只出 HH:mm，昨天带前缀，更早出日期。 */
-function logTime(ts: string) {
-  const t = Date.parse(ts)
-  if (Number.isNaN(t)) return '—'
-  const d = new Date(t)
-  const p = (n: number) => String(n).padStart(2, '0')
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
-  const today0 = new Date()
-  today0.setHours(0, 0, 0, 0)
-  const day0 = new Date(t)
-  day0.setHours(0, 0, 0, 0)
-  const diff = Math.round((day0.getTime() - today0.getTime()) / 86400000)
-  if (diff === 0) return hm
-  if (diff === -1) return `昨天 ${hm}`
-  return formatDayTime(ts, 'date')
-}
+/** 时间列格式（今天只出 HH:mm / 昨天带前缀 / 更早出日期）随行组件一起搬走了。 */
 
 // 顶栏「检查更新」跑完一轮后重新拉总览（含待更新清单）——本页不再有自己的检测按钮。
 watch(
@@ -478,28 +447,7 @@ onUnmounted(() => {
              不用滑动就能看全，剩下的当作细节滑出来。 -->
         <div ref="recentScrollEl" class="dh-xscroll" @scroll.passive="onRecentScroll">
           <div class="flex flex-col max-md:min-w-[600px]">
-            <div v-for="l in recentRows" :key="l.id" class="dh-tl">
-              <div class="w-[86px] flex-none text-[11.5px] text-text-5 max-md:order-1">
-                {{ logTime(l.ts) }}
-              </div>
-              <!-- 徽标定宽居中：行与行之间徽标列起点对齐，
-                   不因「更新/镜像」两字与「自动巡检/计划任务」四字之差而参差。
-                   对象名+消息是同一列的整体：对象名作消息格内的等宽前缀，
-                   中间不留空档。 -->
-              <span class="dh-badge min-w-[64px] flex-none justify-center max-md:order-2" :class="kindClass(l.kind, l.status)">
-                {{ runKindLabel(l.kind) }}
-              </span>
-              <span class="dh-badge min-w-[42px] flex-none justify-center max-md:order-3" :class="resultBadge(l).cls">
-                {{ resultBadge(l).text }}
-              </span>
-              <span
-                class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-4"
-                :title="refShown(l) ? `${l.ref} ${l.message}` : l.message"
-              ><span
-                  v-if="refShown(l)"
-                  class="mr-1.5 font-mono text-[11.5px] text-text-3"
-                >{{ l.ref }}</span>{{ l.message }}</span>
-            </div>
+            <RunLogRow v-for="l in recentRows" :key="l.id" :log="l" />
           </div>
         </div>
         <!-- 右缘渐隐：表示右边还有内容；滑到底就收掉。左缘同理（滑回去后消失）。 -->

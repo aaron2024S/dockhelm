@@ -19,10 +19,11 @@ import {
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { AutoUpdateInfo, ContainerView, RunLog, Settings } from '@/api/types'
-import { formatDateTime, relativeTime, runKindLabel, runRefShown } from '@/utils/format'
+import { formatDateTime, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
 import Modal from '@/components/Modal.vue'
+import RunLogRow from '@/components/RunLogRow.vue'
 import SettingRow from '@/components/SettingRow.vue'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 
@@ -591,33 +592,12 @@ onMounted(() => void load())
           </div>
         </div>
         <div v-if="!logs.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
-        <div v-else class="dh-scroll max-h-[560px] overflow-auto">
-          <table class="dh-table">
-            <thead>
-              <tr>
-                <th class="w-[120px]">时间</th>
-                <th class="w-[86px]">类型</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="l in logs" :key="l.id">
-                <td class="whitespace-nowrap text-[11.5px] text-text-5">{{ relativeTime(l.ts) }}</td>
-                <td>
-                  <span
-                    class="dh-badge"
-                    :class="l.status === 'failed' ? 'dh-badge-err' : l.status === 'success' || l.status === 'up_to_date' ? 'dh-badge-accent' : 'dh-badge-plain'"
-                  >
-                    {{ runKindLabel(l.kind) }}
-                  </span>
-                </td>
-                <td>
-                  <div class="text-[12px] text-text-2">{{ l.message }}</div>
-                  <div v-if="runRefShown(l.kind, l.ref)" class="font-mono text-[10.5px] text-text-6">{{ l.ref }}</div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- 与总览「最近执行记录」同一行组件、同一列（时间 / 类型 / 结果 / 对象名+说明一行）。
+             以前这里是表格：说明一行、对象名又一行，跟总览对不上（2026-10-13 用户指出）。 -->
+        <div v-else class="dh-card-body py-1">
+          <div class="dh-scroll max-h-[560px] overflow-auto">
+            <RunLogRow v-for="l in logs" :key="l.id" :log="l" />
+          </div>
         </div>
       </div>
     </div>
