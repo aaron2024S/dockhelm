@@ -602,12 +602,56 @@ func (s *Server) hRemoveImage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
 	id := pathParam(r, "id")
+	// 名字要在删除前取 —— 删完 inspect 就 404 了。取不到（镜像已不在、
+	// 守护进程刚断开）不拦着删除，运行记录退回只写短 ID。
+	name := ""
+	if insp, err := s.dc.ImageInspect(ctx, id); err == nil {
+		name = inspectImageName(insp)
+	}
 	if err := s.dc.RemoveImage(ctx, id, queryBool(r, "force", false), queryBool(r, "noprune", false)); err != nil {
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}
-	s.st.AddRunLog("image", shortID(id), "success", "已删除镜像", "")
+	if name == "" {
+		name = shortID(id)
+	}
+	s.st.AddRunLog("image", shortID(id), "success", "已删除镜像 "+name, "")
 	writeOK(w, map[string]any{"ok": true})
+}
+
+// inspectImageName 从 inspect 结果里挑一个可读名字：优先第一个有效 RepoTag
+// （nginx:1.27）；无 tag 镜像退回 RepoDigests 的仓库名 + 12 位短摘要
+// （aaron2024s/dockhelm@2c75e866d5a5，光写仓库名分不清是哪一个）；再拿不到
+// 返回空串，由调用方兜底成短 ID。
+func inspectImageName(insp map[string]any) string {
+	if tags, ok := insp["RepoTags"].([]any); ok {
+		for _, t := range tags {
+			if s, ok := t.(string); ok && s != "" && s != "<none>:<none>" {
+				return s
+			}
+		}
+	}
+	if ds, ok := insp["RepoDigests"].([]any); ok {
+		var list []string
+		for _, d := range ds {
+			if s, ok := d.(string); ok && s != "" {
+				list = append(list, s)
+			}
+		}
+		if repo := repoDisplayName(list); repo != "" {
+			if at := strings.LastIndex(list[0], "@"); at >= 0 {
+				digest := strings.TrimPrefix(list[0][at+1:], "sha256:")
+				if len(digest) > 12 {
+					digest = digest[:12]
+				}
+				if digest != "" {
+					return repo + "@" + digest
+				}
+			}
+			return repo
+		}
+	}
+	return ""
 }
 
 func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
