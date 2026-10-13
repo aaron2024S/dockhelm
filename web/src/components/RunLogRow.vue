@@ -11,7 +11,7 @@
  * 单个对象的记录把名字写进说明里，见 utils/format.ts 的 runRefShown。
  */
 import type { RunLog } from '@/api/types'
-import { formatDayTime, runKindLabel, runRefShown } from '@/utils/format'
+import { formatDayTime, runKindLabel, runRefShown, runRefText } from '@/utils/format'
 
 const props = defineProps<{ log: RunLog }>()
 
@@ -71,12 +71,13 @@ function refShown(): boolean {
     >
       {{ resultBadge(log).text }}
     </span>
-    <!-- 对象名 + 说明是同一列的整体：对象名作说明格内的等宽前缀，中间不留空档。 -->
+    <!-- 对象名 + 说明是同一列的整体：对象名作说明格内的等宽前缀，中间不留空档。
+         计划任务的对象名是任务名，用「」括起来（见 utils/format.ts 的 runRefText）。 -->
     <span
       class="min-w-0 flex-1 truncate text-[12.5px] text-text-2 max-md:order-4"
-      :title="refShown() ? `${log.ref} ${log.message}` : log.message"
+      :title="refShown() ? `${runRefText(log.kind, log.ref)} ${log.message}` : log.message"
     >
-      <span v-if="refShown()" class="mr-1.5 font-mono text-[11.5px] text-text-3">{{ log.ref }}</span>{{ log.message }}
+      <span v-if="refShown()" class="mr-1.5 font-mono text-[11.5px] text-text-3">{{ runRefText(log.kind, log.ref) }}</span>{{ log.message }}
     </span>
   </div>
 </template>

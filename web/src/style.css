@@ -91,7 +91,11 @@
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  /* CJK 兜底字体写在 monospace 之前：等宽字体里没有汉字，浏览器按顺序回退，
+     显式给出雅黑 / 苹方，避免汉字落到度量异常的等宽 CJK 字体上 ——
+     那种情况下汉字会互相重叠、看起来「挤在一起」（用户 2026-10-13 反馈）。 */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    'Microsoft YaHei', 'PingFang SC', monospace;
 }
 
 /* ── 亮色主题覆盖 ────────────────────────────────────────────────
@@ -209,6 +213,11 @@ html.light {
     font-size: 13px;
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
+    /* 禁掉移动端「字体放大」（Font Boosting / Text Autosizing）：
+       它会按屏宽自己把字号撑大，而布局宽度不变 —— 汉字常被撑到互相重叠。
+       本项目小字号多（11.5~12.5px），必须由我们说了算。 */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
   :focus-visible {
     outline: 2px solid var(--color-accent);

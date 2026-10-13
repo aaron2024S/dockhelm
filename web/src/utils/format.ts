@@ -46,6 +46,18 @@ export function runRefShown(kind: string, ref: string | undefined | null): boole
   return !REF_INTERNAL_KINDS.has(kind)
 }
 
+/**
+ * 运行记录「对象名」的显示文本。
+ *
+ * 计划任务的 ref 是**任务名**（用户自己取的，如「定时启动」「夜间重启下载器」），
+ * 和容器名共用同一列，一眼分不清是任务还是容器。用中文直角引号「」括起来，
+ * 并排读就是「「定时启动」 启动容器：共 1 个容器…」——（用户 2026-10-13 要求）。
+ * 其它 kind 的 ref 是名单（镜像 / 容器），保持原样，不加引号。
+ */
+export function runRefText(kind: string, ref: string): string {
+  return kind === 'schedule' && ref ? `「${ref}」` : ref
+}
+
 
 export function formatBytes(n: number | undefined | null, digits = 1): string {
   if (n === undefined || n === null || Number.isNaN(n) || n <= 0) return '0 B'
