@@ -728,22 +728,8 @@ func (u *Updater) cleanupOldImage(ctx context.Context, oldID, newID string, res 
 		u.step(res, "旧镜像 %s 未能删除（可能仍被引用）：%v", dockerx.ShortID(oldID), err)
 		return 0
 	}
-	u.step(res, "已清理旧镜像 %s，回收 %s", dockerx.ShortID(oldID), humanBytes(size))
+	u.step(res, "已清理旧镜像 %s，回收 %s", dockerx.ShortID(oldID), dockerx.HumanBytes(size))
 	return size
-}
-
-// humanBytes 把字节数说成人话（只用于步骤日志）。
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for m := n / unit; m >= unit; m /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 // recreate 执行「停旧 → 改名保留 → 建新 → 启动 → 自检」，失败自动回滚。

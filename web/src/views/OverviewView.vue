@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { AlertTriangle, ArrowRight } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
 import type { OverviewResponse, RunLog, Schedule } from '@/api/types'
-import { formatBytes, formatDayTime, runKindLabel } from '@/utils/format'
+import { formatBytes, formatDayTime, runKindLabel, runRefShown } from '@/utils/format'
 import { useAppStore } from '@/stores/app'
 
 const app = useAppStore()
@@ -179,14 +179,11 @@ function onRecentScroll() {
 watch(recentRows, syncRecentScroll, { flush: 'post' })
 
 /**
- * 总览行要不要显示对象列（ref 里存的是容器/计划任务/快照名）。
- * 此前只显示 message，更新类记录就只剩一串镜像 ID，看不出更新的是哪个容器。
- * auto_check 的 ref 是 schedule|manual（徽标已表达）、image 的 ref 是镜像 ID、
- * 批量操作的 ref 是 batch/-，这几类显示出来没有信息量，跳过。
+ * 总览行要不要显示对象名（ref 里存的是容器 / 计划任务 / 快照名）。
+ * 规则与设置页记录表共用一份（utils/format.ts 的 runRefShown），别再各写一套。
  */
-const REF_KINDS = new Set(['update', 'container', 'backup', 'restore', 'schedule'])
 function refShown(l: RunLog): boolean {
-  return REF_KINDS.has(l.kind) && !!l.ref && l.ref !== '-' && l.ref !== 'batch'
+  return runRefShown(l.kind, l.ref)
 }
 
 /** 图标：取名字首字母。 */

@@ -19,7 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { AutoUpdateInfo, ContainerView, RunLog, Settings } from '@/api/types'
-import { formatDateTime, relativeTime, runKindLabel } from '@/utils/format'
+import { formatDateTime, relativeTime, runKindLabel, runRefShown } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import { useAppStore } from '@/stores/app'
 import Modal from '@/components/Modal.vue'
@@ -610,7 +610,7 @@ onMounted(() => void load())
                 </td>
                 <td>
                   <div class="text-[12px] text-text-2">{{ l.message }}</div>
-                  <div v-if="l.ref" class="font-mono text-[10.5px] text-text-6">{{ l.ref }}</div>
+                  <div v-if="runRefShown(l.kind, l.ref)" class="font-mono text-[10.5px] text-text-6">{{ l.ref }}</div>
                 </td>
               </tr>
             </tbody>

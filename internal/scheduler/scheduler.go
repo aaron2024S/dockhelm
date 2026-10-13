@@ -299,11 +299,12 @@ func countLine(total, done, skipped int, failed int) string {
 func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 	switch sc.Action {
 	case "prune_images":
-		freed, err := r.dc.PruneImages(ctx)
+		res, err := r.dc.PruneImages(ctx)
 		if err != nil {
 			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}
-		return outcome(fmt.Sprintf("已清理未使用镜像，释放 %.1f MB", float64(freed)/1024/1024), true)
+		// 与手动清理（设置页 / 镜像页的按钮）共用同一句摘要，两处口径不许飘。
+		return outcome(res.Summary(), true)
 	}
 
 	// 其余动作都必须有明确目标。空目标曾经等于「全部容器」，已于 0.2.x 取消 ——

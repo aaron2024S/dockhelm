@@ -23,6 +23,26 @@ export function runKindLabel(kind: string): string {
   return RUN_KIND_LABEL[kind] ?? kind
 }
 
+/**
+ * 运行记录要不要把 ref 单独显示一行（概览时间线 + 设置页记录表共用）。
+ *
+ * ref 存的是「这条记录作用在谁身上」：容器名 / 计划任务名 / 快照名 —— 都是给人看的。
+ * 但有几类是内部标识，显示出来只是噪音，一律不显示：
+ *   image      删镜像后只剩一串短 ID，看不出删的是哪个（名字现在写进说明里了）
+ *   auto_check ref 是 schedule|manual（触发方式），说明里已经有大白话
+ *   system     ref 恒为 docker，说明里已经写了 Docker 守护进程
+ * 另外 '-' / 'batch' 是占位符，不是名字。
+ *
+ * ⚠ 旧数据兜住：0.5.5 之前写入的 image 记录 ref 就是镜像 ID，改不了历史，
+ * 只能在这里拦住不显示。
+ */
+const REF_INTERNAL_KINDS = new Set(['image', 'auto_check', 'system'])
+
+export function runRefShown(kind: string, ref: string | undefined | null): boolean {
+  if (!ref || ref === '-' || ref === 'batch') return false
+  return !REF_INTERNAL_KINDS.has(kind)
+}
+
 
 export function formatBytes(n: number | undefined | null, digits = 1): string {
   if (n === undefined || n === null || Number.isNaN(n) || n <= 0) return '0 B'

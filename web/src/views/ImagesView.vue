@@ -54,8 +54,10 @@ async function load() {
 async function prune() {
   pruning.value = true
   try {
-    const res = await api.post<{ freedBytes: number }>('/api/images/prune')
-    toast.success('已清理未使用镜像', `释放 ${formatBytes(res.freedBytes)}`)
+    const res = await api.post<{ count: number; freedBytes: number }>('/api/images/prune')
+    // 数字要跟运行记录同一句：几个 + 多大（只报体积的话「清了几个」得靠猜）
+    if (!res.count) toast.success('没有可清理的未使用镜像', '当前已是干净状态')
+    else toast.success(`已清理 ${res.count} 个未使用镜像`, `释放 ${formatBytes(res.freedBytes)}`)
     await load()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))

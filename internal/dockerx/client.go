@@ -519,16 +519,69 @@ func (c *Client) RemoveImage(ctx context.Context, ref string, force, noprune boo
 	return c.do(ctx, http.MethodDelete, "/images/"+url.PathEscape(ref), q, nil, nil, nil)
 }
 
-// PruneImages 清理悬空镜像，返回释放的字节数。
-func (c *Client) PruneImages(ctx context.Context) (int64, error) {
+// PruneImageResult 一次镜像清理的结果。
+//
+// Docker 的 /images/prune 对每个被删对象给一条记录，二选一：
+//
+//	{"Deleted":"sha256:..."}  删掉的镜像层（悬空镜像通常只有这个）
+//	{"Untagged":"repo:tag"}   顺手摘掉的标签
+//
+// Deleted 是裸 ID，直接展示没有信息量（悬空镜像本来就没有名字），所以
+// Count 才是给用户看的「清理了几个」；Untagged 拿得到名字时点名用。
+type PruneImageResult struct {
+	Deleted  []string
+	Untagged []string
+	Freed    int64
+}
+
+// Count 本次删掉的对象数（镜像 + 摘掉的标签）。
+func (r PruneImageResult) Count() int { return len(r.Deleted) + len(r.Untagged) }
+
+// Summary 把一次清理说成一句人话（运行记录 / 计划任务回执共用）。
+//
+// 形状是「几个 + 多大」而不是点名：清理的对象是**悬空镜像**（<none>:<none>），
+// 按定义就没有名字，逐条点名只能点出一串裸 ID。Docker 偶尔会带回 Untagged
+// 条目（顺手摘掉的标签），那才带得起名字，有就点上去。
+//
+// 放在这里而不是 api / scheduler：两边都要用，而 scheduler 不能反向依赖 api
+// （api → scheduler 已有依赖）。手动清理与计划任务清理从此同一句话。
+func (r PruneImageResult) Summary() string {
+	if r.Count() == 0 {
+		return "没有可清理的未使用镜像"
+	}
+	msg := fmt.Sprintf("清理未使用镜像 %d 个，释放 %s", r.Count(), HumanBytes(r.Freed))
+	if len(r.Untagged) > 0 {
+		names := r.Untagged
+		if len(names) > pruneNameLimit {
+			names = append(append([]string{}, names[:pruneNameLimit]...), fmt.Sprintf("…等 %d 个", len(r.Untagged)))
+		}
+		msg += "：" + strings.Join(names, "、")
+	}
+	return msg
+}
+
+// pruneNameLimit 最多点名几个被摘标签的镜像（再多就折叠）。
+const pruneNameLimit = 6
+
+// PruneImages 清理悬空镜像，返回删除明细与释放的字节数。
+func (c *Client) PruneImages(ctx context.Context) (PruneImageResult, error) {
 	var out struct {
 		ImagesDeleted  []map[string]string `json:"ImagesDeleted"`
 		SpaceReclaimed int64               `json:"SpaceReclaimed"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/images/prune", nil, map[string]any{}, nil, &out); err != nil {
-		return 0, err
+		return PruneImageResult{}, err
 	}
-	return out.SpaceReclaimed, nil
+	res := PruneImageResult{Freed: out.SpaceReclaimed}
+	for _, d := range out.ImagesDeleted {
+		if v := d["Deleted"]; v != "" {
+			res.Deleted = append(res.Deleted, v)
+		}
+		if v := d["Untagged"]; v != "" {
+			res.Untagged = append(res.Untagged, v)
+		}
+	}
+	return res, nil
 }
 
 // TagImage 给本地镜像再打一个标签。

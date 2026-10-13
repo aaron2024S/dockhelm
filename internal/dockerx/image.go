@@ -151,6 +151,23 @@ func ShortID(id string) string {
 	return id
 }
 
+// HumanBytes 把字节数说成人话（"1.2 GB"）。
+//
+// 放在 dockerx 是因为 api / scheduler / updater 三处都要用，而它们都依赖本包
+// —— 之前 updater 里有一份私有副本，现在统一到这里，别再各写各的。
+func HumanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+}
+
 // ---------- 拉取 ----------
 
 // PullEvent 拉取过程中的一条进度。

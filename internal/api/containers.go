@@ -615,7 +615,9 @@ func (s *Server) hRemoveImage(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = shortID(id)
 	}
-	s.st.AddRunLog("image", shortID(id), "success", "已删除镜像 "+name, "")
+	// ref 留空：镜像没有「名字」这一列可复用，短 ID 单摆一行对用户没有信息量
+	// （旧记录里已有的一串 ID 由前端 runRefShown 兜住）。名字全部写进说明。
+	s.st.AddRunLog("image", "", "success", "已删除镜像 "+name, "")
 	writeOK(w, map[string]any{"ok": true})
 }
 
@@ -657,13 +659,15 @@ func inspectImageName(insp map[string]any) string {
 func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
-	freed, err := s.dc.PruneImages(ctx)
+	res, err := s.dc.PruneImages(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	s.st.AddRunLog("image", "-", "success", fmt.Sprintf("清理未使用镜像释放 %.1f MB", float64(freed)/1024/1024), "")
-	writeOK(w, map[string]any{"ok": true, "freedBytes": freed})
+	// ref 留空：这类记录点不出名字（悬空镜像按定义没有名字），数量与体积
+	// 都在说明里，再单摆一行 ID 只是噪音。
+	s.st.AddRunLog("image", "", "success", res.Summary(), "")
+	writeOK(w, map[string]any{"ok": true, "count": res.Count(), "freedBytes": res.Freed})
 }
 
 func (s *Server) hListNetworks(w http.ResponseWriter, r *http.Request) {

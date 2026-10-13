@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/aaron2024s/dockhelm/internal/dockerx"
 )
 
 // batchStats 一轮更新的统计与明细，全部由 UpdateMany 从结果集里数出来。
@@ -133,7 +135,7 @@ func buildBatchNotice(s batchStats) BatchNotice {
 	summary := fmt.Sprintf("共 %d 个容器：更新 %d 个、失败 %d 个、已是最新/跳过 %d 个",
 		s.total, s.updated, s.failed, s.skipped)
 	if s.reclaimed > 0 {
-		summary += "，清理旧镜像回收 " + humanBytes(s.reclaimed)
+		summary += "，清理旧镜像回收 " + dockerx.HumanBytes(s.reclaimed)
 	}
 
 	lines := []string{summary}

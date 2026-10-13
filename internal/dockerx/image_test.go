@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -142,5 +143,75 @@ func TestDistributionInspectSurfacesDaemonError(t *testing.T) {
 
 	if _, err := c.DistributionInspect(context.Background(), "redis:alpine"); err == nil {
 		t.Fatal("守护进程 404 时必须返回错误，不能返回空摘要当成功")
+	}
+}
+
+// HumanBytes 是运行记录 / 通知 / 计划任务共用的体积说法，四舍五入口径要一致。
+func TestHumanBytes(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1024 * 1024, "1.0 MB"},
+		{3 * 1024 * 1024 * 1024, "3.0 GB"},
+	}
+	for _, c := range cases {
+		if got := HumanBytes(c.n); got != c.want {
+			t.Errorf("HumanBytes(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+// PruneImageResult.Summary 是手动清理与计划任务清理共用的那一句。
+// 关键：清理对象是悬空镜像（按定义没有名字），所以形状是「几个 + 多大」，
+// 不点名；只有 Docker 回了 Untagged 条目（带名字）才点。
+func TestPruneImageSummary(t *testing.T) {
+	if got := (PruneImageResult{}).Summary(); got != "没有可清理的未使用镜像" {
+		t.Errorf("空结果应给一句人话，got %q", got)
+	}
+
+	// 典型的悬空镜像清理：只有 Deleted（裸 ID），不该出现在文案里。
+	res := PruneImageResult{
+		Deleted: []string{"sha256:2c75e866d5a5", "sha256:aaaa11112222"},
+		Freed:   1536 * 1024 * 1024,
+	}
+	got := res.Summary()
+	want := "清理未使用镜像 2 个，释放 1.5 GB"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "2c75e866") {
+		t.Errorf("裸 ID 不该出现在文案里：%q", got)
+	}
+	if res.Count() != 2 {
+		t.Errorf("Count = %d, want 2", res.Count())
+	}
+
+	// 带 Untagged 时点名（顺手摘掉的标签），并与 Deleted 一起计数。
+	res2 := PruneImageResult{
+		Deleted:  []string{"sha256:aaa"},
+		Untagged: []string{"nginx:1.26", "redis:7.2"},
+		Freed:    1024,
+	}
+	got2 := res2.Summary()
+	if !strings.Contains(got2, "3 个") || !strings.Contains(got2, "nginx:1.26") || !strings.Contains(got2, "redis:7.2") {
+		t.Errorf("应含数量与被摘标签的名字，got %q", got2)
+	}
+
+	// 名字太多要折叠，不能无限长。
+	long := PruneImageResult{Freed: 1}
+	for i := 0; i < 10; i++ {
+		long.Untagged = append(long.Untagged, fmt.Sprintf("img%d:latest", i))
+	}
+	got3 := long.Summary()
+	if strings.Count(got3, ":latest") > pruneNameLimit {
+		t.Errorf("名字应折叠到 %d 个，got %q", pruneNameLimit, got3)
+	}
+	if !strings.Contains(got3, "…等 10 个") {
+		t.Errorf("折叠后要写明总数，got %q", got3)
 	}
 }
