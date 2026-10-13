@@ -444,9 +444,32 @@ func (s *Server) hContainerAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}
-	s.st.AddRunLog("container", name, "success", "执行 "+in.Action, "")
+	// 说明写成「对谁做了什么」：原先直接贴 "执行 stop"，中文界面里夹一个英文动作码。
+	// 对象名留在 ref（容器名），说明里不重复。
+	s.st.AddRunLog("container", name, "success", containerActionLabel(in.Action), "")
 	s.bus.Publish("container", "action", "success", map[string]any{"name": name, "action": in.Action})
 	writeOK(w, map[string]any{"ok": true})
+}
+
+// containerActionLabel 把动作码翻成一句人话（运行记录用）。
+// 取值与 hContainerAction 的 allowed 集合一一对应，新增动作请同时补这里。
+func containerActionLabel(action string) string {
+	switch action {
+	case "start":
+		return "已启动"
+	case "stop":
+		return "已停止"
+	case "restart":
+		return "已重启"
+	case "pause":
+		return "已暂停"
+	case "unpause":
+		return "已恢复运行"
+	case "kill":
+		return "已强制终止"
+	default:
+		return "已执行 " + action
+	}
 }
 
 type renameReq struct {
@@ -471,7 +494,7 @@ func (s *Server) hRenameContainer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}
-	s.st.AddRunLog("container", old, "success", "改名为 "+in.NewName, "")
+	s.st.AddRunLog("container", old, "success", "已改名为 "+in.NewName, "")
 	writeOK(w, map[string]any{"ok": true})
 }
 
@@ -514,11 +537,11 @@ func (s *Server) hRemoveContainer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}
-	msg := "已删除容器"
+	msg := "已删除容器 " + name
 	if vols {
 		msg += "（同时删除了匿名卷）"
 	}
-	s.st.AddRunLog("container", name, "success", msg, "")
+	s.st.AddRunLog("container", "", "success", msg, "")
 	writeOK(w, map[string]any{"ok": true, "message": msg, "volumes": warn})
 }
 
@@ -659,15 +682,22 @@ func inspectImageName(insp map[string]any) string {
 func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
+	// 名字要在清理**之前**抓：删完这些镜像就查不到了，运行记录里只能剩一串裸 ID
+	// （用户 2026-10-13 的原话：「原 ID 行就要显示出删除了哪些镜像」）。
+	// 抓不到不影响清理本身，兜底是「无标签镜像 <短ID>」。
+	byID := s.dc.DanglingImageNames(ctx)
 	res, err := s.dc.PruneImages(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// ref 留空：这类记录点不出名字（悬空镜像按定义没有名字），数量与体积
-	// 都在说明里，再单摆一行 ID 只是噪音。
-	s.st.AddRunLog("image", "", "success", res.Summary(), "")
-	writeOK(w, map[string]any{"ok": true, "count": res.Count(), "freedBytes": res.Freed})
+	// 说明 = 几个 + 多大；对象行 = 具体删了哪些镜像。两层分工，不再让用户猜。
+	names := res.Names(byID)
+	s.st.AddRunLog("image", dockerx.FoldNames(names, 8), "success", res.Summary(), "")
+	writeOK(w, map[string]any{
+		"ok": true, "count": res.Count(), "freedBytes": res.Freed,
+		"images": names,
+	})
 }
 
 func (s *Server) hListNetworks(w http.ResponseWriter, r *http.Request) {
@@ -700,7 +730,7 @@ func (s *Server) hRemoveVolume(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, dockerStatus(err), err.Error())
 		return
 	}
-	s.st.AddRunLog("volume", name, "success", "已删除卷", "")
+	s.st.AddRunLog("volume", "", "success", "已删除卷 "+name, "")
 	writeOK(w, map[string]any{"ok": true})
 }
 

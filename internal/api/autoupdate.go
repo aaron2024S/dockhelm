@@ -498,12 +498,26 @@ func (s *Server) finishCycle(summary *AutoRunSummary, started time.Time, checkOn
 	// 「（仅巡检，未改动任何容器）」尾巴，用户 2026-10-11 要求去掉：徽标已经
 	// 说明这是巡检了，每条记录再解释一遍纯属废话。
 	//
+	// ref 由 trigger（schedule / manual，内部值）改为空：它是给「对象名」的位置，
+	// 而这条记录的对象是「被检出有更新的那些容器」，名单已经在说明里。
+	//
 	// 只有**纯巡检**才写运行记录：真更新的轮次里 updater 对每个容器各写了一条
-	// （「已更新」/「镜像已是最新，容器保持原样」），再写一条汇总就是
+	// （「已更新镜像 X」/「镜像已是最新：X」），再写一条汇总就是
 	// 同一次更新的第二行记录 —— 总览页看起来像执行了两遍。
 	if checkOnly {
-		s.st.AddRunLog("auto_check", summary.Trigger, "done",
-			itoa(summary.Available)+" 个容器有可用更新", "")
+		// 点名到容器：原来只有一句「3 个容器有可用更新」，用户得再点进待更新列表
+		// 才知道是哪三个（2026-10-13 用户要求运行记录一看就知道是哪个容器）。
+		// 名字与推送/待更新列表同源（都来自 candidatePlan 的 WillUpdate 集合）。
+		names := make([]string, 0, summary.Available)
+		for _, it := range summary.Containers {
+			if it.Status == "pending" {
+				names = append(names, it.Name)
+			}
+		}
+		if len(names) != summary.Available {
+			names = nil // 对不上就只报数，不报错名字
+		}
+		s.st.AddRunLog("auto_check", "", "done", availableRunLog(summary.Available, names), "")
 	}
 	s.bus.Publish("update", "auto_done", "success", map[string]any{
 		"trigger": summary.Trigger,

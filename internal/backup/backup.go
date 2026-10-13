@@ -73,7 +73,9 @@ func (s *Service) SnapshotWith(ctx context.Context, nameOrID string, opt Snapsho
 		"container": item.Container, "result": "配置快照已保存",
 		"message": fmt.Sprintf("%s（%.1f KB）", item.TS+".json", float64(item.Size)/1024),
 	})
-	s.st.AddRunLog("backup", item.Container, "success", "配置快照 "+item.TS+".json", "")
+	// 说明写成「做了什么 + 哪份快照」：原先只有文件名（「配置快照 20261013-0800.json」），
+	// 看不出这是备份刚完成、还是正在找那份文件。
+	s.st.AddRunLog("backup", item.Container, "success", "已备份配置快照 "+item.TS+".json", "")
 	return item, nil
 }
 
@@ -147,8 +149,13 @@ func (s *Service) SnapshotMany(ctx context.Context, names []string, reason strin
 	// 默认收不到的「备份完成」，整体失败却悄无声息。更新那边是「有失败即升级
 	// 成紧急事件」，备份必须对齐。判定抽成 batchNotice 以便单测钉住。
 	event, result, status, summary := batchNotice(res.Total, len(res.Items), failedNames(res.Failed))
-	s.st.AddRunLog("backup", "batch", status,
-		fmt.Sprintf("全量备份 %d 个容器", len(res.Items)), summary)
+	// 说明 = 「全量备份 N 个容器，成功 X、失败 Y」（原先只说「全量备份 N 个容器」，
+	// 连成没成功都看不出来）；失败名单放**对象行** —— 那正是「这次涉及哪些容器」的位置，
+	// 而且原来这里塞的是内部占位符 "batch"，界面上既不显示也没信息量。
+	s.st.AddRunLog("backup",
+		dockerx.FoldNames(failedNames(res.Failed), maxBackupNames), status,
+		fmt.Sprintf("全量备份 %d 个容器，成功 %d、失败 %d", res.Total, len(res.Items), len(res.Failed)),
+		summary)
 	s.notify.Emit(event, map[string]string{
 		"container": fmt.Sprintf("%d 个容器", res.Total),
 		"result":    result, "message": summary,

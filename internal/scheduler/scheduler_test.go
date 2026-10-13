@@ -40,7 +40,7 @@ func TestExecuteSkipsEmptyTargets(t *testing.T) {
 func TestSummarize(t *testing.T) {
 	got := summarize("stop", 3, 2, 1,
 		[]string{"qbittorrent", "jellyfin"}, []string{"immich-server"}, nil)
-	want := "共 3 个容器：成功 2 个、跳过 1 个\n" +
+	want := "共 3 个容器，成功 2 个、跳过 1 个\n" +
 		"已停止：jellyfin、qbittorrent\n" +
 		"跳过（本就已停止）：immich-server"
 	if got != want {
@@ -49,14 +49,14 @@ func TestSummarize(t *testing.T) {
 
 	// 有失败：统计行带失败数，末行点名失败容器。
 	got = summarize("start", 2, 1, 0, []string{"a"}, nil, []string{"b"})
-	want = "共 2 个容器：成功 1 个、跳过 0 个、失败 1 个\n已启动：a\n失败：b"
+	want = "共 2 个容器，成功 1 个、跳过 0 个、失败 1 个\n已启动：a\n失败：b"
 	if got != want {
 		t.Fatalf("启动容器回执：\n got=%q\nwant=%q", got, want)
 	}
 
 	// 重启没有「跳过」语义，跳过名单恒空。
 	if got := summarize("restart", 2, 2, 0, []string{"b", "a"}, nil, nil); got !=
-		"共 2 个容器：成功 2 个、跳过 0 个\n已重启：a、b" {
+		"共 2 个容器，成功 2 个、跳过 0 个\n已重启：a、b" {
 		t.Fatalf("重启回执 = %q", got)
 	}
 }
@@ -73,5 +73,48 @@ func TestFoldNames(t *testing.T) {
 	got := foldNames(names)
 	if !strings.Contains(got, fmt.Sprintf("等 %d 个", len(names))) {
 		t.Fatalf("超限名单应折叠：%q", got)
+	}
+}
+
+// TestBrief 钉住运行记录/「上次结果」的一行简报：动作 + 统计（+ 小任务点名）。
+//
+// 2026-10-13 之前只有统计（「共 1 个容器：成功 1 个、跳过 0 个」），看不出这条
+// 记录是启动还是停止、是备份还是更新 —— 用户要求「一看就知道哪个计划任务执行了
+// 什么」。统计行的措辞与推送正文（summarize）共用 countLine，两处不许飘。
+func TestBrief(t *testing.T) {
+	// 小任务点名：目标 ≤ maxBriefNames 且无失败 ⇒ 连容器名一起给。
+	if got := brief("restart", 2, 2, 0, 0, []string{"shell-town", "qbittorrent"}); got !=
+		"重启容器：共 2 个容器，成功 2 个、跳过 0 个（qbittorrent、shell-town）" {
+		t.Fatalf("重启简报 = %q", got)
+	}
+
+	// 有失败：不点名（点名会把失败原因挤掉，原因在推送正文与记录详情里）。
+	got := brief("stop", 3, 1, 0, 2, []string{"a"})
+	if !strings.HasPrefix(got, "停止容器：共 3 个容器，成功 1 个、跳过 0 个、失败 2 个") {
+		t.Fatalf("有失败时应只报数：%q", got)
+	}
+	if strings.Contains(got, "（") {
+		t.Fatalf("有失败时不该再点名：%q", got)
+	}
+
+	// 目标多：只报数，名字靠推送正文与记录详情。
+	got = brief("update", 12, 12, 0, 0, []string{"c01", "c02"})
+	if strings.Contains(got, "（") {
+		t.Fatalf("目标超过 %d 个应只报数：%q", maxBriefNames, got)
+	}
+
+	// 备份动作走同一套：说明里有动作，备份记录不再只有一句「全量备份 N 个容器」。
+	if got := brief("backup", 1, 1, 0, 0, []string{"nginx"}); got !=
+		"备份配置快照：共 1 个容器，成功 1 个、跳过 0 个（nginx）" {
+		t.Fatalf("备份简报 = %q", got)
+	}
+
+	// 未知动作原样回显，别把动作吞掉。
+	if got := brief("frobnicate", 1, 1, 0, 0, nil); !strings.Contains(got, "frobnicate") {
+		t.Fatalf("未知动作不该被吞掉：%q", got)
+	}
+
+	if ActionLabel("prune_images") != "清理未使用镜像" {
+		t.Fatalf("清理动作的标签 = %q", ActionLabel("prune_images"))
 	}
 }

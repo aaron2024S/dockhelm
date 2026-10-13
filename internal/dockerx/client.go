@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -539,9 +540,8 @@ func (r PruneImageResult) Count() int { return len(r.Deleted) + len(r.Untagged) 
 
 // Summary 把一次清理说成一句人话（运行记录 / 计划任务回执共用）。
 //
-// 形状是「几个 + 多大」而不是点名：清理的对象是**悬空镜像**（<none>:<none>），
-// 按定义就没有名字，逐条点名只能点出一串裸 ID。Docker 偶尔会带回 Untagged
-// 条目（顺手摘掉的标签），那才带得起名字，有就点上去。
+// 形状是「几个 + 多大」：清理的对象是**悬空镜像**（<none>:<none>），逐个点名要
+// 靠 Names 里的名字，一句话里放不下。名字单独出（见 Names）。
 //
 // 放在这里而不是 api / scheduler：两边都要用，而 scheduler 不能反向依赖 api
 // （api → scheduler 已有依赖）。手动清理与计划任务清理从此同一句话。
@@ -549,18 +549,69 @@ func (r PruneImageResult) Summary() string {
 	if r.Count() == 0 {
 		return "没有可清理的未使用镜像"
 	}
-	msg := fmt.Sprintf("清理未使用镜像 %d 个，释放 %s", r.Count(), HumanBytes(r.Freed))
-	if len(r.Untagged) > 0 {
-		names := r.Untagged
-		if len(names) > pruneNameLimit {
-			names = append(append([]string{}, names[:pruneNameLimit]...), fmt.Sprintf("…等 %d 个", len(r.Untagged)))
-		}
-		msg += "：" + strings.Join(names, "、")
-	}
-	return msg
+	return fmt.Sprintf("清理未使用镜像 %d 个，释放 %s", r.Count(), HumanBytes(r.Freed))
 }
 
-// pruneNameLimit 最多点名几个被摘标签的镜像（再多就折叠）。
+// Names 输出本次被删镜像的名单（运行记录的「对象行」用，已排序）。
+//
+// byID 是**清理前**抓的一份 短ID → 可读名 对照 —— 删完就查不到了，顺序不能反。
+// 名字怎么来：
+//   - 有标签的镜像 → 用它自己的标签（nginx:1.26）；
+//   - 掉过标签、但还记得仓库的 → 仓库@短摘要（aaron2024s/dockhelm@2c75e866d5a5）；
+//   - 曾经匿名（中间层）→ 「无标签镜像 <短ID>」。**不写裸 ID**：一个没有名字的
+//     东西也要说清它是什么，否则用户看到的又是一串不懂的十六进制。
+//
+// Untagged 条目（Docker 顺手摘掉的标签）本身就带名字，直接用。
+func (r PruneImageResult) Names(byID map[string]string) []string {
+	out := make([]string, 0, len(r.Untagged)+len(r.Deleted))
+	out = append(out, r.Untagged...)
+	for _, id := range r.Deleted {
+		if n := byID[ShortID(id)]; n != "" {
+			out = append(out, n)
+			continue
+		}
+		out = append(out, "无标签镜像 "+ShortID(id))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FoldNames 把名单拼成一行，超过 limit 个折叠成「…等 N 个」。
+// 运行记录的对象行只有一行位置，不折叠就会被撑爆（api / scheduler 共用）。
+func FoldNames(names []string, limit int) string {
+	if len(names) == 0 {
+		return ""
+	}
+	if len(names) <= limit {
+		return strings.Join(names, "、")
+	}
+	return strings.Join(names[:limit], "、") + fmt.Sprintf("…等 %d 个", len(names))
+}
+
+// ImageDisplayName 给一个镜像摘要挑可读名：优先第一个有效 RepoTag，
+// 其次 RepoDigests 的「仓库@短摘要」，都没有返回空串（匿名层，由调用方兜底）。
+func ImageDisplayName(im ImageSummary) string {
+	for _, t := range im.RepoTags {
+		if t != "" && t != "<none>:<none>" {
+			return t
+		}
+	}
+	if len(im.RepoDigests) > 0 {
+		repo := im.RepoDigests[0]
+		if at := strings.LastIndex(repo, "@"); at > 0 {
+			if digest := strings.TrimPrefix(repo[at+1:], "sha256:"); digest != "" {
+				if len(digest) > 12 {
+					digest = digest[:12]
+				}
+				return repo[:at] + "@" + digest
+			}
+		}
+	}
+	return ""
+}
+
+// pruneNameLimit 名单在「一句话」里最多点几个名（再多折叠）。
+// 对象行用的是 FoldNames(limit 8)，这里只管摘要句。
 const pruneNameLimit = 6
 
 // PruneImages 清理悬空镜像，返回删除明细与释放的字节数。

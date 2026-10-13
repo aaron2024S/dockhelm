@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -191,27 +190,85 @@ func TestPruneImageSummary(t *testing.T) {
 		t.Errorf("Count = %d, want 2", res.Count())
 	}
 
-	// 带 Untagged 时点名（顺手摘掉的标签），并与 Deleted 一起计数。
+	// 带 Untagged（顺手摘掉的标签）时，它也计入数量 —— 但名字不出现在摘要里，
+	// 名字走 Names（运行记录的对象行），这是 2026-10-13 定下的分工。
 	res2 := PruneImageResult{
 		Deleted:  []string{"sha256:aaa"},
 		Untagged: []string{"nginx:1.26", "redis:7.2"},
 		Freed:    1024,
 	}
-	got2 := res2.Summary()
-	if !strings.Contains(got2, "3 个") || !strings.Contains(got2, "nginx:1.26") || !strings.Contains(got2, "redis:7.2") {
-		t.Errorf("应含数量与被摘标签的名字，got %q", got2)
+	if got2 := res2.Summary(); strings.Contains(got2, "nginx:1.26") || !strings.Contains(got2, "3 个") {
+		t.Errorf("摘要只报数量与体积，got %q", got2)
+	}
+}
+
+// PruneImageResult.Names 输出「这次删了哪些镜像」—— 运行记录的对象行。
+//
+// 用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」。所以这里必须给名字，
+// 且绝不出现裸 ID：没有名字的匿名层也要说成「无标签镜像 <短ID>」。
+func TestPruneImageNames(t *testing.T) {
+	res := PruneImageResult{
+		// 两个删掉的层：一个能从清理前的对照里查到名字，一个查不到（匿名层）
+		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa", "sha256:beef12345678bbbb"},
+		Untagged: []string{"nginx:1.26"},
+	}
+	byID := map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"}
+
+	got := res.Names(byID)
+	want := []string{"aaron2024s/dockhelm@2c75e866d5a5", "nginx:1.26", "无标签镜像 beef12345678"}
+	if len(got) != len(want) {
+		t.Fatalf("名单条数 = %d（%v），want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("名单[%d] = %q, want %q（已排序）", i, got[i], want[i])
+		}
+	}
+	for _, n := range got {
+		if n == "2c75e866d5a5" || n == "beef12345678" {
+			t.Errorf("名单里不该出现裸 ID：%q", n)
+		}
 	}
 
-	// 名字太多要折叠，不能无限长。
-	long := PruneImageResult{Freed: 1}
-	for i := 0; i < 10; i++ {
-		long.Untagged = append(long.Untagged, fmt.Sprintf("img%d:latest", i))
+	// byID 为 nil（清理前那次列举失败）也不能崩，且仍不出现裸 ID。
+	for _, n := range (PruneImageResult{Deleted: []string{"sha256:feedface0000"}}).Names(nil) {
+		if !strings.HasPrefix(n, "无标签镜像 ") {
+			t.Errorf("取不到名字时应兜底成「无标签镜像 <短ID>」，got %q", n)
+		}
 	}
-	got3 := long.Summary()
-	if strings.Count(got3, ":latest") > pruneNameLimit {
-		t.Errorf("名字应折叠到 %d 个，got %q", pruneNameLimit, got3)
+}
+
+// FoldNames 是一行版的名单：超出上限必须折叠并写明总数，否则会把记录撑爆。
+func TestFoldNames(t *testing.T) {
+	if got := FoldNames(nil, 3); got != "" {
+		t.Errorf("空名单应为空串，got %q", got)
 	}
-	if !strings.Contains(got3, "…等 10 个") {
-		t.Errorf("折叠后要写明总数，got %q", got3)
+	if got := FoldNames([]string{"a", "b"}, 3); got != "a、b" {
+		t.Errorf("未超上限应全列，got %q", got)
+	}
+	got := FoldNames([]string{"a", "b", "c", "d", "e"}, 3)
+	if got != "a、b、c…等 5 个" {
+		t.Errorf("超上限应折叠并写明总数，got %q", got)
+	}
+}
+
+// ImageDisplayName 是「清理前抓名字」的取名规则：有标签用标签，
+// 没标签用 仓库@短摘要，匿名层返回空串（由调用方兜底）。
+func TestImageDisplayName(t *testing.T) {
+	cases := []struct {
+		name string
+		im   ImageSummary
+		want string
+	}{
+		{"有标签", ImageSummary{RepoTags: []string{"nginx:1.27"}, RepoDigests: []string{"x@sha256:aa"}}, "nginx:1.27"},
+		{"跳过 none 标签", ImageSummary{RepoTags: []string{"<none>:<none>", "redis:7.2"}}, "redis:7.2"},
+		{"无标签但有仓库摘要", ImageSummary{RepoDigests: []string{"aaron2024s/dockhelm@sha256:2c75e866d5a5ffffffffffffffffffffffffffffffffffffffffffffffff"}},
+			"aaron2024s/dockhelm@2c75e866d5a5"},
+		{"匿名层", ImageSummary{}, ""},
+	}
+	for _, c := range cases {
+		if got := ImageDisplayName(c.im); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
 	}
 }

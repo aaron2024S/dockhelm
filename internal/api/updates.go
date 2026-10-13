@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron2024s/dockhelm/internal/dockerx"
 	"github.com/aaron2024s/dockhelm/internal/updater"
 )
 
@@ -31,6 +32,24 @@ func availableMessage(count int, names []string) string {
 			fmt.Sprintf(" 等 %d 个", len(sorted))
 	}
 	return msg + "\n有更新的容器：" + strings.Join(sorted, "、")
+}
+
+// availableRunLog 巡检写进运行记录的**一行**说明。
+//
+// 与 availableMessage 同源（同一批名字、同一个数），只是推送能多行、运行记录
+// 只有一行位置：多行的第二行在总览里会被截断，在设置页会跟对象行打架。
+// 用户 2026-10-13 的要求是「一看知道是哪个容器有更新」——数量 + 点名都给。
+func availableRunLog(count int, names []string) string {
+	if count == 0 {
+		return "没有容器需要更新"
+	}
+	msg := "共 " + itoa(count) + " 个容器有可用更新"
+	if len(names) == 0 {
+		return msg
+	}
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return msg + "：" + dockerx.FoldNames(sorted, maxAvailableNames)
 }
 
 func (s *Server) hListUpdates(w http.ResponseWriter, r *http.Request) {

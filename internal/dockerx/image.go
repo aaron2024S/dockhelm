@@ -168,6 +168,37 @@ func HumanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
+// DanglingImageNames 列出「没有标签的镜像」（悬空层）的 短ID → 可读名 对照。
+//
+// 用途：清理镜像**之前**抓一份名字，清理之后点名用 —— 删完这些镜像就查不到了，
+// 记录里只能剩一串裸 ID（用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」）。
+// 真正的匿名层取不到名字，**不写进 map**，由调用方兜底成「无标签镜像 <短ID>」。
+//
+// 只收没有标签的：有标签的镜像不会被 prune 删掉，收进来只是噪音。
+func (c *Client) DanglingImageNames(ctx context.Context) map[string]string {
+	list, err := c.ListImages(ctx, false)
+	if err != nil {
+		return nil
+	}
+	byID := make(map[string]string, len(list))
+	for _, im := range list {
+		tagged := false
+		for _, t := range im.RepoTags {
+			if t != "" && t != "<none>:<none>" {
+				tagged = true
+				break
+			}
+		}
+		if tagged {
+			continue
+		}
+		if name := ImageDisplayName(im); name != "" {
+			byID[ShortID(im.ID)] = name
+		}
+	}
+	return byID
+}
+
 // ---------- 拉取 ----------
 
 // PullEvent 拉取过程中的一条进度。

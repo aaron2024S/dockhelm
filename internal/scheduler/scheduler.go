@@ -265,11 +265,7 @@ func summarize(action string, total, done, skipped int, doneNames, skippedNames,
 		"start": "本就已运行", "stop": "本就已停止", "update": "已是最新",
 	}[action]
 
-	head := fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个", total, done, skipped)
-	if len(failedNames) > 0 {
-		head = fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个、失败 %d 个",
-			total, done, skipped, len(failedNames))
-	}
+	head := countLine(total, done, skipped, len(failedNames))
 	lines := []string{head}
 	if len(doneNames) > 0 {
 		lines = append(lines, verb+"："+foldNames(doneNames))
@@ -290,21 +286,56 @@ func summarize(action string, total, done, skipped int, doneNames, skippedNames,
 // countLine 单行简报（统计部分），进运行记录与总览。
 func countLine(total, done, skipped int, failed int) string {
 	if failed > 0 {
-		return fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个、失败 %d 个", total, done, skipped, failed)
+		return fmt.Sprintf("共 %d 个容器，成功 %d 个、跳过 %d 个、失败 %d 个", total, done, skipped, failed)
 	}
-	return fmt.Sprintf("共 %d 个容器：成功 %d 个、跳过 %d 个", total, done, skipped)
+	return fmt.Sprintf("共 %d 个容器，成功 %d 个、跳过 %d 个", total, done, skipped)
+}
+
+// maxBriefNames 运行记录的一行简报里最多点几个容器名（再多就只报数）。
+const maxBriefNames = 5
+
+// brief 运行记录 / 「上次结果」的一行简报：**动作 + 统计（+ 小任务点名）**。
+//
+// 原来只有统计（「共 1 个容器：成功 1 个、跳过 0 个」），看不出这条记录到底是
+// 启动还是停止、是备份还是更新 —— 用户 2026-10-13 要求「一看就知道哪个计划任务
+// 执行了什么」。动作取 Actions 里的中文标签，与新建任务下拉里的说法一致。
+// 目标少（≤ maxBriefNames）且没有失败时把容器名一起点上，一条记录就自洽了；
+// 失败时点名会把原因挤掉，留给推送正文与记录详情。
+func brief(action string, total, done, skipped int, failed int, names []string) string {
+	out := ActionLabel(action) + "：" + countLine(total, done, skipped, failed)
+	if failed == 0 && total <= maxBriefNames {
+		if list := foldNames(names); list != "" {
+			out += "（" + list + "）"
+		}
+	}
+	return out
+}
+
+// ActionLabel 动作码 → 中文标签（与新建任务下拉共用一份）。取不到原样回显，
+// 宁可见到一个英文动作码，也别把动作吞掉。
+func ActionLabel(action string) string {
+	if a, ok := ActionMap[action]; ok {
+		return a.Label
+	}
+	return action
 }
 
 // Execute 执行一次任务定义（供调度器与「立即运行」共用）。
 func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 	switch sc.Action {
 	case "prune_images":
+		// 同 api 的手动清理：名字要在清理**之前**抓，否则记录里只剩裸 ID。
+		byID := r.dc.DanglingImageNames(ctx)
 		res, err := r.dc.PruneImages(ctx)
 		if err != nil {
 			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}
-		// 与手动清理（设置页 / 镜像页的按钮）共用同一句摘要，两处口径不许飘。
-		return outcome(res.Summary(), true)
+		// 与手动清理（镜像页 / 设置页的按钮）共用同一句统计；名字也一起点上。
+		msg := res.Summary()
+		if names := dockerx.FoldNames(res.Names(byID), maxBriefNames); names != "" {
+			msg += "：" + names
+		}
+		return outcome(msg, true)
 	}
 
 	// 其余动作都必须有明确目标。空目标曾经等于「全部容器」，已于 0.2.x 取消 ——
@@ -333,7 +364,7 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 			}
 		}
 		return Outcome{
-			Brief:  countLine(len(targets), done, 0, len(failedNames)),
+			Brief:  brief("backup", len(targets), done, 0, len(failedNames), doneNames),
 			Full:   summarize("backup", len(targets), done, 0, doneNames, nil, failedNames),
 			Detail: strings.Join(raw, "\n"),
 			OK:     len(failedNames) == 0,
@@ -412,8 +443,11 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 		}
 	}
 
+	// 点名用「实际动作过的 + 跳过的」：跳过的容器也是这条记录的去向，
+	// 漏掉会让用户以为任务只处理了成功的那几个。
+	touched := append(append([]string{}, doneNames...), skippedNames...)
 	return Outcome{
-		Brief:  countLine(len(targets), done, skipped, len(failedNames)),
+		Brief:  brief(sc.Action, len(targets), done, skipped, len(failedNames), touched),
 		Full:   summarize(sc.Action, len(targets), done, skipped, doneNames, skippedNames, failedNames),
 		Detail: strings.Join(raw, "\n"),
 		OK:     len(failedNames) == 0,
