@@ -331,9 +331,11 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}
 		// 与手动清理（镜像页 / 设置页的按钮）共用同一句统计；名字也一起点上。
-		msg := res.Summary()
-		if names := dockerx.FoldNames(res.Names(idx), maxBriefNames); names != "" {
-			msg += "：" + names
+		// 数量取名单长度，别自己数 Docker 的返回条目（里面混着随镜像删掉的层）。
+		names := res.Names(idx)
+		msg := res.Summary(len(names))
+		if folded := dockerx.FoldNames(names, maxBriefNames); folded != "" {
+			msg += "：" + folded
 		}
 		return outcome(msg, true)
 	}

@@ -166,19 +166,18 @@ func TestHumanBytes(t *testing.T) {
 }
 
 // PruneImageResult.Summary 是手动清理与计划任务清理共用的那一句。
-// 关键：清理对象是悬空镜像（按定义没有名字），所以形状是「几个 + 多大」，
-// 不点名；只有 Docker 回了 Untagged 条目（带名字）才点。
+// 形状是「几个 + 多大」，**count 由调用方传 len(Names(idx))** —— 数量与名单
+// 必须同源：2026-10-13 用户就撞上过「明明只清理了一个镜像，却提示 3 个」。
 func TestPruneImageSummary(t *testing.T) {
-	if got := (PruneImageResult{}).Summary(); got != "没有可清理的未使用镜像" {
+	if got := (PruneImageResult{}).Summary(0); got != "没有可清理的未使用镜像" {
 		t.Errorf("空结果应给一句人话，got %q", got)
 	}
 
-	// 典型的悬空镜像清理：只有 Deleted（裸 ID），不该出现在文案里。
 	res := PruneImageResult{
 		Deleted: []string{"sha256:2c75e866d5a5", "sha256:aaaa11112222"},
 		Freed:   1536 * 1024 * 1024,
 	}
-	got := res.Summary()
+	got := res.Summary(2)
 	want := "清理未使用镜像 2 个，释放空间 1.5 GB"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -186,29 +185,14 @@ func TestPruneImageSummary(t *testing.T) {
 	if strings.Contains(got, "2c75e866") {
 		t.Errorf("裸 ID 不该出现在文案里：%q", got)
 	}
-	if res.Count() != 2 {
-		t.Errorf("Count = %d, want 2", res.Count())
-	}
-
-	// 带 Untagged（顺手摘掉的标签）时，它也计入数量 —— 但名字不出现在摘要里，
-	// 名字走 Names（运行记录的对象行），这是 2026-10-13 定下的分工。
-	res2 := PruneImageResult{
-		Deleted:  []string{"sha256:aaa"},
-		Untagged: []string{"nginx:1.26", "redis:7.2"},
-		Freed:    1024,
-	}
-	if got2 := res2.Summary(); strings.Contains(got2, "nginx:1.26") || !strings.Contains(got2, "3 个") {
-		t.Errorf("摘要只报数量与体积，got %q", got2)
-	}
 }
 
 // PruneImageResult.Names 输出「这次删了哪些镜像」—— 运行记录的对象行。
 //
-// 用户 2026-10-13：「原 ID 行就要显示出删除了哪些镜像」。所以这里必须给名字，
-// 且绝不出现裸 ID：查不到名字的也要说清它是什么 —— 无标签的顶层镜像说成
-// 「无标签镜像 <短ID>」，prune 混进 Deleted 的中间层 ID 说成「中间层 <短ID>」
-// （用户 2026-10-13 追问「镜像页能读到名字，怎么记录里不行」——因为那是层，
-// 镜像页根本不显示，Docker 也没给过它任何名字）。
+// 2026-10-13 用户的两次反馈定下两条规则：
+//   - 只列**镜像**：Docker 的 Deleted 里混着随镜像删掉的中间层 ID，那不是
+//     用户认知里的镜像，既不该计数也不该列出来（「怎么提示 3 个」）；
+//   - 摘要只留仓库名（「就显示 aaron2024s/dockhelm，不要后面那些」）。
 func TestPruneImageNames(t *testing.T) {
 	res := PruneImageResult{
 		// 三个删掉的对象：一个查得到名字，一个是无标签的顶层镜像，
@@ -217,20 +201,16 @@ func TestPruneImageNames(t *testing.T) {
 		Untagged: []string{"nginx:1.26"},
 	}
 	idx := PruneNameIndex{
-		Names:    map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"},
-		ImageIDs: map[string]bool{"2c75e866d5a5": true, "beef12345678": true},
-		Digests:  map[string]string{},
+		Names:       map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm"},
+		ImageIDs:    map[string]bool{"2c75e866d5a5": true, "beef12345678": true},
+		Digests:     map[string]string{},
+		ShortDigest: map[string]string{},
 	}
 
 	got := res.Names(idx)
-	want := []string{
-		"aaron2024s/dockhelm@2c75e866d5a5",
-		"nginx:1.26",
-		"中间层 c0ffee000000",
-		"无标签镜像 beef12345678",
-	}
+	want := []string{"aaron2024s/dockhelm", "nginx:1.26", "无标签镜像 beef12345678"}
 	if len(got) != len(want) {
-		t.Fatalf("名单条数 = %d（%v），want %d", len(got), got, len(want))
+		t.Fatalf("名单条数 = %d（%v），want %d —— 层不该出现在名单里", len(got), got, len(want))
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -238,27 +218,29 @@ func TestPruneImageNames(t *testing.T) {
 		}
 	}
 	for _, n := range got {
+		if strings.HasPrefix(n, "中间层") {
+			t.Errorf("中间层不是镜像，不该列进名单：%q", n)
+		}
 		if n == "2c75e866d5a5" || n == "beef12345678" || n == "c0ffee000000" {
 			t.Errorf("名单里不该出现裸 ID：%q", n)
 		}
 	}
 
-	// Untagged 里的摘要引用：归一成 仓库@短摘要；指向的镜像已在 Deleted
-	// 里点过名时去重，不让同一个镜像占两行。
+	// Untagged 里的摘要引用：指向的镜像已在 Deleted 里点过名就跳过
+	// （同一个镜像别占两行）；对不上的那笔单独列，名字同样只留仓库名
+	// —— 不展示摘要（除非撞车，见下一个用例）。
 	res2 := PruneImageResult{
 		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa"},
 		Untagged: []string{"aaron2024s/dockhelm@sha256:2c75e866d5a5ffffffffffffffffffffffffffffffff", "redis@sha256:fedcba987654ffffffffffffffffffffffffffffffff"},
 	}
 	idx2 := PruneNameIndex{
-		Names:    map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm@2c75e866d5a5"},
-		ImageIDs: map[string]bool{"2c75e866d5a5": true},
-		Digests:  map[string]string{"2c75e866d5a5": "2c75e866d5a5", "fedcba987654": "fedcba987654"},
+		Names:       map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm"},
+		ImageIDs:    map[string]bool{"2c75e866d5a5": true},
+		Digests:     map[string]string{"2c75e866d5a5": "2c75e866d5a5", "fedcba987654": "fedcba987654"},
+		ShortDigest: map[string]string{"2c75e866d5a5": "2c75e866d5a5"},
 	}
 	got2 := res2.Names(idx2)
-	want2 := []string{
-		"aaron2024s/dockhelm@2c75e866d5a5",
-		"redis@fedcba987654",
-	}
+	want2 := []string{"aaron2024s/dockhelm", "redis"}
 	if len(got2) != len(want2) {
 		t.Fatalf("去重后名单条数 = %d（%v），want %d", len(got2), got2, len(want2))
 	}
@@ -266,6 +248,48 @@ func TestPruneImageNames(t *testing.T) {
 		if got2[i] != want2[i] {
 			t.Errorf("名单[%d] = %q, want %q（已排序）", i, got2[i], want2[i])
 		}
+	}
+
+	// 同一个仓库有多个悬空镜像（不同版本）时名字会撞车：这时才补短摘要区分，
+	// 否则两条记录长得一模一样、数量也对不上。
+	res3 := PruneImageResult{Deleted: []string{"sha256:aaaa00000000aaaa", "sha256:bbbb00000000bbbb"}}
+	idx3 := PruneNameIndex{
+		Names:       map[string]string{"aaaa00000000": "aaron2024s/dockhelm", "bbbb00000000": "aaron2024s/dockhelm"},
+		ImageIDs:    map[string]bool{"aaaa00000000": true, "bbbb00000000": true},
+		Digests:     map[string]string{},
+		ShortDigest: map[string]string{"aaaa00000000": "aaaa00000000", "bbbb00000000": "bbbb00000000"},
+	}
+	got3 := res3.Names(idx3)
+	want3 := []string{"aaron2024s/dockhelm@aaaa00000000", "aaron2024s/dockhelm@bbbb00000000"}
+	if len(got3) != len(want3) {
+		t.Fatalf("撞车时名单条数 = %d（%v），want %d", len(got3), got3, len(want3))
+	}
+	for i := range want3 {
+		if got3[i] != want3[i] {
+			t.Errorf("名单[%d] = %q, want %q", i, got3[i], want3[i])
+		}
+	}
+
+	// 用户 2026-10-13 截图那一笔：删一个 dockhelm 镜像，Docker 回了
+	// 【镜像的 Deleted + 它的层的 Deleted + 一条 Untagged 摘要引用】。
+	// 期望：就一句「1 个……：aaron2024s/dockhelm」，层不出现在任何地方。
+	res4 := PruneImageResult{
+		Deleted:  []string{"sha256:2c75e866d5a5aaaaaaaa", "sha256:44952d1f5e94bbbb"},
+		Untagged: []string{"aaron2024s/dockhelm@sha256:f5dd5f1e69bcffffffffffffffffffffffffffffffff"},
+		Freed:    7 * 1024 * 1024,
+	}
+	idx4 := PruneNameIndex{
+		Names:       map[string]string{"2c75e866d5a5": "aaron2024s/dockhelm"},
+		ImageIDs:    map[string]bool{"2c75e866d5a5": true},
+		Digests:     map[string]string{"f5dd5f1e69bc": "2c75e866d5a5"},
+		ShortDigest: map[string]string{"2c75e866d5a5": "f5dd5f1e69bc"},
+	}
+	got4 := res4.Names(idx4)
+	if len(got4) != 1 || got4[0] != "aaron2024s/dockhelm" {
+		t.Fatalf("名单 = %v，want [aaron2024s/dockhelm]（层与摘要都不该出现）", got4)
+	}
+	if s := res4.Summary(len(got4)); s != "清理未使用镜像 1 个，释放空间 7.0 MB" {
+		t.Errorf("摘要 = %q", s)
 	}
 
 	// 对照表整体缺失（清理前那次列举失败）也不能崩，且仍不出现裸 ID。
@@ -291,7 +315,7 @@ func TestFoldNames(t *testing.T) {
 }
 
 // ImageDisplayName 是「清理前抓名字」的取名规则：有标签用标签，
-// 没标签用 仓库@短摘要，匿名层返回空串（由调用方兜底）。
+// 没标签用**仓库名**（不带 @摘要），匿名层返回空串（由调用方兜底）。
 func TestImageDisplayName(t *testing.T) {
 	cases := []struct {
 		name string
@@ -301,7 +325,8 @@ func TestImageDisplayName(t *testing.T) {
 		{"有标签", ImageSummary{RepoTags: []string{"nginx:1.27"}, RepoDigests: []string{"x@sha256:aa"}}, "nginx:1.27"},
 		{"跳过 none 标签", ImageSummary{RepoTags: []string{"<none>:<none>", "redis:7.2"}}, "redis:7.2"},
 		{"无标签但有仓库摘要", ImageSummary{RepoDigests: []string{"aaron2024s/dockhelm@sha256:2c75e866d5a5ffffffffffffffffffffffffffffffffffffffffffffffff"}},
-			"aaron2024s/dockhelm@2c75e866d5a5"},
+			"aaron2024s/dockhelm"},
+		{"第一个摘要畸形就用下一个", ImageSummary{RepoDigests: []string{"malformed", "redis@sha256:bb"}}, "redis"},
 		{"匿名层", ImageSummary{}, ""},
 	}
 	for _, c := range cases {

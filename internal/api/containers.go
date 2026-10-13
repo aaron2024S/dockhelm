@@ -684,7 +684,7 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// 名字要在清理**之前**抓：删完这些镜像就查不到了，运行记录里只能剩一串裸 ID
 	// （用户 2026-10-13 的原话：「原 ID 行就要显示出删除了哪些镜像」）。
-	// 抓不到不影响清理本身，兜底是「无标签镜像 / 中间层 <短ID>」。
+	// 抓不到不影响清理本身，兜底是「无标签镜像 <短ID>」（随镜像删掉的层不列）。
 	idx := s.dc.BuildPruneNameIndex(ctx)
 	res, err := s.dc.PruneImages(ctx)
 	if err != nil {
@@ -693,14 +693,16 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	}
 	// 说明 = 几个 + 多大 + 名单接在句尾；对象行留空 —— 名单跟在说明后面
 	// 是 2026-10-13 用户定的形状，不再拆成两列让眼睛来回对。
+	// 数量取名单长度：Docker 返回的条目里混着随镜像删掉的层，自己数会多报
+	// （用户 2026-10-13：「刚刚明明只清理了一个镜像怎么提示 3 个」）。
 	names := res.Names(idx)
-	detail := res.Summary()
+	detail := res.Summary(len(names))
 	if folded := dockerx.FoldNames(names, 8); folded != "" {
 		detail += "：" + folded
 	}
 	s.st.AddRunLog("image", "", "success", detail, "")
 	writeOK(w, map[string]any{
-		"ok": true, "count": res.Count(), "freedBytes": res.Freed,
+		"ok": true, "count": len(names), "freedBytes": res.Freed,
 		"images": names,
 	})
 }

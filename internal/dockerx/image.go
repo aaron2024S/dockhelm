@@ -179,11 +179,15 @@ type PruneNameIndex struct {
 	// ImageIDs 清理前**真实存在**的顶层镜像短ID。prune 返回的 Deleted 里
 	// 混着随镜像一起删掉的中间层 ID（官方文档示例就是两条 Deleted：一条是
 	// 镜像本身、一条是它的层）—— 中间层从没出现在 /images/json 里，靠这个
-	// 集合把「无标签镜像」和「中间层」区分开，别把层说成镜像。
+	// 集合把它剔掉：层不算镜像，既不该计数也不该列进名单
+	// （用户 2026-10-13：「明明只清理了一个镜像怎么提示 3 个」）。
 	ImageIDs map[string]bool
 	// Digests 12 位摘要 → 顶层镜像短ID。Untagged 里可能混着摘要引用
 	// （repo@sha256:...），用来归一化、以及和 Deleted 里同一个镜像去重。
 	Digests map[string]string
+	// ShortDigest 顶层镜像短ID → 12 位短摘要。平时不展示；只有**同一个仓库
+	// 有多个悬空镜像**（名字撞车）时才补上区分（见 PruneImageResult.Names）。
+	ShortDigest map[string]string
 }
 
 // BuildPruneNameIndex 在清理之前扫一遍镜像列表，抓回 Names 里能抓到的名字。
@@ -197,6 +201,7 @@ func (c *Client) BuildPruneNameIndex(ctx context.Context) PruneNameIndex {
 	idx.Names = make(map[string]string, len(list))
 	idx.ImageIDs = make(map[string]bool, len(list))
 	idx.Digests = make(map[string]string)
+	idx.ShortDigest = make(map[string]string)
 	for _, im := range list {
 		sid := ShortID(im.ID)
 		idx.ImageIDs[sid] = true
@@ -205,6 +210,9 @@ func (c *Client) BuildPruneNameIndex(ctx context.Context) PruneNameIndex {
 				dg := ShortID(d[at+1:])
 				if dg != "" {
 					idx.Digests[dg] = sid
+					if idx.ShortDigest[sid] == "" {
+						idx.ShortDigest[sid] = dg
+					}
 				}
 			}
 		}
