@@ -558,6 +558,22 @@ func (s *Store) ListRunLogs(limit int) ([]RunLog, error) {
 	return out, nil
 }
 
+// LastRunLog 取某一类（kind）最近的一条运行记录。
+//
+// 「顺序启动」页顶部要显示「上次执行：今天 08:12 · 成功 47、跳过 3」。
+// 不能用 ListRunLogs(N) 再自己筛：开机一轮之后可能已经积累了几百条别的记录，
+// 那条 boot 早就掉出窗口，页面就会永远显示「从未执行」。
+func (s *Store) LastRunLog(kind string) (RunLog, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.db.RunLogs) - 1; i >= 0; i-- {
+		if s.db.RunLogs[i].Kind == kind {
+			return s.db.RunLogs[i], true
+		}
+	}
+	return RunLog{}, false
+}
+
 // ClearRunLogs 清空运行记录。
 func (s *Store) ClearRunLogs() {
 	s.mu.Lock()

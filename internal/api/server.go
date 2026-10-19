@@ -24,6 +24,7 @@ import (
 
 	"github.com/aaron2024s/dockhelm/internal/auth"
 	"github.com/aaron2024s/dockhelm/internal/backup"
+	"github.com/aaron2024s/dockhelm/internal/boot"
 	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/config"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
@@ -43,6 +44,7 @@ type Server struct {
 	up     *updater.Updater
 	sch    *scheduler.Scheduler
 	bk     *backup.Service
+	boot   *boot.Service
 	nt     *notify.Manager
 	bus    *bus.Bus
 	mux    *http.ServeMux
@@ -73,6 +75,7 @@ type Deps struct {
 	Update *updater.Updater
 	Sched  *scheduler.Scheduler
 	Backup *backup.Service
+	Boot   *boot.Service
 	Notify *notify.Manager
 	Bus    *bus.Bus
 	Static http.Handler
@@ -82,7 +85,7 @@ type Deps struct {
 func New(d Deps) *Server {
 	s := &Server{
 		cfg: d.Cfg, st: d.Store, dc: d.Docker, auth: d.Auth,
-		up: d.Update, sch: d.Sched, bk: d.Backup, nt: d.Notify, bus: d.Bus,
+		up: d.Update, sch: d.Sched, bk: d.Backup, boot: d.Boot, nt: d.Notify, bus: d.Bus,
 		mux: http.NewServeMux(), static: d.Static,
 		autoWake: make(chan wakeAction, 1),
 	}
@@ -156,6 +159,12 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/schedules/{id}/run", a(s.hRunSchedule))
 	m.HandleFunc("POST /api/schedules/{id}/enabled", a(s.hSetScheduleEnabled))
 	m.HandleFunc("GET /api/schedules/actions", a(s.hScheduleActions))
+
+	// —— 顺序启动 ——
+	m.HandleFunc("GET /api/boot", a(s.hGetBoot))
+	m.HandleFunc("PUT /api/boot", a(s.hSaveBoot))
+	m.HandleFunc("POST /api/boot/run", a(s.hRunBoot))
+	m.HandleFunc("GET /api/boot/status", a(s.hBootStatus))
 
 	m.HandleFunc("GET /api/registries", a(s.hGetRegistries))
 	m.HandleFunc("PUT /api/registries", a(s.hSaveRegistries))

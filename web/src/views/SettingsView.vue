@@ -574,7 +574,7 @@ onMounted(() => void load())
       </div>
 
       <!-- 运行记录 -->
-      <div class="dh-card">
+      <div id="runlogs" class="dh-card scroll-mt-3">
         <div class="dh-card-head">
           <ScrollText class="h-3.5 w-3.5 text-text-4" />
           <span>运行记录</span>

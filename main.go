@@ -20,6 +20,7 @@ import (
 	"github.com/aaron2024s/dockhelm/internal/api"
 	"github.com/aaron2024s/dockhelm/internal/auth"
 	"github.com/aaron2024s/dockhelm/internal/backup"
+	"github.com/aaron2024s/dockhelm/internal/boot"
 	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/config"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
@@ -160,10 +161,14 @@ func main() {
 	// —— 静态资源 ——
 	static := buildStaticHandler()
 
+	// —— 顺序启动 ——
+	// 只负责「按清单串行启动」，不改重启策略、不做快照。见 internal/boot 包注释。
+	bootSvc := boot.New(dc, st, nt, up.SelfName)
+
 	// —— HTTP 服务 ——
 	srv := api.New(api.Deps{
 		Cfg: cfg, Store: st, Docker: dc, Auth: authMgr,
-		Update: up, Sched: sch, Backup: bk, Notify: nt, Bus: b, Static: static,
+		Update: up, Sched: sch, Backup: bk, Boot: bootSvc, Notify: nt, Bus: b, Static: static,
 	})
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
@@ -183,6 +188,13 @@ func main() {
 
 	// 定期清理
 	go housekeeping(appCtx, st, bk, nt)
+
+	// 顺序启动：与 HTTP 服务同时起，不阻塞面板可用。
+	//
+	// ⚠ 每次进程启动都会跑一轮（包括镜像更新导致的自重启）—— 方案 §八 明确要求。
+	// 那种情况下绝大多数容器在跑、会被跳过，只有「开关开着但当前停着」的会被拉起，
+	// 这是预期行为，不是 bug。
+	go bootSvc.Startup(appCtx)
 
 	// 周期检测 + 自动更新。
 	//

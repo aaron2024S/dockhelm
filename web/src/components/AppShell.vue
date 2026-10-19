@@ -11,6 +11,7 @@ import {
   Gauge,
   Info,
   Layers,
+  ListOrdered,
   LogOut,
   Menu,
   Monitor,
@@ -79,6 +80,8 @@ const nav: NavItem[] = [
   { name: 'containers', label: '容器', icon: Box, count: 'containers' },
   { name: 'images', label: '镜像', icon: Layers, count: 'images' },
   { name: 'schedules', label: '计划任务', icon: CalendarClock, count: 'schedules' },
+  // 顺序启动：紧跟计划任务，两者都是「让容器按某种时机自己起来」，放一起顺路
+  { name: 'boot', label: '顺序启动', icon: ListOrdered },
   { name: 'backup', label: '备份与恢复', icon: Archive, count: 'snapshots', group: '资源' },
   { name: 'registries', label: '镜像加速源', icon: Rocket, group: '系统' },
   { name: 'notify', label: '通知', icon: Bell },

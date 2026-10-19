@@ -100,6 +100,15 @@ var EventCatalog = []EventDef{
 	{Event: "schedule_failed", Label: "计划任务执行失败", Group: "计划任务", Level: LevelUrgent, Tone: ToneFailed, Default: true,
 		Description: "定时任务执行出错（含计划任务里的容器更新失败），正文点名失败容器；这是计划任务唯一的回执"},
 
+	// —— 顺序启动 ——
+	// 一次开机/一次手动执行只有这两条之一，正文点名失败容器与原因。
+	// 成功那条默认关闭：每次开机都推一条「启动完成」属于噪音，
+	// 但想让手机确认「机器已经起好了」的人可以打开。
+	{Event: "boot_done", Label: "顺序启动完成", Group: "顺序启动", Level: LevelNormal, Tone: ToneSuccess, Default: false,
+		Description: "按顺序启动跑完且没有失败时提醒：启动了几个、跳过几个"},
+	{Event: "boot_failed", Label: "顺序启动失败", Group: "顺序启动", Level: LevelUrgent, Tone: ToneFailed, Default: true,
+		Description: "有容器没能启动（含超时、启动后立即退出、容器已不存在），正文点名原因"},
+
 	// —— 备份 ——
 	{Event: "backup_success", Label: "备份完成", Group: "备份", Level: LevelNormal, Tone: ToneSuccess, Default: false,
 		Description: "手动或定时的配置快照备份完成"},

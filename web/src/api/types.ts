@@ -117,6 +117,70 @@ export interface RunLog {
   detail: string
 }
 
+// ---------- 顺序启动 ----------
+
+export interface BootItem {
+  name: string
+  /** 开机启动开关；关掉 = 永远不参与 */
+  auto: boolean
+  /** 这一行启动成功后等 N 秒再起下一个 */
+  delaySec: number
+}
+
+export interface BootPlan {
+  enabled: boolean
+  initialDelaySec: number
+  waitTimeoutSec: number
+  defaultDelaySec: number
+  /** 数组顺序就是启动次序 */
+  items: BootItem[]
+}
+
+export interface BootContainer {
+  name: string
+  state: string
+  /** Docker 原始取值：no / on-failure / always / unless-stopped */
+  restartPolicy: string
+  /** 由重启策略实时算出：no / on-failure 为 true */
+  managed: boolean
+  project: string
+  auto: boolean
+  delaySec: number
+}
+
+export interface BootStatus {
+  running: boolean
+  trigger: string
+  phase: string
+  index: number
+  total: number
+  current: string
+  success: number
+  skipped: number
+  failed: number
+  startedAt: string
+  finishedAt: string
+}
+
+export interface BootLastRun {
+  ts: string
+  status: string
+  /** 老数据没有分项数字，只有 message 一句话 */
+  total?: number
+  success?: number
+  skipped?: number
+  failed?: number
+  message: string
+}
+
+export interface BootResponse {
+  plan: BootPlan
+  containers: BootContainer[]
+  self: { name: string; restartPolicy: string }
+  lastRun: BootLastRun | null
+  status: BootStatus
+}
+
 export interface CheckResult {
   container: string
   id: string

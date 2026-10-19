@@ -11,6 +11,7 @@ const RUN_KIND_LABEL: Record<string, string> = {
   image: '镜像',
   volume: '卷',
   schedule: '计划任务',
+  boot: '顺序启动',
   backup: '备份',
   restore: '还原',
   system: '系统',

@@ -43,6 +43,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '计划任务', icon: 'calendar' },
   },
   {
+    // 顺序启动：侧栏与页面标题同名，位置紧跟「计划任务」
+    path: '/boot',
+    name: 'boot',
+    component: () => import('@/views/BootView.vue'),
+    meta: { title: '顺序启动', icon: 'list-ordered' },
+  },
+  {
     path: '/registries',
     name: 'registries',
     component: () => import('@/views/RegistriesView.vue'),
