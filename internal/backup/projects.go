@@ -340,6 +340,55 @@ func (s *Service) DeleteProjectBackup(project, ts string) error {
 	return nil
 }
 
+// ClearProjects 清空**全部 compose 项目备份**，返回删除份数与释放字节数。
+//
+// 与 Clear 分开是刻意的：容器快照和项目备份是两套东西（各自的保留策略、
+// 各自的页面标签），「清空」也就不该一次连锅端。想两样都清，就得各点一次。
+//
+// 份数按 `<项目>/<时间戳>/` 这种二级目录数，不按配置里的项目名反查 ——
+// 目录名是 sanitize 过的，名字对不上会漏数。
+func (s *Service) ClearProjects() (int, int64) {
+	root := s.cfg.ProjectBackupDir()
+	projEntries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, 0
+	}
+	removed := 0
+	var freed int64
+	for _, pe := range projEntries {
+		if !pe.IsDir() {
+			continue
+		}
+		pdir := filepath.Join(root, pe.Name())
+		tsEntries, err := os.ReadDir(pdir)
+		if err != nil {
+			continue
+		}
+		for _, te := range tsEntries {
+			if !te.IsDir() {
+				continue
+			}
+			dir := filepath.Join(pdir, te.Name())
+			_, size := dirTreeStats(dir)
+			if err := os.RemoveAll(dir); err != nil {
+				continue
+			}
+			removed++
+			freed += size
+		}
+		// 空的项目目录一起收掉，免得项目页留一堆 0 份的空壳
+		if left, err := os.ReadDir(pdir); err == nil && len(left) == 0 {
+			_ = os.Remove(pdir)
+		}
+	}
+	_ = os.MkdirAll(root, 0o700)
+	if removed > 0 {
+		s.st.AddRunLog("backup", "", "success",
+			fmt.Sprintf("已清空全部 compose 项目备份（%d 份）", removed), formatBytesCN(freed))
+	}
+	return removed, freed
+}
+
 // ProjectBackupFiles 返回一份备份里的文件清单（供下载 / 还原弹窗展示）。
 func (s *Service) ProjectBackupFiles(project, ts string) ([]ProjectFile, error) {
 	man, err := readProjectManifest(s.projectBackupDir(project, ts))

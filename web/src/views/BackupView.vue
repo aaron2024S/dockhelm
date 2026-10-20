@@ -113,6 +113,79 @@ const keepPreUpdateSub = computed(() =>
     : '当前关闭：更新前快照与普通快照一样，会被份数、天数、容量三个上限清掉',
 )
 
+// ---------- 清空全部 ----------
+//
+// 「清空」是全站唯一一个会**成批抹掉**用户备份、且不进回收站的动作，
+// 所以它不能是「清理过期」旁边随手可点的普通按钮：必须开弹窗 + 手打「清空」才放行。
+// 容器快照与 compose 备份是两个独立入口，一次只清一种（后端也是两个接口）。
+type ClearScope = 'snapshots' | 'projects'
+
+const clearScope = ref<ClearScope | null>(null)
+const clearWord = ref('')
+const clearing = ref(false)
+const CLEAR_WORD = '清空'
+const clearReady = computed(() => clearWord.value.trim() === CLEAR_WORD)
+
+const clearInfo = computed(() => {
+  if (clearScope.value === 'projects') {
+    return {
+      title: '清空 compose 项目备份',
+      count: stats.value?.projectSnapshots ?? 0,
+      size: stats.value?.projectSizeBytes ?? 0,
+      noun: '份项目备份',
+      other: '「容器配置快照」那一页的备份不受影响，也不会自动帮你先备份一次。',
+    }
+  }
+  return {
+    title: '清空全部容器快照',
+    count: stats.value?.snapshots ?? 0,
+    size: stats.value?.sizeBytes ?? 0,
+    noun: '份快照',
+    other: '「compose 项目」那一页的备份不受影响，也不会自动帮你先备份一次。',
+  }
+})
+
+function openClear(scope: ClearScope) {
+  clearScope.value = scope
+  clearWord.value = ''
+}
+
+function resetClear() {
+  clearScope.value = null
+  clearWord.value = ''
+}
+
+/** 清空进行中不许关窗，否则用户会以为没点上又点一次。 */
+function closeClear() {
+  if (clearing.value) return
+  resetClear()
+}
+
+async function doClear() {
+  const scope = clearScope.value
+  if (!scope || !clearReady.value) return
+  clearing.value = true
+  try {
+    const res = await api.post<{ removed: number; freedBytes: number }>(
+      scope === 'projects' ? '/api/backups/projects/clear' : '/api/backups/clear',
+    )
+    if (res.removed > 0) {
+      toast.success(
+        scope === 'projects' ? '已清空 compose 备份' : '已清空容器快照',
+        `删除 ${res.removed} 份，释放 ${formatBytes(res.freedBytes)}`,
+      )
+    } else {
+      toast.info('没有可清空的备份')
+    }
+    resetClear()
+    await Promise.all([load(), loadProjects()])
+  } catch (e) {
+    toast.error('清空失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    clearing.value = false
+  }
+}
+
 // ---------- 批次聚合 ----------
 
 /** 一次备份动作 = 一批共用同一个时间戳的快照。 */
@@ -873,6 +946,14 @@ onMounted(async () => {
           >
             <Trash2 class="h-3 w-3" />清理过期
           </button>
+          <button
+            class="dh-btn dh-btn-sm dh-btn-ghost text-err-text hover:text-err-text"
+            :disabled="!stats?.snapshots"
+            title="删掉全部容器快照（不进回收站，需要二次确认）"
+            @click="openClear('snapshots')"
+          >
+            <Trash2 class="h-3 w-3" />清空全部
+          </button>
           <button class="dh-btn dh-btn-sm dh-btn-ghost ml-auto" :disabled="loading" @click="load">
             <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />刷新
           </button>
@@ -1202,6 +1283,14 @@ onMounted(async () => {
           <span>项目</span>
           <span class="ml-auto flex items-center gap-2 font-normal">
             <span class="text-[11.5px] text-text-5">按项目名排序</span>
+            <button
+              class="dh-btn dh-btn-sm dh-btn-ghost text-err-text hover:text-err-text"
+              :disabled="!stats?.projectSnapshots"
+              title="删掉全部 compose 项目备份（不进回收站，需要二次确认）"
+              @click="openClear('projects')"
+            >
+              <Trash2 class="h-3 w-3" />清空全部
+            </button>
             <button class="dh-btn dh-btn-sm dh-btn-ghost" :disabled="loading" @click="loadProjects">
               <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />刷新
             </button>
@@ -1700,6 +1789,51 @@ onMounted(async () => {
         >
           <Loader2 v-if="importing" class="h-3.5 w-3.5 dh-spin" />
           <Download v-else class="h-3.5 w-3.5" />导入
+        </button>
+      </template>
+    </Modal>
+
+    <!-- 清空全部：全站唯一一个会成批抹掉备份、且不进回收站的入口。
+         所以不跟「清理过期」放在同一个确认层级 —— 必须手打「清空」两个字才放行。 -->
+    <Modal
+      :open="!!clearScope"
+      :title="clearInfo.title"
+      :subtitle="`${clearInfo.count} ${clearInfo.noun} · 占用 ${formatBytes(clearInfo.size)}`"
+      width="460px"
+      :busy="clearing"
+      @close="closeClear"
+    >
+      <div class="flex flex-col gap-3">
+        <div
+          class="flex items-start gap-2.5 rounded-[10px] border border-line-err bg-soft-err px-3 py-2.5 text-[12.5px] leading-relaxed text-err-text"
+        >
+          <AlertTriangle class="mt-[2px] h-4 w-4 flex-none" />
+          <div>
+            这 <b>{{ clearInfo.count }} {{ clearInfo.noun }}</b> 会被<b>直接删掉</b>，<b>没有回收站、不可恢复</b>。
+            正在运行的容器不受影响，但删完就再也无法用这些备份还原了。
+          </div>
+        </div>
+        <div class="text-[12px] leading-relaxed text-text-3">
+          {{ clearInfo.other }}
+          <div class="mt-[3px] text-[11.5px] text-text-5">
+            只想删掉旧的那部分，用「清理过期」按策略删就行；这里是<b>一刀切</b>。
+          </div>
+        </div>
+        <div>
+          <label class="mb-[5px] block text-[12px] text-text-4">
+            输入
+            <code class="rounded bg-ink-800 px-1 text-text-2">清空</code>
+            两个字以确认
+          </label>
+          <input v-model="clearWord" class="dh-input" placeholder="清空" @keyup.enter="doClear" />
+        </div>
+      </div>
+      <template #footer>
+        <button class="dh-btn" :disabled="clearing" @click="closeClear">取消</button>
+        <button class="dh-btn dh-btn-danger" :disabled="clearing || !clearReady" @click="doClear">
+          <Loader2 v-if="clearing" class="h-3.5 w-3.5 dh-spin" />
+          <Trash2 v-else class="h-3.5 w-3.5" />
+          {{ clearing ? '清空中…' : '确认清空' }}
         </button>
       </template>
     </Modal>

@@ -308,6 +308,19 @@ func (s *Server) hDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{"ok": true})
 }
 
+// hClearBackups 清空全部容器快照。不可逆，前端必须二次确认（并且要用户手打「清空」）。
+// 只清容器快照，compose 项目备份走 hClearProjectBackups。
+func (s *Server) hClearBackups(w http.ResponseWriter, r *http.Request) {
+	removed, freed := s.bk.Clear()
+	writeOK(w, map[string]any{"removed": removed, "freedBytes": freed})
+}
+
+// hClearProjectBackups 清空全部 compose 项目备份。同样不可逆，单独一个入口。
+func (s *Server) hClearProjectBackups(w http.ResponseWriter, r *http.Request) {
+	removed, freed := s.bk.ClearProjects()
+	writeOK(w, map[string]any{"removed": removed, "freedBytes": freed})
+}
+
 func (s *Server) hListProjects(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()

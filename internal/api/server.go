@@ -180,6 +180,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/backups/diff", a(s.hBackupDiff))
 	m.HandleFunc("POST /api/backups/restore", a(s.hRestore))
 	m.HandleFunc("POST /api/backups/prune", a(s.hPruneBackups))
+	m.HandleFunc("POST /api/backups/clear", a(s.hClearBackups))
+	m.HandleFunc("POST /api/backups/projects/clear", a(s.hClearProjectBackups))
 	m.HandleFunc("POST /api/backups/import", a(s.hImportBackup))
 	m.HandleFunc("DELETE /api/backups/{container}/{ts}", a(s.hDeleteBackup))
 	m.HandleFunc("GET /api/backups/projects", a(s.hListProjects))

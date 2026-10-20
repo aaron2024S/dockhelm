@@ -400,6 +400,79 @@ func (s *Service) Delete(container, ts string) error {
 	return nil
 }
 
+// Clear 清空**全部容器快照**（连同卷数据），返回删除份数与释放字节数。
+//
+// 只动 containers/ 这一棵树，不碰 projects/ —— compose 项目备份是另一回事，
+// 走 ClearProjects。两件事都不可逆，所以只由用户显式点「清空」触发，
+// 任何自动流程（Prune / 定时清理）都不会调到这两个方法。
+//
+// 按「每个容器一个子目录」逐个删，而不是整个 root 一次性 RemoveAll：
+// 某个目录删失败（权限、占用）时其余容器照样能清掉，报给用户的数字也是真删掉的那部分。
+func (s *Service) Clear() (int, int64) {
+	root := s.cfg.ContainerBackupDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, 0
+	}
+	removed := 0
+	var freed int64
+	for _, e := range entries {
+		if !e.IsDir() {
+			// 根目录下不该有散文件；真有也别删，留着让用户自己看
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		n, size := dirTreeStats(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			continue
+		}
+		removed += n
+		freed += size
+	}
+	// 目录本身留着：List() 与备份写入都假设它存在
+	_ = os.MkdirAll(root, 0o700)
+	if removed > 0 {
+		s.st.AddRunLog("backup", "", "success",
+			fmt.Sprintf("已清空全部容器快照（%d 份）", removed), formatBytesCN(freed))
+	}
+	return removed, freed
+}
+
+// dirTreeStats 统计一棵目录下有多少个快照 json、共占多少字节（含卷数据）。
+//
+// 按 json 计数而不是按配置里的容器名映射：目录名是 sanitize 过的，
+// 与快照里记的容器名未必一致，拿名字反查会漏数。
+func dirTreeStats(dir string) (int, int64) {
+	var n int
+	var size int64
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, ".json") {
+			n++
+		}
+		size += info.Size()
+		return nil
+	})
+	return n, size
+}
+
+// formatBytesCN 给运行记录用的人类可读体积（只这一处需要，不引第三方库）。
+func formatBytesCN(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	v := float64(n) / 1024
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
+
 // Import 导入一份外部快照（用户手工上传的 json）。
 //
 // 只做最小校验：必须是合法 JSON、且带 inspect 块 —— 没有 inspect 的文件
