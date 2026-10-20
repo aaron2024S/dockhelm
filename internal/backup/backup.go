@@ -761,10 +761,45 @@ type PruneOptions struct {
 	// 两个字段都为 0（默认）= 一份都不动。
 	ProjectKeepPerProject int
 	ProjectMaxAgeDays     int
+
+	// Scope 限定这次只清哪一类备份。空字符串 = 两类都清（每日自动清理走这条）。
+	//
+	// 为什么要这个：界面上「清理过期」在容器快照页和 compose 项目页各有一个按钮，
+	// 如果两边点下去都是「两类全清」，那就是在一个页面里悄悄删掉另一页面看得见的东西 ——
+	// 用户根本没法从按钮位置推断影响范围。现在按钮在哪一页，就只清那一页里的备份。
+	Scope string
 }
 
-// Prune 按策略清理旧快照。
+// 清理范围取值。
+const (
+	ScopeSnapshots = "snapshots"
+	ScopeProjects  = "projects"
+)
+
+// Prune 按策略清理旧备份。
+//
+// 两套策略各管各的，Scope 只决定「这次跑哪一半」，不改变任何判定条件；
+// 空 Scope 是历史上「一次清两类」的行为，留给每日自动清理。
 func (s *Service) Prune(opt PruneOptions) PruneResult {
+	res := PruneResult{}
+	if opt.Scope == "" || opt.Scope == ScopeSnapshots {
+		c := s.pruneContainers(opt)
+		res.Removed += c.Removed
+		res.FreedBytes += c.FreedBytes
+	}
+	if opt.Scope == "" || opt.Scope == ScopeProjects {
+		// 项目（yaml）备份走**它自己的一套**策略（ProjectKeepPerProject / ProjectMaxAgeDays）。
+		// 以前是共用容器这套，结果在容器页点「清理过期」会连 compose 备份一起清掉 ——
+		// 那份是用户手动留下的源头文件，不该被容器快照的滚动策略顺带处理。
+		pRemoved, pFreed := s.pruneProjectBackups(opt)
+		res.Removed += pRemoved
+		res.FreedBytes += pFreed
+	}
+	return res
+}
+
+// pruneContainers 清理容器配置快照（含 <ts>.volumes 卷数据）。
+func (s *Service) pruneContainers(opt PruneOptions) PruneResult {
 	res := PruneResult{}
 	items, err := s.List()
 	if err != nil {
@@ -850,12 +885,6 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 			_ = os.Remove(dir)
 		}
 	}
-	// 项目（yaml）备份走**它自己的一套**策略（ProjectKeepPerProject / ProjectMaxAgeDays）。
-	// 以前是共用容器这套，结果在容器页点「清理过期」会连 compose 备份一起清掉 ——
-	// 那份是用户手动留下的源头文件，不该被容器快照的滚动策略顺带处理。
-	pRemoved, pFreed := s.pruneProjectBackups(opt)
-	res.Removed += pRemoved
-	res.FreedBytes += pFreed
 	return res
 }
 

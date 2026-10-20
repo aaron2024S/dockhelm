@@ -260,6 +260,9 @@ type pruneBackupsReq struct {
 	// 项目（compose）备份的独立策略
 	ProjectKeepPerProject *int `json:"projectKeepPerProject"`
 	ProjectMaxAgeDays     *int `json:"projectMaxAgeDays"`
+	// Scope 只清哪一类："snapshots" / "projects"。留空 = 两类都清。
+	// 界面上两个标签页各点各的，谁都不去动对方那一半。
+	Scope string `json:"scope"`
 }
 
 // hPruneBackups 手动触发一次清理。不带参数时用设置页里的保留策略，
@@ -294,6 +297,15 @@ func (s *Server) hPruneBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ProjectMaxAgeDays != nil {
 		opt.ProjectMaxAgeDays = *in.ProjectMaxAgeDays
+	}
+	// 校验而不是静默忽略：拼错成 "snapshot" 时如果什么都不清、还回 200，
+	// 用户会以为「点了没效果是没东西可清」。
+	switch in.Scope {
+	case "", backup.ScopeSnapshots, backup.ScopeProjects:
+		opt.Scope = in.Scope
+	default:
+		writeErr(w, http.StatusBadRequest, `scope 只能是 "snapshots" 或 "projects"`)
+		return
 	}
 	writeOK(w, s.bk.Prune(opt))
 }

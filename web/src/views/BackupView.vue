@@ -92,8 +92,15 @@ const showFile = ref<{ path: string; content: string } | null>(null)
 /** 保留策略：这些值会持久化到设置里，「每天自动清理」与手动清理用同一套。 */
 const policy = ref<Settings | null>(null)
 const savingPolicy = ref(false)
-/** 「清理过期快照」确认框 —— 这一步会真删文件，必须二次确认。 */
-const confirmPrune = ref(false)
+/**
+ * 「清理过期」确认框 —— 这一步会真删文件，必须二次确认。
+ *
+ * 值就是这次要清的那一类：容器快照页 / compose 项目页各有一个按钮，
+ * 点哪个就只清哪个。以前两个页面共用一个「两类全清」的接口，
+ * 结果是在容器页点一下，compose 那页里看得见的备份也没了 —— 从按钮位置推不出来。
+ * null = 弹窗没开。
+ */
+const pruneScope = ref<'snapshots' | 'projects' | null>(null)
 
 /**
  * 「每容器保留份数」的说明 —— 更新前快照占不占额度，**完全由下面那个开关决定**，
@@ -590,16 +597,22 @@ async function confirmRemove() {
 }
 
 async function doPrune() {
-  confirmPrune.value = false
+  const scope = pruneScope.value
+  if (!scope) return
+  pruneScope.value = null
   busy.value = 'prune'
   try {
-    // 不带参数 ⇒ 后端用设置页里的保留策略，与每天自动清理完全一致
-    const res = await api.post<{ removed: number; freedBytes: number }>('/api/backups/prune', {})
-    toast.success(
-      `清理了 ${res.removed} 份备份`,
-      `释放 ${formatBytes(res.freedBytes)}（容器快照 + compose 项目备份，各按自己的策略）`,
-    )
+    // 不带策略参数 ⇒ 后端用设置页里的保留策略，与每天自动清理完全一致。
+    // 只带 scope：这个按钮只清它所在的那一页。
+    const res = await api.post<{ removed: number; freedBytes: number }>('/api/backups/prune', { scope })
+    const what = scope === 'snapshots' ? '容器快照' : ' compose 备份'
+    if (res.removed === 0) {
+      toast.success('没有需要清理的备份', `当前策略下没有超出保留范围的${what}`)
+    } else {
+      toast.success(`清理了 ${res.removed} 份${what}`, `释放 ${formatBytes(res.freedBytes)}`)
+    }
     await load()
+    if (scope === 'projects') await loadProjects()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))
   } finally {
@@ -941,8 +954,8 @@ onMounted(async () => {
           <button
             class="dh-btn dh-btn-sm dh-btn-ghost"
             :disabled="busy === 'prune'"
-            title="按保留策略清理过期的容器快照；compose 项目备份按它自己的策略单独判断（默认不清理）"
-            @click="confirmPrune = true"
+            title="按保留策略清理过期的容器快照；不动 compose 项目备份（那一页有自己的「清理过期」）"
+            @click="pruneScope = 'snapshots'"
           >
             <Trash2 class="h-3 w-3" />清理过期
           </button>
@@ -1282,7 +1295,15 @@ onMounted(async () => {
           <FolderTree class="h-3.5 w-3.5 text-text-4" />
           <span>项目</span>
           <span class="ml-auto flex items-center gap-2 font-normal">
-            <span class="text-[11.5px] text-text-5">按项目名排序</span>
+            <span class="hidden text-[11.5px] text-text-5 sm:inline">按项目名排序</span>
+            <button
+              class="dh-btn dh-btn-sm dh-btn-ghost"
+              :disabled="busy === 'prune'"
+              title="按 compose 项目备份自己的保留策略清理；不动容器配置快照（那一页有自己的「清理过期」）"
+              @click="pruneScope = 'projects'"
+            >
+              <Trash2 class="h-3 w-3" />清理过期
+            </button>
             <button
               class="dh-btn dh-btn-sm dh-btn-ghost text-err-text hover:text-err-text"
               :disabled="!stats?.projectSnapshots"
@@ -1886,53 +1907,78 @@ onMounted(async () => {
       </template>
     </Modal>
 
-    <!-- 清理过期：会真删文件，必须二次确认 -->
-    <Modal :open="confirmPrune" title="清理过期备份" width="460px" :busy="busy === 'prune'" @close="confirmPrune = false">
+    <!-- 清理过期：会真删文件，必须二次确认。
+         只清 pruneScope 指定的那一类 —— 在哪个标签页点的，就只删那一页里看得见的东西。 -->
+    <Modal
+      :open="!!pruneScope"
+      :title="pruneScope === 'projects' ? '清理过期的 compose 备份' : '清理过期的容器快照'"
+      width="460px"
+      :busy="busy === 'prune'"
+      @close="pruneScope = null"
+    >
       <div class="flex flex-col gap-3">
         <div
           class="flex items-start gap-2.5 rounded-[10px] border border-line-warn bg-soft-warn px-3 py-2.5 text-[12.5px] leading-relaxed text-warn-text"
         >
           <AlertTriangle class="mt-[2px] h-4 w-4 flex-none" />
-          <div>
-            会按下面的保留策略<b>直接删除备份文件</b>，<b>不可恢复</b>。容器快照与 compose
-            项目备份<b>各按自己的策略</b>执行：某一项是「不限」的，就一份都不会删。
+          <div v-if="pruneScope === 'projects'">
+            会按下面的保留策略<b>直接删除 compose 项目备份</b>，<b>不可恢复</b>。
+            每份备份里是项目目录下的 yaml 与 <code>.env</code>。
+            <b>不会动容器配置快照。</b>
+          </div>
+          <div v-else>
+            会按下面的保留策略<b>直接删除容器快照文件</b>，<b>不可恢复</b>（快照里的卷数据一起删）。
             <template v-if="policy?.backupKeepPreUpdate">
               「更新前快照永不自动清理」<b>已打开</b>，这类快照不占份数额度、也不会被删。
             </template>
             <template v-else>
               「更新前快照永不自动清理」<b>已关闭</b>，更新前快照会和普通快照一起被清掉。
             </template>
+            <b>不会动 compose 项目备份。</b>
           </div>
         </div>
         <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[12px] leading-relaxed text-text-3">
-          <div class="text-[11px] font-medium text-text-4">容器配置快照</div>
-          <div>
-            每容器保留最近
-            <b>{{ policy?.backupKeepPerContainer ? policy.backupKeepPerContainer + ' 份' : '不限' }}</b>
-            · 保留 {{ policy?.backupMaxAgeDays ? policy.backupMaxAgeDays + ' 天' : '不限' }}
-            · 总容量上限 {{ policy?.backupMaxTotalMB ? policy.backupMaxTotalMB + ' MB' : '不限' }}
-          </div>
-          <div class="mt-2 border-t border-line-1 pt-2">
+          <template v-if="pruneScope === 'projects'">
             <div class="text-[11px] font-medium text-text-4">compose 项目备份</div>
             <div>
               每项目保留最近
               <b>{{ policy?.backupProjectKeepPerProject ? policy.backupProjectKeepPerProject + ' 份' : '不限' }}</b>
               · 保留 {{ policy?.backupProjectMaxAgeDays ? policy.backupProjectMaxAgeDays + ' 天' : '不限' }}
             </div>
-            <div v-if="!policy?.backupProjectKeepPerProject && !policy?.backupProjectMaxAgeDays" class="mt-1 text-[11.5px] text-text-5">
-              两项都不限，本次不会动任何 compose 备份。
+            <div
+              v-if="!policy?.backupProjectKeepPerProject && !policy?.backupProjectMaxAgeDays"
+              class="mt-1 text-[11.5px] text-text-5"
+            >
+              两项都不限，这份策略下不会删掉任何 compose 备份。要清理得先设份数或天数。
             </div>
-          </div>
+          </template>
+          <template v-else>
+            <div class="text-[11px] font-medium text-text-4">容器配置快照</div>
+            <div>
+              每容器保留最近
+              <b>{{ policy?.backupKeepPerContainer ? policy.backupKeepPerContainer + ' 份' : '不限' }}</b>
+              · 保留 {{ policy?.backupMaxAgeDays ? policy.backupMaxAgeDays + ' 天' : '不限' }}
+              · 总容量上限 {{ policy?.backupMaxTotalMB ? policy.backupMaxTotalMB + ' MB' : '不限' }}
+            </div>
+          </template>
           <div class="mt-2 border-t border-line-1 pt-2 text-[11.5px] text-text-5">
-            要改策略请在上面的「保留策略」卡里改并保存。
+            <template v-if="pruneScope === 'projects'">
+              compose 备份的策略在「容器配置快照」页的「保留策略」卡里改。
+            </template>
+            <template v-else>要改策略请在上面的「保留策略」卡里改并保存。</template>
           </div>
         </div>
         <div class="text-[12px] text-text-4">
-          当前共 {{ backups.length }} 份容器快照（{{ formatBytes(stats?.sizeBytes) }}）+ {{ stats?.projectSnapshots ?? 0 }} 份项目备份（{{ formatBytes(stats?.projectSizeBytes) }}）。
+          <template v-if="pruneScope === 'projects'">
+            当前共 {{ stats?.projectSnapshots ?? 0 }} 份项目备份（{{ formatBytes(stats?.projectSizeBytes) }}）。
+          </template>
+          <template v-else>
+            当前共 {{ backups.length }} 份容器快照（{{ formatBytes(stats?.sizeBytes) }}）。
+          </template>
         </div>
       </div>
       <template #footer>
-        <button class="dh-btn" :disabled="busy === 'prune'" @click="confirmPrune = false">取消</button>
+        <button class="dh-btn" :disabled="busy === 'prune'" @click="pruneScope = null">取消</button>
         <button class="dh-btn dh-btn-danger" :disabled="busy === 'prune'" @click="doPrune">
           <Loader2 v-if="busy === 'prune'" class="h-3.5 w-3.5 dh-spin" />
           <Trash2 v-else class="h-3.5 w-3.5" />确认清理
