@@ -381,8 +381,11 @@ onUnmounted(() => stopPolling())
               秒
             </label>
 
-            <!-- 「应用到全部行」紧跟默认延时这一项，只作用于延时 -->
-            <div class="flex items-center gap-2">
+            <!-- 延时是「每行一个值 + 一个批量」成对的东西，用一个小框把它俩框在一起，
+                 和上面两项并列时不会被读成「三项参数一起批量应用」 -->
+            <div
+              class="flex items-center gap-2.5 rounded-[10px] border border-line-4 bg-ink-650 py-1.5 pl-3 pr-2"
+            >
               <label class="flex items-center gap-2 text-[12.5px] text-text-4">
                 默认延时
                 <input
