@@ -95,6 +95,24 @@ const savingPolicy = ref(false)
 /** 「清理过期快照」确认框 —— 这一步会真删文件，必须二次确认。 */
 const confirmPrune = ref(false)
 
+/**
+ * 「每容器保留份数」的说明 —— 更新前快照占不占额度，**完全由下面那个开关决定**，
+ * 所以这句不能写死。开关打开时它在 Prune 里直接 continue：既不占份数、也不受天数和容量限制；
+ * 关掉之后它就是一份普通快照，三个上限照样能把它删掉。
+ */
+const keepPerContainerSub = computed(() =>
+  policy.value?.backupKeepPreUpdate
+    ? '只算容器快照；更新前快照不占这个额度，也不会被自动删'
+    : '只算容器快照；更新前快照也算在内，超出时会被一起清掉',
+)
+
+/** 同理，这个开关自己的说明也要跟着状态走，否则「永不清理」四个字在关掉时是假的。 */
+const keepPreUpdateSub = computed(() =>
+  policy.value?.backupKeepPreUpdate
+    ? '回滚的底牌：自动更新出事后唯一能救回来的东西。打开时它不占份数额度，也不受天数与容量限制'
+    : '当前关闭：更新前快照与普通快照一样，会被份数、天数、容量三个上限清掉',
+)
+
 // ---------- 批次聚合 ----------
 
 /** 一次备份动作 = 一批共用同一个时间戳的快照。 */
@@ -1044,7 +1062,7 @@ onMounted(async () => {
             </button>
           </div>
           <div class="flex flex-col gap-3 p-3.5">
-            <SettingRow title="每容器保留最近份数" sub="只算容器快照；超出后按时间滚动覆盖（更新前快照不计入这个额度）">
+            <SettingRow title="每容器保留最近份数" :sub="keepPerContainerSub">
               <select
                 v-model.number="policy.backupKeepPerContainer"
                 class="dh-select !mb-0 !w-[110px] !py-[5px] !text-[11.5px]"
@@ -1080,7 +1098,7 @@ onMounted(async () => {
                 <option :value="20480">20 GB</option>
               </select>
             </SettingRow>
-            <SettingRow title="更新前快照永不自动清理" sub="这是回滚的底牌 —— 自动更新出事后唯一能救回来的东西">
+            <SettingRow title="更新前快照永不自动清理" :sub="keepPreUpdateSub">
               <ToggleSwitch v-model="policy.backupKeepPreUpdate" label="更新前快照永不自动清理" />
             </SettingRow>
 
@@ -1737,7 +1755,12 @@ onMounted(async () => {
           <div>
             会按下面的保留策略<b>直接删除备份文件</b>，<b>不可恢复</b>。容器快照与 compose
             项目备份<b>各按自己的策略</b>执行：某一项是「不限」的，就一份都不会删。
-            「更新前快照永不自动清理」打开时，那部分不会被碰到。
+            <template v-if="policy?.backupKeepPreUpdate">
+              「更新前快照永不自动清理」<b>已打开</b>，这类快照不占份数额度、也不会被删。
+            </template>
+            <template v-else>
+              「更新前快照永不自动清理」<b>已关闭</b>，更新前快照会和普通快照一起被清掉。
+            </template>
           </div>
         </div>
         <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[12px] leading-relaxed text-text-3">
