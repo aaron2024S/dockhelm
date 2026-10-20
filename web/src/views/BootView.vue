@@ -296,17 +296,18 @@ onUnmounted(() => stopPolling())
   <div class="flex flex-col">
     <!-- 吸顶工具条：标题 + 立即执行 + 上次执行 + 进度 -->
     <div class="sticky top-0 z-20 border-b border-line-1 bg-ink-950 px-[18px] pb-2.5 pt-[18px]">
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-2">
         <div class="dh-h1">顺序启动</div>
         <span v-if="saving" class="dh-sub">保存中…</span>
 
-        <div class="ml-auto flex flex-wrap items-center gap-3">
-          <button class="dh-btn" :disabled="running || loading" @click="confirming = true">
-            <Loader2 v-if="running" class="h-3.5 w-3.5 dh-spin" />
-            <Play v-else class="h-3.5 w-3.5" />
-            {{ running ? '执行中…' : '立即执行一次' }}
-          </button>
+        <!-- 手机上按钮留在标题行右侧、摘要整行换行，避免工具条吃掉 1/6 屏高 -->
+        <button class="dh-btn order-1 ml-auto" :disabled="running || loading" @click="confirming = true">
+          <Loader2 v-if="running" class="h-3.5 w-3.5 dh-spin" />
+          <Play v-else class="h-3.5 w-3.5" />
+          {{ running ? '执行中…' : '立即执行一次' }}
+        </button>
 
+        <div class="order-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 max-md:w-full md:order-3">
           <!-- 还没到「第 x/y 个」之前的阶段（等 Docker / 初始等待）没有百分比可画，
                就把这句话放在这一格里，不再单独占一行空进度条 -->
           <span v-if="running && !hasProgress" class="flex items-center gap-1.5 text-[11.5px] text-text-5">
@@ -323,11 +324,11 @@ onUnmounted(() => stopPolling())
           </span>
 
           <button
-            class="dh-btn dh-btn-ghost dh-btn-sm !gap-1.5 text-[11.5px]"
+            class="dh-btn dh-btn-ghost dh-btn-sm !gap-1.5 text-[11.5px] max-md:ml-auto max-md:!px-2"
             title="打开设置页的运行记录"
             @click="gotoRunLogs"
           >
-            <History class="h-3.5 w-3.5" />运行记录
+            <History class="h-3.5 w-3.5" /><span class="max-md:hidden">运行记录</span>
           </button>
         </div>
       </div>
@@ -410,7 +411,7 @@ onUnmounted(() => stopPolling())
           </div>
 
           <div class="text-[11px] leading-relaxed text-text-6">
-            延时 = 这一行启动成功后等 N 秒再起下一个；新加入的容器默认用这个值。
+            延时 = 容器启动成功后等 N 秒再启动下一个；新加入的容器默认使用该值。
             「应用到全部行」只改每行的延时，不动上面两项。
           </div>
         </div>
@@ -433,8 +434,8 @@ onUnmounted(() => stopPolling())
         </div>
 
         <div v-else class="overflow-x-auto">
-          <div class="min-w-[660px] px-3 pb-2 pt-2">
-            <div class="grid grid-cols-[18px_22px_minmax(0,1fr)_72px_92px_54px_56px] items-center gap-2 px-2 pb-1.5 text-[11px] text-text-6">
+          <div class="min-w-0 px-3 pb-2 pt-2">
+            <div class="dh-boot-grid dh-boot-head px-2 pb-1.5 text-[11px] text-text-6">
               <span />
               <span>#</span>
               <span>容器</span>
@@ -447,7 +448,7 @@ onUnmounted(() => stopPolling())
             <div
               v-for="(row, i) in managedRows"
               :key="row.name"
-              class="dh-boot-row grid grid-cols-[18px_22px_minmax(0,1fr)_72px_92px_54px_56px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px]"
+              class="dh-boot-row dh-boot-grid rounded-lg px-2 py-1.5 text-[12.5px]"
               :class="[
                 dragOver === i && dragFrom >= 0 && dragFrom !== i ? 'dh-boot-drop' : '',
                 dragFrom === i ? 'opacity-45' : '',
@@ -459,27 +460,35 @@ onUnmounted(() => stopPolling())
               @drop.prevent="onDrop(i)"
               @dragend="resetDrag"
             >
-              <span class="cursor-grab text-text-6 active:cursor-grabbing" title="按住拖动排序">
+              <span class="dh-c-grip cursor-grab text-text-6 active:cursor-grabbing" title="按住拖动排序">
                 <GripVertical class="h-3.5 w-3.5" />
               </span>
-              <span class="text-text-5">{{ i + 1 }}</span>
-              <span class="truncate font-medium" :title="row.name">{{ row.name }}</span>
-              <span :class="row.state === 'running' ? 'text-run-text' : 'text-text-5'">
-                {{ containerStateLabel(row.state) }}
+              <span class="dh-c-idx text-text-5">{{ i + 1 }}</span>
+              <span class="dh-c-name truncate font-medium" :title="row.name">{{ row.name }}</span>
+              <span class="dh-c-meta">
+                <span :class="row.state === 'running' ? 'text-run-text' : 'text-text-5'">
+                  {{ containerStateLabel(row.state) }}
+                </span>
+                <span class="font-mono text-[11px] text-text-4" :title="row.restartPolicy">
+                  {{ row.restartPolicy || '—' }}
+                </span>
               </span>
-              <span class="font-mono text-[11px] text-text-4" :title="row.restartPolicy">
-                {{ row.restartPolicy || '—' }}
+              <span class="dh-c-delay">
+                <span class="dh-delay-label">延时</span>
+                <!-- 手机上宽度收到 44px：高度保持 38px 不动，那是全站触屏
+                     下的最小点按尺寸（style.css 的 min-height），压小反而难点 -->
+                <input
+                  class="dh-input !w-[52px] !px-1 text-center font-mono text-[11.5px] max-md:!w-[44px] max-md:!py-0"
+                  type="number"
+                  min="0"
+                  max="300"
+                  :value="row.delaySec"
+                  :title="`${row.name} 启动成功后等多少秒再起下一个`"
+                  @change="setDelay(row, $event)"
+                />
+                <span class="dh-delay-label">秒</span>
               </span>
-              <input
-                class="dh-input !w-[52px] !px-1 text-center font-mono text-[11.5px]"
-                type="number"
-                min="0"
-                max="300"
-                :value="row.delaySec"
-                :title="`${row.name} 启动成功后等多少秒再起下一个`"
-                @change="setDelay(row, $event)"
-              />
-              <div class="flex justify-end">
+              <div class="dh-c-switch flex justify-end">
                 <UiSwitch
                   :model-value="row.auto"
                   :label="`${row.name} 开机启动`"
@@ -506,8 +515,8 @@ onUnmounted(() => stopPolling())
         </div>
 
         <div v-else class="overflow-x-auto">
-          <div class="min-w-[660px] px-3 pb-2 pt-2">
-            <div class="grid grid-cols-[18px_22px_minmax(0,1fr)_72px_92px_54px_56px] items-center gap-2 px-2 pb-1.5 text-[11px] text-text-6">
+          <div class="min-w-0 px-3 pb-2 pt-2">
+            <div class="dh-boot-grid dh-boot-head px-2 pb-1.5 text-[11px] text-text-6">
               <span />
               <span />
               <span>容器</span>
@@ -519,17 +528,19 @@ onUnmounted(() => stopPolling())
             <div
               v-for="row in dockerRows"
               :key="row.name"
-              class="grid grid-cols-[18px_22px_minmax(0,1fr)_72px_92px_54px_56px] items-center gap-2 px-2 py-1.5 text-[12.5px] text-text-5"
+              class="dh-boot-grid px-2 py-1.5 text-[12.5px] text-text-5"
             >
-              <span />
-              <span>—</span>
-              <span class="truncate" :title="row.name">{{ row.name }}</span>
-              <span :class="row.state === 'running' ? '' : 'text-text-6'">
-                {{ containerStateLabel(row.state) }}
+              <span class="dh-c-grip" />
+              <span class="dh-c-idx">—</span>
+              <span class="dh-c-name truncate" :title="row.name">{{ row.name }}</span>
+              <span class="dh-c-meta">
+                <span :class="row.state === 'running' ? '' : 'text-text-6'">
+                  {{ containerStateLabel(row.state) }}
+                </span>
+                <span class="font-mono text-[11px]">{{ row.restartPolicy || '—' }}</span>
               </span>
-              <span class="font-mono text-[11px]">{{ row.restartPolicy || '—' }}</span>
-              <span />
-              <span />
+              <span class="dh-c-delay" />
+              <span class="dh-c-filler" />
             </div>
           </div>
         </div>
@@ -577,5 +588,77 @@ onUnmounted(() => stopPolling())
    落点跟着偏，很多时候「拖了没反应」就是它造成的。 */
 .dh-boot-drop {
   box-shadow: inset 0 2px 0 0 var(--color-accent);
+}
+
+/* ------------------------------------------------------------------
+   列表网格：桌面 7 列平铺；手机（<768px）折成两行，
+   避免 660px 的表格在 375px 屏上只能看到左侧一半、
+   延时输入框和开关被挤到屏幕外（实测要横向滚 300px 才够得着）。
+   ------------------------------------------------------------------ */
+.dh-boot-grid {
+  display: grid;
+  grid-template-columns: 18px 22px minmax(0, 1fr) 72px 92px 54px 56px;
+  align-items: center;
+  column-gap: 8px;
+}
+/* 状态 + 策略桌面分属两列：用 contents 让它们脱离这一层，直接参与父网格 */
+.dh-c-meta {
+  display: contents;
+}
+/* 「延时」「秒」这两个字只在手机布局里出现（桌面靠表头） */
+.dh-delay-label {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  /* 手机上不表头：每行自带标签，列头反而占高度 */
+  .dh-boot-head {
+    display: none;
+  }
+  .dh-boot-grid {
+    grid-template-columns: 18px 18px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'grip idx name sw'
+      'grip idx meta delay';
+    column-gap: 7px;
+    row-gap: 2px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .dh-c-grip {
+    grid-area: grip;
+  }
+  .dh-c-idx {
+    grid-area: idx;
+  }
+  .dh-c-name {
+    grid-area: name;
+    min-width: 0;
+  }
+  .dh-c-meta {
+    grid-area: meta;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+  }
+  .dh-c-delay {
+    grid-area: delay;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .dh-c-switch {
+    grid-area: sw;
+  }
+  .dh-delay-label {
+    display: inline;
+    font-size: 11px;
+    color: var(--color-text-6);
+  }
+  /* 只读组没有第 7 格，不让它生成隐式行 */
+  .dh-c-filler {
+    display: none;
+  }
 }
 </style>
