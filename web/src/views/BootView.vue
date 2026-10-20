@@ -185,47 +185,238 @@ function setParam(key: 'initialDelaySec' | 'waitTimeoutSec' | 'defaultDelaySec',
   void save()
 }
 
-// ---------- 拖拽排序（原生 HTML5，不引第三方库） ----------
+// ---------- 拖拽排序（Pointer Events，鼠标与触屏共用一套） ----------
+//
+// 为什么不用原生 HTML5 拖拽：`dragstart/dragover/drop` 在触屏上根本不触发
+// （iOS Safari 至今不支持，Android 上也不可靠），手机上那一列手柄按下去毫无反应。
+// Pointer Events 是鼠标 / 触屏 / 触控笔统一的一套事件，`setPointerCapture` 之后
+// 指针移出元素也照样收得到 move，不会中途丢失。
+//
+// 交互约定：
+//   - 鼠标：按住整行任意空白处拖（点输入框、开关、链接除外）；
+//   - 触屏：只能按住左侧手柄拖 —— 行内还有输入框和开关，整行可拖会抢掉滚动和点按。
+//     手柄上 `touch-action: none`，浏览器不会把它当成滚动手势，也就不会发 pointercancel。
+//   - 移动不足 4px 视为点击，不触发重排；
+//   - 拖动过程中不移动 DOM（只画一条落点线），松手才重排并保存 —— 拖动中改 DOM
+//     会让缓存的行位置失效，50 行容器里很容易错位。
 
+const listRef = ref<HTMLElement | null>(null)
 const dragFrom = ref(-1)
-const dragOver = ref(-1)
+const dropSlot = ref(-1) // 落点：插到第几行之前（= 行数 表示插到末尾）
+const dragActive = ref(false) // 已越过阈值，进入真正的拖拽
 
-function onDragStart(i: number, e: DragEvent) {
-  dragFrom.value = i
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', String(i))
+const DRAG_THRESHOLD = 4 // px，小于这个距离算点击
+const EDGE_ZONE = 64 // 距滚动容器上下边缘多少像素开始自动滚
+const EDGE_MAX_SPEED = 18 // 自动滚的最大速度（px / 帧）
+
+let dragPointerId = -1
+let dragStartY = 0
+let lastPointerY = 0
+let dragRects: { top: number; bottom: number }[] = []
+let scrollEl: HTMLElement | null = null
+let scrollSpeed = 0
+let rafId = 0
+let captureEl: HTMLElement | null = null
+
+function onRowPointerDown(i: number, e: PointerEvent) {
+  const target = e.target as HTMLElement
+  if (e.pointerType === 'mouse') {
+    if (e.button !== 0) return
+    // 行里的输入框 / 开关 / 链接得照常工作，不能一按就被拖走
+    if (target.closest('input, button, a, label, select, textarea')) return
+  } else if (!target.closest('[data-grip]')) {
+    // 触屏只有手柄可拖
+    return
   }
-}
+  if (managedRows.value.length < 2) return
 
-function onDragOver(i: number, e: DragEvent) {
-  if (dragFrom.value < 0) return
+  dragFrom.value = i
+  dropSlot.value = i
+  dragPointerId = e.pointerId
+  dragStartY = e.clientY
+  lastPointerY = e.clientY
+  dragActive.value = false
+  // 拖动期间布局不变（只画落点线），量一次就够了；每次 move 都量 50 行太浪费
+  dragRects = measureRows()
+  scrollEl = findScrollParent(e.currentTarget as HTMLElement | null)
+  scrollSpeed = 0
+
+  window.addEventListener('pointermove', onDragMove, { passive: false })
+  window.addEventListener('pointerup', onDragEnd)
+  window.addEventListener('pointercancel', onDragCancel)
+  rafId = requestAnimationFrame(autoScrollTick)
+  // 捕获指针：指针划出这一行、甚至划出窗口，move / up 仍然发给它，
+  // 不会出现「拖到一半事件没了、行一直半透明」。
+  captureEl = (e.currentTarget as HTMLElement) ?? null
+  try {
+    captureEl?.setPointerCapture(e.pointerId)
+  } catch {
+    // 某些环境（合成事件、已失活的指针）不支持，退回纯 window 监听
+  }
+  document.body.classList.add('dh-drag-lock')
   e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dragOver.value = i
 }
 
-function resetDrag() {
-  dragFrom.value = -1
-  dragOver.value = -1
+function measureRows(): { top: number; bottom: number }[] {
+  const host = listRef.value
+  if (!host) return []
+  return Array.from(host.querySelectorAll<HTMLElement>('[data-boot-name]')).map((el) => {
+    const r = el.getBoundingClientRect()
+    return { top: r.top, bottom: r.bottom }
+  })
 }
 
-function onDrop(i: number) {
+/** 从行往上找真正在滚的那个祖先（本页是 AppShell 的 <main>）。 */
+function findScrollParent(from: HTMLElement | null): HTMLElement | null {
+  let p = from?.parentElement ?? null
+  while (p) {
+    const st = getComputedStyle(p)
+    if (/(auto|scroll)/.test(st.overflowY) && p.scrollHeight > p.clientHeight + 1) return p
+    p = p.parentElement
+  }
+  return null
+}
+
+/** 指针纵向位置 → 插入槽位（0..n）。落在上半部算插到这一行之前，下半部算之后。 */
+function slotAt(y: number): number {
+  const n = dragRects.length
+  for (let i = 0; i < n; i++) {
+    const r = dragRects[i]!
+    if (y < r.bottom) return y < (r.top + r.bottom) / 2 ? i : i + 1
+  }
+  return n
+}
+
+function onDragMove(e: PointerEvent) {
+  if (e.pointerId !== dragPointerId) return
+  lastPointerY = e.clientY
+  if (!dragActive.value) {
+    if (Math.abs(e.clientY - dragStartY) < DRAG_THRESHOLD) return
+    dragActive.value = true
+  }
+  e.preventDefault()
+  dropSlot.value = slotAt(e.clientY)
+  updateScrollSpeed(e.clientY)
+}
+
+/**
+ * 自动滚动：拖到容器上下边缘附近时按距离加速滚。
+ *
+ * 必须用 rAF 循环而不是「每次 pointermove 滚一点」—— 指针停在边缘不动时
+ * 是不产生 move 事件的，那种写法会滚一下就卡住。
+ */
+function updateScrollSpeed(y: number) {
+  if (!scrollEl) {
+    scrollSpeed = 0
+    return
+  }
+  const rect = scrollEl.getBoundingClientRect()
+  const top = rect.top + 72 // 让开吸顶工具条，否则落点线藏在它后面
+  const bottom = rect.bottom - 20
+  if (y < top + EDGE_ZONE) {
+    scrollSpeed = -Math.ceil(((top + EDGE_ZONE - y) / EDGE_ZONE) * EDGE_MAX_SPEED)
+  } else if (y > bottom - EDGE_ZONE) {
+    scrollSpeed = Math.ceil(((y - (bottom - EDGE_ZONE)) / EDGE_ZONE) * EDGE_MAX_SPEED)
+  } else {
+    scrollSpeed = 0
+  }
+  // 越靠近边缘越快，但别让它一帧跳出去半屏
+  scrollSpeed = Math.max(-EDGE_MAX_SPEED, Math.min(EDGE_MAX_SPEED, scrollSpeed))
+}
+
+function autoScrollTick() {
+  if (dragFrom.value < 0) return
+  if (scrollEl && scrollSpeed !== 0) {
+    const before = scrollEl.scrollTop
+    scrollEl.scrollTop = before + scrollSpeed
+    const moved = scrollEl.scrollTop - before
+    if (moved !== 0) {
+      // 内容滚了多少，缓存的行位置就整体平移多少 —— 比重新量一遍便宜且不闪
+      for (const r of dragRects) {
+        r.top -= moved
+        r.bottom -= moved
+      }
+      dropSlot.value = slotAt(lastPointerY)
+    }
+  }
+  rafId = requestAnimationFrame(autoScrollTick)
+}
+
+function onDragEnd(e: PointerEvent) {
+  if (e.pointerId !== dragPointerId) return
   const from = dragFrom.value
-  resetDrag()
-  if (from < 0 || from === i) return
-  const fromName = managedRows.value[from]?.name
-  const toName = managedRows.value[i]?.name
-  if (!fromName || !toName) return
-  const arr = [...plan.value.items]
-  const fi = arr.findIndex((x) => x.name === fromName)
-  const ti = arr.findIndex((x) => x.name === toName)
-  if (fi < 0 || ti < 0) return
-  const [moved] = arr.splice(fi, 1)
+  const slot = dropSlot.value
+  const active = dragActive.value
+  cleanupDrag()
+  if (active && from >= 0 && slot >= 0) commitReorder(from, slot)
+}
+
+function onDragCancel(e: PointerEvent) {
+  if (e.pointerId !== dragPointerId) return
+  cleanupDrag()
+}
+
+function cleanupDrag() {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragEnd)
+  window.removeEventListener('pointercancel', onDragCancel)
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = 0
+  if (captureEl && dragPointerId >= 0) {
+    try {
+      if (captureEl.hasPointerCapture(dragPointerId)) captureEl.releasePointerCapture(dragPointerId)
+    } catch {
+      // 元素已被卸载，捕获随之失效，不用管
+    }
+  }
+  captureEl = null
+  document.body.classList.remove('dh-drag-lock')
+  dragFrom.value = -1
+  dropSlot.value = -1
+  dragActive.value = false
+  dragRects = []
+  scrollEl = null
+  scrollSpeed = 0
+  dragPointerId = -1
+}
+
+/**
+ * 把「从 from 拖到 slot」落实到清单上。
+ *
+ * ⚠ plan.items 里是**全部**容器（含 always / unless-stopped 的），页面上被过滤成两组。
+ * 所以不能整体重排 items —— 那会把只读组的位置也搅乱。做法是：只在受管行占据的
+ * 那些槽位上，按新顺序重新填一遍；不受管的条目原地不动。
+ */
+function commitReorder(from: number, slot: number) {
+  const names = managedRows.value.map((r) => r.name)
+  if (slot === from || slot === from + 1) return // 原地放下，什么都没变
+  const moved = names.splice(from, 1)[0]
   if (!moved) return
-  arr.splice(ti, 0, moved)
-  plan.value.items = arr
+  names.splice(slot > from ? slot - 1 : slot, 0, moved)
+
+  const byName = new Map(plan.value.items.map((it) => [it.name, it]))
+  const managedSet = new Set(names)
+  const queue: BootPlan['items'] = []
+  for (const n of names) {
+    const it = byName.get(n)
+    if (it) queue.push(it)
+  }
+  let k = 0
+  plan.value.items = plan.value.items.map((it) => {
+    if (!managedSet.has(it.name)) return it
+    return queue[k++] ?? it
+  })
+  // 先本地重排，界面立刻跟手；再异步保存（等接口回来才动的话会有明显延迟感）
+  applyPlanOrder()
   void save()
+}
+
+/** 落点线：插在某行之前画在它顶部，插在末尾画在最后一行底部。 */
+function dropClass(i: number) {
+  if (!dragActive.value || dropSlot.value < 0) return ''
+  if (dropSlot.value === i) return 'dh-boot-drop-top'
+  if (dropSlot.value === dragRects.length && i === dragRects.length - 1) return 'dh-boot-drop-bottom'
+  return ''
 }
 
 // ---------- 执行与轮询 ----------
@@ -289,7 +480,10 @@ function openRunLogs() {
 }
 
 onMounted(() => void load())
-onUnmounted(() => stopPolling())
+onUnmounted(() => {
+  stopPolling()
+  cleanupDrag()
+})
 </script>
 
 <template>
@@ -434,7 +628,7 @@ onUnmounted(() => stopPolling())
         </div>
 
         <div v-else class="overflow-x-auto">
-          <div class="min-w-0 px-3 pb-2 pt-2">
+          <div ref="listRef" class="min-w-0 px-3 pb-2 pt-2">
             <div class="dh-boot-grid dh-boot-head px-2 pb-1.5 text-[11px] text-text-6">
               <span />
               <span>#</span>
@@ -448,19 +642,16 @@ onUnmounted(() => stopPolling())
             <div
               v-for="(row, i) in managedRows"
               :key="row.name"
+              :data-boot-name="row.name"
               class="dh-boot-row dh-boot-grid rounded-lg px-2 py-1.5 text-[12.5px]"
               :class="[
-                dragOver === i && dragFrom >= 0 && dragFrom !== i ? 'dh-boot-drop' : '',
-                dragFrom === i ? 'opacity-45' : '',
+                dropClass(i),
+                dragActive && dragFrom === i ? 'dh-boot-dragging' : '',
                 row.state === 'running' ? 'dh-boot-run' : '',
               ]"
-              draggable="true"
-              @dragstart="onDragStart(i, $event)"
-              @dragover="onDragOver(i, $event)"
-              @drop.prevent="onDrop(i)"
-              @dragend="resetDrag"
+              @pointerdown="onRowPointerDown(i, $event)"
             >
-              <span class="dh-c-grip cursor-grab text-text-6 active:cursor-grabbing" title="按住拖动排序">
+              <span class="dh-c-grip" data-grip title="按住拖动手柄排序（触屏也可以）">
                 <GripVertical class="h-3.5 w-3.5" />
               </span>
               <span class="dh-c-idx text-text-5">{{ i + 1 }}</span>
@@ -583,11 +774,38 @@ onUnmounted(() => stopPolling())
   border-radius: 2px;
   background: var(--color-run);
 }
-/* 拖拽的落点提示：用内阴影画一条 2px 顶线。
+/* 拖拽的落点线：用内阴影画一条 2px 的边。
    不能用 border-t-2 —— 那会把这行撑高 2px，整张表在拖动过程中会上下跳，
    落点跟着偏，很多时候「拖了没反应」就是它造成的。 */
-.dh-boot-drop {
+.dh-boot-drop-top {
   box-shadow: inset 0 2px 0 0 var(--color-accent);
+}
+.dh-boot-drop-bottom {
+  box-shadow: inset 0 -2px 0 0 var(--color-accent);
+}
+
+/* 被拖动的那一行：压暗 + 底色，长列表里一眼能找回自己在拖哪一行 */
+.dh-boot-dragging {
+  background: var(--color-accent-row);
+  opacity: 0.5;
+}
+
+/* 手柄：触屏上必须是拖拽的唯一入口，所以这里 touch-action: none 让浏览器
+   别把它识别成滚动手势（否则会中途发 pointercancel，拖到一半就断）。
+   桌面鼠标同样走 Pointer Events，手势光标靠 cursor 表达。 */
+.dh-c-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--color-text-6);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.dh-boot-dragging .dh-c-grip {
+  cursor: grabbing;
 }
 
 /* ------------------------------------------------------------------
@@ -616,7 +834,7 @@ onUnmounted(() => stopPolling())
     display: none;
   }
   .dh-boot-grid {
-    grid-template-columns: 18px 18px minmax(0, 1fr) auto;
+    grid-template-columns: 24px 16px minmax(0, 1fr) auto;
     grid-template-areas:
       'grip idx name sw'
       'grip idx meta delay';
@@ -625,8 +843,10 @@ onUnmounted(() => stopPolling())
     padding-top: 6px;
     padding-bottom: 6px;
   }
+  /* 手柄竖跨两行：24px 宽 × 整行高，手指按得住 */
   .dh-c-grip {
     grid-area: grip;
+    align-self: stretch;
   }
   .dh-c-idx {
     grid-area: idx;
@@ -660,5 +880,13 @@ onUnmounted(() => stopPolling())
   .dh-c-filler {
     display: none;
   }
+}
+
+/* 拖拽期间锁住选中：否则鼠标划过大段文字会一路把行名、策略都选蓝，
+   松手后选区还留在页面上。必须在全局作用域（body 在组件之外）。 */
+:global(body.dh-drag-lock) {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grabbing;
 }
 </style>
