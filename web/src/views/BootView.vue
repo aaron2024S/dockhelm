@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { GripVertical, Loader2, Play, RotateCcw } from 'lucide-vue-next'
+import { GripVertical, Loader2, Play } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { BootContainer, BootLastRun, BootPlan, BootResponse, BootStatus } from '@/api/types'
 import { containerStateLabel, formatDayTime } from '@/utils/format'
@@ -359,9 +359,14 @@ onUnmounted(() => stopPolling())
 
       <!-- 由 dockhelm 按顺序启动 -->
       <div class="dh-card">
-        <div class="dh-card-head">
-          <span>由 dockhelm 按顺序启动 · {{ managedRows.length }} 个</span>
-          <span class="ml-auto text-[11.5px] font-normal text-text-5">预计 {{ estimateText }}</span>
+        <div class="dh-card-head items-start">
+          <span class="shrink-0 pt-[2px]">由 dockhelm 按顺序启动 · {{ managedRows.length }} 个</span>
+          <span v-if="managedRows.length" class="ml-1 text-[11px] font-normal leading-[1.55] text-text-6">
+            每次 Dockhelm 启动都会执行一次，已在运行的跳过，只有开机启动已打开的未运行容器会被拉起。
+          </span>
+          <span class="ml-auto shrink-0 pl-3 pt-[1px] text-[11.5px] font-normal text-text-5">
+            预计 {{ estimateText }}
+          </span>
         </div>
 
         <div v-if="!managedRows.length" class="dh-card-body text-[12.5px] text-text-4">
@@ -475,9 +480,7 @@ onUnmounted(() => stopPolling())
         </div>
       </div>
 
-      <div class="flex items-center gap-2 text-[11.5px] text-text-6">
-        <RotateCcw class="h-3 w-3" />
-        每次 Dockhelm 启动（含更新导致的自重启）都会跑一轮：已在运行的跳过，只有开关开着又停着的会被拉起。
+      <div class="flex items-center text-[11.5px] text-text-6">
         <button class="ml-auto text-text-5 hover:text-accent" @click="gotoRunLogs">查看运行记录</button>
       </div>
     </div>
