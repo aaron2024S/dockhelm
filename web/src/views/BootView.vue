@@ -2,7 +2,7 @@
 /**
  * 顺序启动（/boot）。
  *
- * 一句话：Docker 负责「开机都不起来」，本页负责「按顺序起来」。
+ * 一句话：本页负责将启动策略非 unless-stopped 且非 always 的容器按顺序启动。
  * 页面不做任何策略修改 —— 哪些容器归本页管，完全由 Docker 里那个容器的
  * restartPolicy 实时决定（no / on-failure 归本页，always / unless-stopped 归 Docker）。
  */
@@ -301,8 +301,7 @@ onUnmounted(() => stopPolling())
 
     <div class="flex flex-col gap-3.5 px-[18px] pb-[18px] pt-3">
       <div class="dh-sub">
-        Docker 负责「开机都不起来」，本页负责「按顺序起来」。仍是 unless-stopped 的容器会自己先起，
-        按顺序启动时会自动跳过。
+        本页负责将启动策略非 unless-stopped 且非 always 的容器按顺序启动。
       </div>
 
       <div v-if="selfWarn" class="dh-banner-warn">
