@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { GripVertical, Loader2, Play } from 'lucide-vue-next'
+import { GripVertical, History, Loader2, Play } from 'lucide-vue-next'
 import { api } from '@/api/client'
 import type { BootContainer, BootLastRun, BootPlan, BootResponse, BootStatus } from '@/api/types'
 import { containerStateLabel, formatDayTime } from '@/utils/format'
@@ -42,6 +42,13 @@ const dockerRows = computed(() => rows.value.filter((r) => !r.managed))
 const pendingStart = computed(() => managedRows.value.filter((r) => r.auto && r.state !== 'running'))
 
 const running = computed(() => !!status.value?.running)
+
+/**
+ * 有 total 才算「有进度」。
+ * 等 Docker 就绪、初始等待这两段还没数过容器，total 是 0 —— 这时候进度条只能是
+ * 一条 0% 的空槽，说明文字放页头那一格里更省地方（用户 2026-10-20 提的）。
+ */
+const hasProgress = computed(() => !!status.value?.total)
 
 const estimateText = computed(() => {
   const starts = pendingStart.value.length
@@ -161,9 +168,13 @@ function setDelay(row: BootContainer, ev: Event) {
 
 function applyAllDelay() {
   const v = plan.value.defaultDelaySec
+  const n = plan.value.items.length
+  if (!n) return
   for (const it of plan.value.items) it.delaySec = v
   for (const r of rows.value) r.delaySec = v
   void save()
+  // 一次性改动十几行，给个明确回执，否则看不出到底改了几个
+  toast.success('已应用到全部行', `${n} 个容器的延时都设为 ${v} 秒`)
 }
 
 function setParam(key: 'initialDelaySec' | 'waitTimeoutSec' | 'defaultDelaySec', ev: Event) {
@@ -295,7 +306,14 @@ onUnmounted(() => stopPolling())
             <Play v-else class="h-3.5 w-3.5" />
             {{ running ? '执行中…' : '立即执行一次' }}
           </button>
+
+          <!-- 还没到「第 x/y 个」之前的阶段（等 Docker / 初始等待）没有百分比可画，
+               就把这句话放在这一格里，不再单独占一行空进度条 -->
+          <span v-if="running && !hasProgress" class="flex items-center gap-1.5 text-[11.5px] text-text-5">
+            <Loader2 class="h-3 w-3 dh-spin" />{{ progressText }}
+          </span>
           <span
+            v-else
             class="text-[11.5px]"
             :class="lastFailed ? 'cursor-pointer text-err-text hover:underline' : 'text-text-5'"
             :title="lastRun ? lastRun.message : '还没有执行过'"
@@ -303,10 +321,18 @@ onUnmounted(() => stopPolling())
           >
             {{ lastRunText }}
           </span>
+
+          <button
+            class="dh-btn dh-btn-ghost dh-btn-sm !gap-1.5 text-[11.5px]"
+            title="打开设置页的运行记录"
+            @click="gotoRunLogs"
+          >
+            <History class="h-3.5 w-3.5" />运行记录
+          </button>
         </div>
       </div>
 
-      <div v-if="running" class="mt-2.5 flex items-center gap-2.5">
+      <div v-if="running && hasProgress" class="mt-2.5 flex items-center gap-2.5">
         <div class="h-[3px] flex-1 overflow-hidden rounded-full bg-line-1">
           <div class="h-full rounded-full bg-accent transition-all" :style="{ width: progressPercent + '%' }" />
         </div>
@@ -327,48 +353,63 @@ onUnmounted(() => stopPolling())
       <div class="dh-card">
         <div class="dh-card-head">
           <span>执行参数</span>
-          <button class="ml-auto text-[11.5px] font-normal text-text-5 hover:text-accent" @click="applyAllDelay">
-            批量应用到全部
-          </button>
         </div>
-        <div class="dh-card-body flex flex-wrap items-center gap-x-7 gap-y-3">
-          <label class="flex items-center gap-2 text-[12.5px] text-text-4">
-            初始等待
-            <input
-              class="dh-input !w-[76px] text-center font-mono"
-              type="number"
-              min="0"
-              max="1800"
-              :value="plan.initialDelaySec"
-              @change="setParam('initialDelaySec', $event)"
-            />
-            秒
-          </label>
-          <label class="flex items-center gap-2 text-[12.5px] text-text-4">
-            单容器上限
-            <input
-              class="dh-input !w-[76px] text-center font-mono"
-              type="number"
-              min="5"
-              max="600"
-              :value="plan.waitTimeoutSec"
-              @change="setParam('waitTimeoutSec', $event)"
-            />
-            秒
-          </label>
-          <label class="flex items-center gap-2 text-[12.5px] text-text-4">
-            新行默认延时
-            <input
-              class="dh-input !w-[76px] text-center font-mono"
-              type="number"
-              min="0"
-              max="300"
-              :value="plan.defaultDelaySec"
-              @change="setParam('defaultDelaySec', $event)"
-            />
-            秒
-          </label>
-          <span class="text-[11.5px] text-text-6">延时 = 这一行启动成功后等 N 秒再起下一个</span>
+        <div class="dh-card-body flex flex-col gap-2.5">
+          <div class="flex flex-wrap items-center gap-x-7 gap-y-3">
+            <label class="flex items-center gap-2 text-[12.5px] text-text-4">
+              初始等待
+              <input
+                class="dh-input !w-[76px] text-center font-mono"
+                type="number"
+                min="0"
+                max="1800"
+                :value="plan.initialDelaySec"
+                @change="setParam('initialDelaySec', $event)"
+              />
+              秒
+            </label>
+            <label class="flex items-center gap-2 text-[12.5px] text-text-4">
+              单容器上限
+              <input
+                class="dh-input !w-[76px] text-center font-mono"
+                type="number"
+                min="5"
+                max="600"
+                :value="plan.waitTimeoutSec"
+                @change="setParam('waitTimeoutSec', $event)"
+              />
+              秒
+            </label>
+
+            <!-- 「应用到全部行」紧跟默认延时这一项，只作用于延时 -->
+            <div class="flex items-center gap-2">
+              <label class="flex items-center gap-2 text-[12.5px] text-text-4">
+                默认延时
+                <input
+                  class="dh-input !w-[76px] text-center font-mono"
+                  type="number"
+                  min="0"
+                  max="300"
+                  :value="plan.defaultDelaySec"
+                  @change="setParam('defaultDelaySec', $event)"
+                />
+                秒
+              </label>
+              <button
+                class="dh-btn dh-btn-sm text-[11.5px]"
+                :disabled="!managedRows.length || saving"
+                :title="`把全部 ${managedRows.length} 个容器的延时都设成 ${plan.defaultDelaySec} 秒`"
+                @click="applyAllDelay"
+              >
+                应用到全部行
+              </button>
+            </div>
+          </div>
+
+          <div class="text-[11px] leading-relaxed text-text-6">
+            延时 = 这一行启动成功后等 N 秒再起下一个；新加入的容器默认用这个值。
+            「应用到全部行」只改每行的延时，不动上面两项。
+          </div>
         </div>
       </div>
 
@@ -489,10 +530,6 @@ onUnmounted(() => stopPolling())
             </div>
           </div>
         </div>
-      </div>
-
-      <div class="flex items-center text-[11.5px] text-text-6">
-        <button class="ml-auto text-text-5 hover:text-accent" @click="gotoRunLogs">查看运行记录</button>
       </div>
     </div>
 

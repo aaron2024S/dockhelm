@@ -37,7 +37,7 @@ const (
 const (
 	DefaultInitialDelaySec = 30 // 等 Docker 稳定下来的初始等待
 	DefaultWaitTimeoutSec  = 60 // 单个容器等它进入 running 的上限
-	DefaultDelaySec        = 3  // 新行默认延时
+	DefaultDelaySec        = 3  // 默认延时：新加入的容器用它，也是「应用到全部行」的来源
 
 	maxInitialDelaySec = 1800
 	maxWaitTimeoutSec  = 600
