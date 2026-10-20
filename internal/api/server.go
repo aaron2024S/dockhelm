@@ -504,6 +504,13 @@ type Settings struct {
 	BackupMaxAgeDays       int  `json:"backupMaxAgeDays"`
 	BackupMaxTotalMB       int  `json:"backupMaxTotalMB"`
 	BackupKeepPreUpdate    bool `json:"backupKeepPreUpdate"`
+
+	// —— 项目（compose yaml）备份保留策略：与容器快照完全分开 ——
+	//
+	// 默认 0 = 不限制，即「一份都不自动清」。compose 备份只有手动点备份
+	// （或还原前自动）才写，体积几十 KB，默认不碰它比误删安全得多。
+	BackupProjectKeepPerProject int `json:"backupProjectKeepPerProject"`
+	BackupProjectMaxAgeDays     int `json:"backupProjectMaxAgeDays"`
 }
 
 // 检测间隔的可选值（小时）。前端下拉框与后端校验共用这一份，避免两边说法不一致。
@@ -560,6 +567,10 @@ func (s *Server) readSettings() Settings {
 	readInt("backup.maxAgeDays", &out.BackupMaxAgeDays)
 	readInt("backup.maxTotalMB", &out.BackupMaxTotalMB)
 	readBool("backup.keepPreUpdate", &out.BackupKeepPreUpdate)
+	// 缺省（老库没这两个键）保持 0 = 不限制。升级后不会因为「多了个策略」
+	// 就把用户已有的 compose 备份清掉。
+	readInt("backup.project.keepPerProject", &out.BackupProjectKeepPerProject)
+	readInt("backup.project.maxAgeDays", &out.BackupProjectMaxAgeDays)
 
 	out.PanelURL = s.st.GetSetting(notify.KeyPanelURL, "")
 	s.st.GetJSON("exclude.containers", &out.Exclude)
@@ -665,6 +676,13 @@ func (s *Server) persistSettings(in Settings) {
 	if in.BackupMaxTotalMB < 0 {
 		in.BackupMaxTotalMB = 2048
 	}
+	// 项目备份这两个 0 是合法值（不限制），只拦负数
+	if in.BackupProjectKeepPerProject < 0 {
+		in.BackupProjectKeepPerProject = 0
+	}
+	if in.BackupProjectMaxAgeDays < 0 {
+		in.BackupProjectMaxAgeDays = 0
+	}
 
 	_ = s.st.SetSetting("update.concurrency", strconv.Itoa(in.Concurrency))
 	_ = s.st.SetSetting("update.checkOnStart", boolStr(in.CheckOnStart))
@@ -681,6 +699,8 @@ func (s *Server) persistSettings(in Settings) {
 	_ = s.st.SetSetting("backup.maxAgeDays", strconv.Itoa(in.BackupMaxAgeDays))
 	_ = s.st.SetSetting("backup.maxTotalMB", strconv.Itoa(in.BackupMaxTotalMB))
 	_ = s.st.SetSetting("backup.keepPreUpdate", boolStr(in.BackupKeepPreUpdate))
+	_ = s.st.SetSetting("backup.project.keepPerProject", strconv.Itoa(in.BackupProjectKeepPerProject))
+	_ = s.st.SetSetting("backup.project.maxAgeDays", strconv.Itoa(in.BackupProjectMaxAgeDays))
 	_ = s.st.SetJSON("exclude.containers", in.Exclude)
 
 	s.applyPolicy(in)

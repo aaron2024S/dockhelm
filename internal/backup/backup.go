@@ -665,7 +665,7 @@ type PruneResult struct {
 	FreedBytes int64 `json:"freedBytes"`
 }
 
-// PruneOptions 快照清理策略。三个上限互相独立，任一为 0 表示该维度不限制。
+// PruneOptions 快照清理策略。每个上限互相独立，任一为 0 表示该维度不限制。
 type PruneOptions struct {
 	// KeepPerContainer 每个容器保留最近 N 份。
 	KeepPerContainer int
@@ -677,6 +677,17 @@ type PruneOptions struct {
 	// 它对准的是最贵的场景：自动更新把容器搞坏之后，唯一能救回来的就是
 	// 更新前那一刻的配置 —— 而它恰恰是最容易被「保留最近 10 份」挤掉的。
 	KeepPreUpdate bool
+
+	// —— 项目（compose yaml）备份单独一套，与上面四个维度完全解耦 ——
+	//
+	// 为什么必须分开：容器快照每次更新都会写，堆得快，按「10 份 / 30 天」压着是对的；
+	// 而 compose 备份只有**手动点备份**或**还原前**才写一份，体积通常几十 KB，
+	// 而且往往是用户特意留下的「源头文件 / 迁移底牌」。共用一套策略的结果是
+	// 在容器页点一下「清理过期」，compose 项目页里的备份也被顺带清掉（旧实现如此）。
+	//
+	// 两个字段都为 0（默认）= 一份都不动。
+	ProjectKeepPerProject int
+	ProjectMaxAgeDays     int
 }
 
 // Prune 按策略清理旧快照。
@@ -766,8 +777,9 @@ func (s *Service) Prune(opt PruneOptions) PruneResult {
 			_ = os.Remove(dir)
 		}
 	}
-	// 项目（yaml）备份走同一套策略 —— 用户只配一次保留策略，
-	// 不该出现「快照被清了、项目备份无限涨」这种事。
+	// 项目（yaml）备份走**它自己的一套**策略（ProjectKeepPerProject / ProjectMaxAgeDays）。
+	// 以前是共用容器这套，结果在容器页点「清理过期」会连 compose 备份一起清掉 ——
+	// 那份是用户手动留下的源头文件，不该被容器快照的滚动策略顺带处理。
 	pRemoved, pFreed := s.pruneProjectBackups(opt)
 	res.Removed += pRemoved
 	res.FreedBytes += pFreed

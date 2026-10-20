@@ -257,6 +257,9 @@ type pruneBackupsReq struct {
 	MaxAgeDays       *int  `json:"maxAgeDays"`
 	MaxTotalMB       *int  `json:"maxTotalMB"`
 	KeepPreUpdate    *bool `json:"keepPreUpdate"`
+	// 项目（compose）备份的独立策略
+	ProjectKeepPerProject *int `json:"projectKeepPerProject"`
+	ProjectMaxAgeDays     *int `json:"projectMaxAgeDays"`
 }
 
 // hPruneBackups 手动触发一次清理。不带参数时用设置页里的保留策略，
@@ -267,10 +270,12 @@ func (s *Server) hPruneBackups(w http.ResponseWriter, r *http.Request) {
 	_ = decodeBody(r, &in)
 
 	opt := backup.PruneOptions{
-		KeepPerContainer: cfg.BackupKeepPerContainer,
-		MaxAgeDays:       cfg.BackupMaxAgeDays,
-		MaxTotalMB:       cfg.BackupMaxTotalMB,
-		KeepPreUpdate:    cfg.BackupKeepPreUpdate,
+		KeepPerContainer:      cfg.BackupKeepPerContainer,
+		MaxAgeDays:            cfg.BackupMaxAgeDays,
+		MaxTotalMB:            cfg.BackupMaxTotalMB,
+		KeepPreUpdate:         cfg.BackupKeepPreUpdate,
+		ProjectKeepPerProject: cfg.BackupProjectKeepPerProject,
+		ProjectMaxAgeDays:     cfg.BackupProjectMaxAgeDays,
 	}
 	if in.KeepPerContainer != nil {
 		opt.KeepPerContainer = *in.KeepPerContainer
@@ -283,6 +288,12 @@ func (s *Server) hPruneBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.KeepPreUpdate != nil {
 		opt.KeepPreUpdate = *in.KeepPreUpdate
+	}
+	if in.ProjectKeepPerProject != nil {
+		opt.ProjectKeepPerProject = *in.ProjectKeepPerProject
+	}
+	if in.ProjectMaxAgeDays != nil {
+		opt.ProjectMaxAgeDays = *in.ProjectMaxAgeDays
 	}
 	writeOK(w, s.bk.Prune(opt))
 }

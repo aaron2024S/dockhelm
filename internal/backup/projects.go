@@ -388,9 +388,15 @@ func (s *Service) WriteProjectBackupZip(w io.Writer, project, ts string) error {
 	return nil
 }
 
-// pruneProjectBackups 按与容器快照同一套策略清理项目备份。
+// pruneProjectBackups 按**项目备份自己的一套策略**清理（ProjectKeepPerProject / ProjectMaxAgeDays）。
+//
+// 与容器快照的那三个维度无关：KeepPerContainer / MaxAgeDays / MaxTotalMB 只管容器快照。
+// 两个项目维度都为 0 时直接返回，一份都不碰。
 // 返回值：删除份数、释放字节数。opt.KeepPreUpdate 打开时 restore-pre 备份受保护。
 func (s *Service) pruneProjectBackups(opt PruneOptions) (int, int64) {
+	if opt.ProjectKeepPerProject <= 0 && opt.ProjectMaxAgeDays <= 0 {
+		return 0, 0
+	}
 	items, err := s.ListProjectBackups()
 	if err != nil {
 		return 0, 0
@@ -399,8 +405,8 @@ func (s *Service) pruneProjectBackups(opt PruneOptions) (int, int64) {
 	for _, it := range items {
 		byProj[it.Project] = append(byProj[it.Project], it)
 	}
-	cutoff := time.Now().AddDate(0, 0, -opt.MaxAgeDays)
-	if opt.MaxAgeDays <= 0 {
+	cutoff := time.Now().AddDate(0, 0, -opt.ProjectMaxAgeDays)
+	if opt.ProjectMaxAgeDays <= 0 {
 		cutoff = time.Time{}
 	}
 	removed := 0
@@ -413,7 +419,7 @@ func (s *Service) pruneProjectBackups(opt PruneOptions) (int, int64) {
 				continue // 还原前备份是「退回上一步」的底牌，与更新前快照同等对待
 			}
 			drop := false
-			if opt.KeepPerContainer > 0 && kept >= opt.KeepPerContainer {
+			if opt.ProjectKeepPerProject > 0 && kept >= opt.ProjectKeepPerProject {
 				drop = true
 			} else if !cutoff.IsZero() {
 				if t, ok := parseSnapshotTS(it.TS); ok && t.Before(cutoff) {

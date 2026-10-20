@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // 项目备份的还原回路：备份里记的是**宿主路径**，还原时按当前挂载映射换算回容器内路径再写。
@@ -94,8 +95,7 @@ func TestRestoreProjectSkipsIdenticalFile(t *testing.T) {
 	}
 }
 
-// 项目备份也要跟着保留策略一起清 —— 用户只配一次策略，
-// 不能出现「快照被清了、项目备份无限涨」。
+// 项目备份按**自己的一套**策略清理（ProjectKeepPerProject），不再跟容器快照共用。
 func TestPruneProjectBackups(t *testing.T) {
 	svc := newTestService(t)
 	svc.cfg.SetMounts(map[string]string{"/volume5/docker": t.TempDir()})
@@ -113,7 +113,7 @@ func TestPruneProjectBackups(t *testing.T) {
 		t.Fatalf("应有 3 份项目备份，实际 %d", len(items))
 	}
 
-	res := svc.Prune(PruneOptions{KeepPerContainer: 1})
+	res := svc.Prune(PruneOptions{ProjectKeepPerProject: 1})
 	if res.Removed != 2 {
 		t.Fatalf("应清掉 2 份旧的项目备份，实际 %d", res.Removed)
 	}
@@ -123,6 +123,55 @@ func TestPruneProjectBackups(t *testing.T) {
 	}
 	if res.FreedBytes <= 0 {
 		t.Error("释放字节数应当被统计")
+	}
+}
+
+// 容器快照的保留策略**不能**碰到项目备份。
+//
+// 这是 2026-10-20 那次改动的核心：以前两者共用一套策略，用户在「容器配置快照」
+// 页点一下「清理过期」，compose 项目页里手动留下的 yaml 备份也被顺带清掉。
+// 现在容器维度（份数 / 天数 / 总量）对项目备份一律无效，只有项目自己那两个字段算数。
+func TestPruneProjectBackupsIgnoresContainerPolicy(t *testing.T) {
+	svc := newTestService(t)
+	svc.cfg.SetMounts(map[string]string{"/volume5/docker": t.TempDir()})
+
+	for _, ts := range []string{"20260101-000000", "20260102-000000", "20260103-000000"} {
+		mkProjectBackup(t, svc, "immich", ts,
+			map[string]string{"compose.yaml": "services: {}\n"},
+			map[string]string{"compose.yaml": "/volume5/docker/immich/compose.yaml"})
+	}
+
+	// 容器那套开得再狠（只留 1 份、1 天就过期、总量 1MB）也不该动项目备份
+	res := svc.Prune(PruneOptions{KeepPerContainer: 1, MaxAgeDays: 1, MaxTotalMB: 1})
+
+	if res.Removed != 0 {
+		t.Fatalf("容器策略不应当删除项目备份，实际删了 %d 份", res.Removed)
+	}
+	if left, _ := svc.ListProjectBackups(); len(left) != 3 {
+		t.Fatalf("3 份项目备份都应当原样保留，实际剩 %d 份", len(left))
+	}
+}
+
+// 项目备份的「保留天数」单独生效（与份数互不影响）。
+func TestPruneProjectBackupsByAge(t *testing.T) {
+	svc := newTestService(t)
+	svc.cfg.SetMounts(map[string]string{"/volume5/docker": t.TempDir()})
+
+	old := time.Now().AddDate(0, 0, -40).Format("20060102-150405")
+	recent := time.Now().AddDate(0, 0, -1).Format("20060102-150405")
+	for _, ts := range []string{old, recent} {
+		mkProjectBackup(t, svc, "immich", ts,
+			map[string]string{"compose.yaml": "services: {}\n"},
+			map[string]string{"compose.yaml": "/volume5/docker/immich/compose.yaml"})
+	}
+
+	res := svc.Prune(PruneOptions{ProjectMaxAgeDays: 30})
+	if res.Removed != 1 {
+		t.Fatalf("应当只清掉 40 天前那份，实际 %d", res.Removed)
+	}
+	left, _ := svc.ListProjectBackups()
+	if len(left) != 1 || left[0].TS != recent {
+		t.Fatalf("留下的应当是最近那份，实际 %+v", left)
 	}
 }
 

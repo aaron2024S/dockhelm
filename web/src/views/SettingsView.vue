@@ -47,6 +47,8 @@ const settings = ref<Settings>({
   backupMaxAgeDays: 30,
   backupMaxTotalMB: 2048,
   backupKeepPreUpdate: true,
+  backupProjectKeepPerProject: 0,
+  backupProjectMaxAgeDays: 0,
 })
 const containers = ref<ContainerView[]>([])
 const logs = ref<RunLog[]>([])

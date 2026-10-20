@@ -304,6 +304,10 @@ func housekeeping(ctx context.Context, st *store.Store, bk *backup.Service, nt *
 					MaxAgeDays:       readInt("backup.maxAgeDays", 30),
 					MaxTotalMB:       readInt("backup.maxTotalMB", 2048),
 					KeepPreUpdate:    st.GetSetting("backup.keepPreUpdate", "1") == "1",
+					// compose 备份单独一套，默认 0 = 不清理。
+					// 它只有手动点备份才写，份数少、体积小，误删的代价远大于占的那点空间。
+					ProjectKeepPerProject: readInt("backup.project.keepPerProject", 0),
+					ProjectMaxAgeDays:     readInt("backup.project.maxAgeDays", 0),
 				})
 				if res.Removed > 0 {
 					log.Printf("已清理 %d 份过期配置快照，释放 %.1f MB", res.Removed, float64(res.FreedBytes)/1024/1024)

@@ -449,6 +449,10 @@ export interface Settings {
   backupMaxTotalMB: number
   /** 更新前快照永不自动清理。 */
   backupKeepPreUpdate: boolean
+
+  // —— compose 项目备份保留策略（与容器快照完全独立，0 = 不限制） ——
+  backupProjectKeepPerProject: number
+  backupProjectMaxAgeDays: number
 }
 
 /** 自动更新：单个容器在本轮里的去向。 */

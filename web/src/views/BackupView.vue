@@ -504,7 +504,10 @@ async function doPrune() {
   try {
     // 不带参数 ⇒ 后端用设置页里的保留策略，与每天自动清理完全一致
     const res = await api.post<{ removed: number; freedBytes: number }>('/api/backups/prune', {})
-    toast.success(`清理了 ${res.removed} 份备份`, `释放 ${formatBytes(res.freedBytes)}`)
+    toast.success(
+      `清理了 ${res.removed} 份备份`,
+      `释放 ${formatBytes(res.freedBytes)}（容器快照 + compose 项目备份，各按自己的策略）`,
+    )
     await load()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))
@@ -573,6 +576,8 @@ async function savePolicy() {
       backupMaxAgeDays: policy.value.backupMaxAgeDays,
       backupMaxTotalMB: policy.value.backupMaxTotalMB,
       backupKeepPreUpdate: policy.value.backupKeepPreUpdate,
+      backupProjectKeepPerProject: policy.value.backupProjectKeepPerProject,
+      backupProjectMaxAgeDays: policy.value.backupProjectMaxAgeDays,
     })
     void app.loadSettings()
     toast.success('保留策略已保存', '每天自动清理与「清理过期」都会按它执行')
@@ -837,7 +842,12 @@ onMounted(async () => {
           <button class="dh-btn dh-btn-sm dh-btn-ghost" @click="openImport">
             <Upload class="h-3 w-3" />导入备份包
           </button>
-          <button class="dh-btn dh-btn-sm dh-btn-ghost" :disabled="busy === 'prune'" @click="confirmPrune = true">
+          <button
+            class="dh-btn dh-btn-sm dh-btn-ghost"
+            :disabled="busy === 'prune'"
+            title="按保留策略清理过期的容器快照；compose 项目备份按它自己的策略单独判断（默认不清理）"
+            @click="confirmPrune = true"
+          >
             <Trash2 class="h-3 w-3" />清理过期
           </button>
           <button class="dh-btn dh-btn-sm dh-btn-ghost ml-auto" :disabled="loading" @click="load">
@@ -1034,7 +1044,7 @@ onMounted(async () => {
             </button>
           </div>
           <div class="flex flex-col gap-3 p-3.5">
-            <SettingRow title="每容器保留最近份数" sub="超出后按时间滚动覆盖（更新前快照不计入这个额度）">
+            <SettingRow title="每容器保留最近份数" sub="只算容器快照；超出后按时间滚动覆盖（更新前快照不计入这个额度）">
               <select
                 v-model.number="policy.backupKeepPerContainer"
                 class="dh-select !mb-0 !w-[110px] !py-[5px] !text-[11.5px]"
@@ -1058,7 +1068,7 @@ onMounted(async () => {
                 <option :value="365">365 天</option>
               </select>
             </SettingRow>
-            <SettingRow title="快照总容量上限" sub="达到上限后先清最旧的快照">
+            <SettingRow title="快照总容量上限" sub="只算容器快照，不含 compose 备份；达到上限后先清最旧的">
               <select
                 v-model.number="policy.backupMaxTotalMB"
                 class="dh-select !mb-0 !w-[110px] !py-[5px] !text-[11.5px]"
@@ -1073,6 +1083,45 @@ onMounted(async () => {
             <SettingRow title="更新前快照永不自动清理" sub="这是回滚的底牌 —— 自动更新出事后唯一能救回来的东西">
               <ToggleSwitch v-model="policy.backupKeepPreUpdate" label="更新前快照永不自动清理" />
             </SettingRow>
+
+            <!-- compose 项目备份用自己的一套策略：默认「不限制」，一份都不动。
+                 以前跟容器快照共用上面那三项，在容器页点「清理过期」会把
+                 compose 项目页里手动留下的 yaml 备份一起清掉。 -->
+            <div class="mt-1 flex flex-col gap-3 border-t border-line-1 pt-3">
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span class="text-[12px] font-medium text-text-3">compose 项目备份</span>
+                <span class="text-[11px] leading-relaxed text-text-6">
+                  只管 compose 项目页里的 yaml 备份，与上面容器快照的策略互不影响
+                </span>
+              </div>
+              <SettingRow title="每项目保留最近份数" sub="手动备份与还原前备份都算在内，超出后滚动覆盖">
+                <select
+                  v-model.number="policy.backupProjectKeepPerProject"
+                  class="dh-select !mb-0 !w-[110px] !py-[5px] !text-[11.5px]"
+                >
+                  <option :value="0">不限制</option>
+                  <option :value="5">5 份</option>
+                  <option :value="10">10 份</option>
+                  <option :value="20">20 份</option>
+                  <option :value="50">50 份</option>
+                </select>
+              </SettingRow>
+              <SettingRow title="项目备份保留期" sub="到期自动清理">
+                <select
+                  v-model.number="policy.backupProjectMaxAgeDays"
+                  class="dh-select !mb-0 !w-[110px] !py-[5px] !text-[11.5px]"
+                >
+                  <option :value="0">不限制</option>
+                  <option :value="30">30 天</option>
+                  <option :value="90">90 天</option>
+                  <option :value="365">365 天</option>
+                </select>
+              </SettingRow>
+              <div class="text-[11px] leading-relaxed text-text-6">
+                两项都是「不限制」时（默认），「清理过期」与每天自动清理都不碰 compose 备份 ——
+                它只有手动点备份或还原前才写一份，体积通常只有几十 KB。
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1686,16 +1735,33 @@ onMounted(async () => {
         >
           <AlertTriangle class="mt-[2px] h-4 w-4 flex-none" />
           <div>
-            会按下面的保留策略<b>直接删除备份文件</b>，<b>不可恢复</b>。容器快照与项目备份都会被清到，
+            会按下面的保留策略<b>直接删除备份文件</b>，<b>不可恢复</b>。容器快照与 compose
+            项目备份<b>各按自己的策略</b>执行：某一项是「不限」的，就一份都不会删。
             「更新前快照永不自动清理」打开时，那部分不会被碰到。
           </div>
         </div>
         <div class="rounded-[10px] border border-line-1 bg-ink-800 px-3 py-2.5 text-[12px] leading-relaxed text-text-3">
-          当前策略：每容器保留最近
-          <b>{{ policy?.backupKeepPerContainer ? policy.backupKeepPerContainer + ' 份' : '不限' }}</b>
-          · 保留 {{ policy?.backupMaxAgeDays ? policy.backupMaxAgeDays + ' 天' : '不限' }}
-          · 总容量上限 {{ policy?.backupMaxTotalMB ? policy.backupMaxTotalMB + ' MB' : '不限' }}
-          <div class="mt-1 text-[11.5px] text-text-5">要改策略请在上面的「保留策略」卡里改并保存。</div>
+          <div class="text-[11px] font-medium text-text-4">容器配置快照</div>
+          <div>
+            每容器保留最近
+            <b>{{ policy?.backupKeepPerContainer ? policy.backupKeepPerContainer + ' 份' : '不限' }}</b>
+            · 保留 {{ policy?.backupMaxAgeDays ? policy.backupMaxAgeDays + ' 天' : '不限' }}
+            · 总容量上限 {{ policy?.backupMaxTotalMB ? policy.backupMaxTotalMB + ' MB' : '不限' }}
+          </div>
+          <div class="mt-2 border-t border-line-1 pt-2">
+            <div class="text-[11px] font-medium text-text-4">compose 项目备份</div>
+            <div>
+              每项目保留最近
+              <b>{{ policy?.backupProjectKeepPerProject ? policy.backupProjectKeepPerProject + ' 份' : '不限' }}</b>
+              · 保留 {{ policy?.backupProjectMaxAgeDays ? policy.backupProjectMaxAgeDays + ' 天' : '不限' }}
+            </div>
+            <div v-if="!policy?.backupProjectKeepPerProject && !policy?.backupProjectMaxAgeDays" class="mt-1 text-[11.5px] text-text-5">
+              两项都不限，本次不会动任何 compose 备份。
+            </div>
+          </div>
+          <div class="mt-2 border-t border-line-1 pt-2 text-[11.5px] text-text-5">
+            要改策略请在上面的「保留策略」卡里改并保存。
+          </div>
         </div>
         <div class="text-[12px] text-text-4">
           当前共 {{ backups.length }} 份容器快照（{{ formatBytes(stats?.sizeBytes) }}）+ {{ stats?.projectSnapshots ?? 0 }} 份项目备份（{{ formatBytes(stats?.projectSizeBytes) }}）。
