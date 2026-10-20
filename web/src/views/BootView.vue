@@ -566,7 +566,7 @@ onUnmounted(() => {
         <div class="dh-card-head items-baseline">
           <span class="shrink-0">执行参数</span>
           <span class="text-[11px] font-normal leading-[1.55] text-text-6">
-            延时 = 容器启动成功后等 N 秒再启动下一个。新加入的容器默认取这个值；「应用到全部行」只改每行的延时，不动初始等待与单容器上限。
+            延时 = 容器启动成功后等 N 秒再启动下一个。新加入的容器默认取这个值；「应用到全部行」只改每行的延时，不动初始等待与容器启动超时。
           </span>
         </div>
         <div class="dh-card-body">
@@ -583,8 +583,11 @@ onUnmounted(() => {
               />
               秒
             </label>
-            <label class="flex items-center gap-2 text-[12.5px] text-text-4">
-              单容器上限
+            <label
+              class="flex items-center gap-2 text-[12.5px] text-text-4"
+              title="发出 start 后最多等多久它进入 running；到点还没起来就记这个容器失败，接着起下一个"
+            >
+              容器启动超时
               <input
                 class="dh-input !w-[76px] text-center font-mono"
                 type="number"
