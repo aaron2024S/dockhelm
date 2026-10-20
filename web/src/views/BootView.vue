@@ -655,10 +655,10 @@ onUnmounted(() => {
               <span />
               <span>#</span>
               <span>容器</span>
+              <span>延时</span>
+              <span class="whitespace-nowrap">开机启动</span>
               <span>状态</span>
               <span>策略</span>
-              <span>延时</span>
-              <span class="text-right whitespace-nowrap">开机启动</span>
             </div>
 
             <div
@@ -678,14 +678,6 @@ onUnmounted(() => {
               </span>
               <span class="dh-c-idx text-text-5">{{ i + 1 }}</span>
               <span class="dh-c-name truncate font-medium" :title="row.name">{{ row.name }}</span>
-              <span class="dh-c-meta">
-                <span :class="row.state === 'running' ? 'text-run-text' : 'text-text-5'">
-                  {{ containerStateLabel(row.state) }}
-                </span>
-                <span class="font-mono text-[11px] text-text-4" :title="row.restartPolicy">
-                  {{ row.restartPolicy || '—' }}
-                </span>
-              </span>
               <span class="dh-c-delay">
                 <span class="dh-delay-label">延时</span>
                 <!-- 手机上宽度收到 44px：高度保持 38px 不动，那是全站触屏
@@ -701,13 +693,21 @@ onUnmounted(() => {
                 />
                 <span class="dh-delay-label">秒</span>
               </span>
-              <div class="dh-c-switch flex justify-end">
+              <div class="dh-c-switch flex justify-start max-md:justify-end">
                 <UiSwitch
                   :model-value="row.auto"
                   :label="`${row.name} 开机启动`"
                   @update:model-value="(v: boolean) => setAuto(row, v)"
                 />
               </div>
+              <span class="dh-c-meta">
+                <span :class="row.state === 'running' ? 'text-run-text' : 'text-text-5'">
+                  {{ containerStateLabel(row.state) }}
+                </span>
+                <span class="font-mono text-[11px] text-text-4" :title="row.restartPolicy">
+                  {{ row.restartPolicy || '—' }}
+                </span>
+              </span>
             </div>
           </div>
         </div>
@@ -733,10 +733,10 @@ onUnmounted(() => {
               <span />
               <span />
               <span>容器</span>
+              <span />
+              <span />
               <span>状态</span>
               <span>策略</span>
-              <span />
-              <span />
             </div>
             <div
               v-for="row in dockerRows"
@@ -746,14 +746,14 @@ onUnmounted(() => {
               <span class="dh-c-grip" />
               <span class="dh-c-idx">—</span>
               <span class="dh-c-name truncate" :title="row.name">{{ row.name }}</span>
+              <span class="dh-c-delay" />
+              <span class="dh-c-filler" />
               <span class="dh-c-meta">
                 <span :class="row.state === 'running' ? '' : 'text-text-6'">
                   {{ containerStateLabel(row.state) }}
                 </span>
                 <span class="font-mono text-[11px]">{{ row.restartPolicy || '—' }}</span>
               </span>
-              <span class="dh-c-delay" />
-              <span class="dh-c-filler" />
             </div>
           </div>
         </div>
@@ -834,10 +834,16 @@ onUnmounted(() => {
    列表网格：桌面 7 列平铺；手机（<768px）折成两行，
    避免 660px 的表格在 375px 屏上只能看到左侧一半、
    延时输入框和开关被挤到屏幕外（实测要横向滚 300px 才够得着）。
+
+   桌面列序：拖动手柄 / # / 容器 / 延时 / 开机启动 / 状态 / 策略
+   —— 「延时」和「开机启动」紧跟在容器名后面，是这一行能改的两个值，
+   眼睛不用横跨整个屏幕去对。容器名封顶 300px（大约 20 个汉字或 45 个
+   拉丁字符，超过的截断 + title 悬浮看全名），剩下的宽度全给最右的
+   「策略」：它是只读文本，被拉宽不影响"谁是谁"的对应关系。
    ------------------------------------------------------------------ */
 .dh-boot-grid {
   display: grid;
-  grid-template-columns: 18px 22px minmax(0, 1fr) 72px 92px 54px 56px;
+  grid-template-columns: 18px 22px minmax(0, 300px) 54px 52px 60px minmax(92px, 1fr);
   align-items: center;
   column-gap: 8px;
 }
