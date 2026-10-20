@@ -114,12 +114,27 @@ async function save() {
   try {
     const r = await api.put<{ plan: BootPlan }>('/api/boot', plan.value)
     plan.value = r.plan
+    applyPlanOrder()
   } catch (e) {
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
     await load()
   } finally {
     saving.value = false
   }
+}
+
+/**
+ * 按清单顺序重排本地行。
+ *
+ * 列表渲染的是 server 返回的 rows（它们带着容器的实时状态），不是 plan.items ——
+ * 所以只改 plan.items 再保存，界面上还是旧顺序，看起来就像「拖拽无效」
+ * （刷新一下又是新顺序，因为服务端确实存对了）。保存成功后按 plan 重排一次。
+ */
+function applyPlanOrder() {
+  const rank = new Map(plan.value.items.map((it, i) => [it.name, i]))
+  const pos = (r: BootContainer) => rank.get(r.name) ?? Number.MAX_SAFE_INTEGER
+  // Array.prototype.sort 是稳定排序，清单外的行（归 Docker 管的）保持原有相对顺序
+  rows.value = [...rows.value].sort((a, b) => pos(a) - pos(b))
 }
 
 // ---------- 行内编辑 ----------
@@ -390,7 +405,7 @@ onUnmounted(() => stopPolling())
               :key="row.name"
               class="dh-boot-row grid grid-cols-[18px_22px_minmax(0,1fr)_72px_92px_54px_56px] items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px]"
               :class="[
-                dragOver === i && dragFrom >= 0 && dragFrom !== i ? 'border-t-2 border-accent' : '',
+                dragOver === i && dragFrom >= 0 && dragFrom !== i ? 'dh-boot-drop' : '',
                 dragFrom === i ? 'opacity-45' : '',
                 row.state === 'running' ? 'dh-boot-run' : '',
               ]"
@@ -428,10 +443,6 @@ onUnmounted(() => stopPolling())
                 />
               </div>
             </div>
-          </div>
-
-          <div class="px-5 pb-3 text-[11px] text-text-6">
-            拖动手柄整行拖动，松手即保存，不用点「保存」。打开开关 = 开机时由本页启动它；关掉 = 永远不碰它。
           </div>
         </div>
       </div>
@@ -520,5 +531,11 @@ onUnmounted(() => stopPolling())
   width: 2px;
   border-radius: 2px;
   background: var(--color-run);
+}
+/* 拖拽的落点提示：用内阴影画一条 2px 顶线。
+   不能用 border-t-2 —— 那会把这行撑高 2px，整张表在拖动过程中会上下跳，
+   落点跟着偏，很多时候「拖了没反应」就是它造成的。 */
+.dh-boot-drop {
+  box-shadow: inset 0 2px 0 0 var(--color-accent);
 }
 </style>
