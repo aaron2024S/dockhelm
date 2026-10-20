@@ -50,12 +50,29 @@ const running = computed(() => !!status.value?.running)
  */
 const hasProgress = computed(() => !!status.value?.total)
 
-const estimateText = computed(() => {
-  const starts = pendingStart.value.length
-  if (!starts) return managedRows.value.length ? '全部已在运行' : '—'
-  // 8 秒是「启动并等它 running」的平均耗时，只用于这一行文案
-  const secs = plan.value.initialDelaySec + pendingStart.value.reduce((n, r) => n + 8 + r.delaySec, 0)
-  return secs >= 60 ? `${Math.floor(secs / 60)} 分 ${secs % 60} 秒` : `${secs} 秒`
+const fmtSecs = (s: number) => (s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`)
+
+/**
+ * 「照当前设置从头跑一遍」一共要多久。
+ * 口径固定：初始等待 + 每个容器约 8 秒（启动并等到 running）+ 各自延时，只数开着
+ * 「开机启动」的行（关掉的不归 dockhelm 拉）。
+ * 不按运行状态过滤 —— 按实时状态算出来的数会随执行进度一直缩水，而且全都在跑时
+ * 会退化成「预计 全部已在运行」这种说不通的句子。已在运行的跳过属于"实际更短"，
+ * 放进 title 里解释。
+ */
+const estimate = computed(() => {
+  const rows = managedRows.value.filter((r) => r.auto)
+  if (!rows.length) return null
+  const init = plan.value.initialDelaySec
+  const startup = rows.length * 8
+  const delays = rows.reduce((n, r) => n + r.delaySec, 0)
+  const secs = init + startup + delays
+  return {
+    text: fmtSecs(secs),
+    title:
+      `按当前设置估算：初始等待 ${init} 秒 + ${rows.length} 个容器 × 约 8 秒（启动并等到 running）` +
+      ` + 各容器延时合计 ${delays} 秒 = ${fmtSecs(secs)}。已在运行的容器会被跳过，实际用时更短。`,
+  }
 })
 
 const lastRunText = computed(() => {
@@ -546,10 +563,13 @@ onUnmounted(() => {
 
       <!-- 执行参数 -->
       <div class="dh-card">
-        <div class="dh-card-head">
-          <span>执行参数</span>
+        <div class="dh-card-head items-baseline">
+          <span class="shrink-0">执行参数</span>
+          <span class="text-[11px] font-normal leading-[1.55] text-text-6">
+            延时 = 容器启动成功后等 N 秒再启动下一个。新加入的容器默认取这个值；「应用到全部行」只改每行的延时，不动初始等待与单容器上限。
+          </span>
         </div>
-        <div class="dh-card-body flex flex-col gap-2.5">
+        <div class="dh-card-body">
           <div class="flex flex-wrap items-center gap-x-7 gap-y-3">
             <label class="flex items-center gap-2 text-[12.5px] text-text-4">
               初始等待
@@ -603,11 +623,6 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-
-          <div class="text-[11px] leading-relaxed text-text-6">
-            延时 = 容器启动成功后等 N 秒再启动下一个；新加入的容器默认使用该值。
-            「应用到全部行」只改每行的延时，不动上面两项。
-          </div>
         </div>
       </div>
 
@@ -618,8 +633,12 @@ onUnmounted(() => {
           <span v-if="managedRows.length" class="ml-1 text-[11px] font-normal leading-[1.55] text-text-6">
             每次 Dockhelm 启动都会执行一次，已在运行的跳过，只有开机启动已打开的未运行容器会被拉起。
           </span>
-          <span class="ml-auto shrink-0 pl-3 text-[11.5px] font-normal text-text-5">
-            预计 {{ estimateText }}
+          <span
+            v-if="estimate"
+            class="ml-auto shrink-0 pl-3 text-[11.5px] font-normal text-text-5"
+            :title="estimate.title"
+          >
+            预计全部启动完成需 {{ estimate.text }}
           </span>
         </div>
 
