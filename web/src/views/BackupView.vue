@@ -534,7 +534,12 @@ async function doPrune() {
   }
 }
 
-// ---------- 导入备份包 ----------
+// ---------- 导入单份快照 ----------
+//
+// 这里的「导入」只接受**一份容器快照 json**（即「导出」按钮给出的
+// `<容器名>-<时间戳>.json`），而且是粘贴文本、不读文件。
+// 以前这个功能叫「导入备份包」，但批量导出给的其实是个 zip，两件事对不上：
+// 用户会以为能把 zip 拖进来一次性恢复一整批，实际只吃单份 json。
 
 const showImport = ref(false)
 const importContainer = ref('')
@@ -857,8 +862,8 @@ onMounted(async () => {
           </span>
         </div>
         <div class="flex flex-wrap items-center gap-2 border-b border-line-1 px-3.5 py-2">
-          <button class="dh-btn dh-btn-sm dh-btn-ghost" @click="openImport">
-            <Upload class="h-3 w-3" />导入备份包
+          <button class="dh-btn dh-btn-sm dh-btn-ghost" title="一次导入一份快照 JSON，不支持 zip" @click="openImport">
+            <Upload class="h-3 w-3" />导入快照
           </button>
           <button
             class="dh-btn dh-btn-sm dh-btn-ghost"
@@ -1641,11 +1646,11 @@ onMounted(async () => {
       </template>
     </Modal>
 
-    <!-- ==================== 导入备份包 ==================== -->
+    <!-- ==================== 导入单份快照 ==================== -->
     <Modal
       :open="showImport"
-      title="导入备份包"
-      subtitle="粘贴一份快照 JSON"
+      title="导入快照"
+      subtitle="一次一份，粘贴 JSON 内容"
       width="640px"
       :busy="importing"
       @close="showImport = false"
@@ -1656,12 +1661,14 @@ onMounted(async () => {
         >
           <Download class="mt-[2px] h-3.5 w-3.5 flex-none" />
           <span>
-            接受 Dockhelm 写出的快照文件（内容形如 <code>{"_dockhelm":{…},"inspect":{…}}</code>）。
-            导入只写文件、不动任何容器；导入后就能像本地快照一样在还原弹窗里使用。
-            同名时间戳不会覆盖已有快照，会自动加后缀。
+            接受<b>单份</b>快照 json（点「导出」得到的
+            <code>&lt;容器名&gt;-&lt;时间戳&gt;.json</code>，形如
+            <code>{"_dockhelm":{…},"inspect":{…}}</code>），把整段内容粘到下面。
+            导入后即可在还原弹窗里使用，只写文件、不动容器。
+            一次只处理一份，<b>整批导出的 zip 不能导入</b>；同名时间戳不会覆盖，会自动加后缀。
           </span>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label class="mb-[5px] block text-[12px] text-text-4">容器名</label>
             <input v-model="importContainer" class="dh-input" placeholder="redis" @change="guessContainer" />

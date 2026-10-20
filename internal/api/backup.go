@@ -110,7 +110,7 @@ type importBackupReq struct {
 	Content   string `json:"content"`
 }
 
-// hImportBackup 导入一份外部快照 json（「导入备份包」）。
+// hImportBackup 导入一份外部快照 json（前端「导入快照」，只收单份，不支持 zip）。
 func (s *Server) hImportBackup(w http.ResponseWriter, r *http.Request) {
 	var in importBackupReq
 	if err := decodeBody(r, &in); err != nil {
