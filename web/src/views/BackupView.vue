@@ -930,46 +930,46 @@ onMounted(async () => {
       <div class="dh-card">
         <div class="dh-card-head">
           <Archive class="h-3.5 w-3.5 text-text-4" />
-          <span>快照</span>
-          <span class="text-[11.5px] font-normal text-text-5">
+          <span class="shrink-0">快照</span>
+          <span class="text-[11.5px] font-normal text-text-5 max-md:order-2 max-md:basis-full">
             {{ view === 'batch' ? '点击「全量」行展开该批的容器明细' : '一份快照一行' }}
           </span>
-          <span class="ml-auto flex flex-wrap items-center gap-2 font-normal">
-            <div class="dh-seg">
-              <button :data-on="view === 'batch'" @click="view = 'batch'">按批次</button>
-              <button :data-on="view === 'container'" @click="view = 'container'">按容器</button>
-            </div>
-            <input
-              v-if="view === 'container'"
-              v-model="filter"
-              class="dh-input !mb-0 !w-[150px] !py-[5px] !text-[11.5px]"
-              placeholder="筛选容器…"
-            />
+          <div class="dh-seg font-normal max-md:order-1 max-md:ml-auto">
+            <button :data-on="view === 'batch'" @click="view = 'batch'">按批次</button>
+            <button :data-on="view === 'container'" @click="view = 'container'">按容器</button>
+          </div>
+          <input
+            v-if="view === 'container'"
+            v-model="filter"
+            class="dh-input !mb-0 !w-[130px] !py-[4px] !text-[11.5px] font-normal max-md:order-1 max-md:!w-[108px]"
+            placeholder="筛选容器…"
+          />
+          <span
+            class="ml-auto flex flex-wrap items-center justify-end gap-2 font-normal max-md:order-3 max-md:ml-0 max-md:basis-full max-md:justify-start max-md:gap-1.5 max-md:[&_svg]:hidden"
+          >
+            <button class="dh-btn dh-btn-sm dh-btn-ghost" title="一次导入一份快照 JSON，不支持 zip" @click="openImport">
+              <Upload class="h-3 w-3" />导入快照
+            </button>
+            <button
+              class="dh-btn dh-btn-sm dh-btn-ghost"
+              :disabled="busy === 'prune'"
+              title="按保留策略清理过期的容器快照；不动 compose 项目备份（那一页有自己的「清理过期」）"
+              @click="pruneScope = 'snapshots'"
+            >
+              <Trash2 class="h-3 w-3" />清理过期
+            </button>
+            <button
+              class="dh-btn dh-btn-sm dh-btn-ghost text-err-text hover:text-err-text"
+              :disabled="!stats?.snapshots"
+              title="删掉全部容器快照（不进回收站，需要二次确认）"
+              @click="openClear('snapshots')"
+            >
+              <Trash2 class="h-3 w-3" />清空全部
+            </button>
+            <button class="dh-btn dh-btn-sm dh-btn-ghost" :disabled="loading" @click="load">
+              <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />刷新
+            </button>
           </span>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 border-b border-line-1 px-3.5 py-2">
-          <button class="dh-btn dh-btn-sm dh-btn-ghost" title="一次导入一份快照 JSON，不支持 zip" @click="openImport">
-            <Upload class="h-3 w-3" />导入快照
-          </button>
-          <button
-            class="dh-btn dh-btn-sm dh-btn-ghost"
-            :disabled="busy === 'prune'"
-            title="按保留策略清理过期的容器快照；不动 compose 项目备份（那一页有自己的「清理过期」）"
-            @click="pruneScope = 'snapshots'"
-          >
-            <Trash2 class="h-3 w-3" />清理过期
-          </button>
-          <button
-            class="dh-btn dh-btn-sm dh-btn-ghost text-err-text hover:text-err-text"
-            :disabled="!stats?.snapshots"
-            title="删掉全部容器快照（不进回收站，需要二次确认）"
-            @click="openClear('snapshots')"
-          >
-            <Trash2 class="h-3 w-3" />清空全部
-          </button>
-          <button class="dh-btn dh-btn-sm dh-btn-ghost ml-auto" :disabled="loading" @click="load">
-            <RefreshCw class="h-3 w-3" :class="loading ? 'dh-spin' : ''" />刷新
-          </button>
         </div>
 
         <EmptyState
