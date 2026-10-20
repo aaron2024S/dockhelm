@@ -613,12 +613,12 @@ onUnmounted(() => {
 
       <!-- 由 dockhelm 按顺序启动 -->
       <div class="dh-card">
-        <div class="dh-card-head items-start">
-          <span class="shrink-0 pt-[2px]">由 dockhelm 按顺序启动 · {{ managedRows.length }} 个</span>
+        <div class="dh-card-head items-baseline">
+          <span class="shrink-0">由 dockhelm 按顺序启动 · {{ managedRows.length }} 个</span>
           <span v-if="managedRows.length" class="ml-1 text-[11px] font-normal leading-[1.55] text-text-6">
             每次 Dockhelm 启动都会执行一次，已在运行的跳过，只有开机启动已打开的未运行容器会被拉起。
           </span>
-          <span class="ml-auto shrink-0 pl-3 pt-[1px] text-[11.5px] font-normal text-text-5">
+          <span class="ml-auto shrink-0 pl-3 text-[11.5px] font-normal text-text-5">
             预计 {{ estimateText }}
           </span>
         </div>
@@ -693,8 +693,8 @@ onUnmounted(() => {
 
       <!-- 由 Docker 自行启动 -->
       <div class="dh-card">
-        <div class="dh-card-head items-start">
-          <span class="shrink-0 pt-[2px]">由 Docker 自行启动 · {{ dockerRows.length }} 个</span>
+        <div class="dh-card-head items-baseline">
+          <span class="shrink-0">由 Docker 自行启动 · {{ dockerRows.length }} 个</span>
           <span v-if="dockerRows.length" class="ml-1 text-[11px] font-normal leading-[1.55] text-text-6">
             这些容器由 Docker 在开机时自动启动，不受本程序控制。想让它按顺序启动，去 NAS 面板把重启策略改成
             on-failure，刷新后会自动加入到本程序的顺序启动管理列表。
