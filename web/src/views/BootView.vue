@@ -433,9 +433,12 @@ onUnmounted(() => stopPolling())
 
       <!-- 由 Docker 自行启动 -->
       <div class="dh-card">
-        <div class="dh-card-head">
-          <span>由 Docker 自行启动 · {{ dockerRows.length }} 个</span>
-          <span class="ml-auto text-[11.5px] font-normal text-text-6">不受本页控制</span>
+        <div class="dh-card-head items-start">
+          <span class="shrink-0 pt-[2px]">由 Docker 自行启动 · {{ dockerRows.length }} 个</span>
+          <span v-if="dockerRows.length" class="ml-1 text-[11px] font-normal leading-[1.55] text-text-6">
+            这些容器由 Docker 在开机时自动启动，不受本程序控制。想让它按顺序启动，去 NAS 面板把重启策略改成
+            on-failure，刷新后会自动加入到本程序的顺序启动管理列表。
+          </span>
         </div>
 
         <div v-if="!dockerRows.length" class="dh-card-body text-[12.5px] text-text-4">
@@ -468,12 +471,6 @@ onUnmounted(() => stopPolling())
               <span />
               <span />
             </div>
-          </div>
-
-          <div class="px-5 pb-3 text-[11px] leading-relaxed text-text-6">
-            这些容器由 Docker 在开机时自己拉起，比顺序启动更早，也不受顺序和延时影响。
-            想让它按顺序启动，去 NAS 面板把重启策略改成 on-failure，刷新后会自动挪到上面那组，
-            原来的位置不丢。
           </div>
         </div>
       </div>
