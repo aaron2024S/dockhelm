@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Loader2, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Loader2, PenLine, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { api, openStream } from '@/api/client'
 import type { ContainerView, RunLog, Schedule, ScheduleAction, Settings } from '@/api/types'
 import { explainCron, formatDayTime } from '@/utils/format'
@@ -422,15 +422,18 @@ onUnmounted(() => closeStream?.())
         <table class="dh-table dh-table-fixed dh-sched-table">
           <thead>
             <tr>
-              <th class="w-[21%]">任务名称</th>
-              <th class="w-[11%]">目标</th>
-              <th class="w-[8%]">动作</th>
-              <th class="w-[13%]">计划</th>
-              <th class="w-[11%]">上次执行</th>
-              <th class="w-[13%]">下次执行</th>
-              <th class="w-[7%] text-right">启用</th>
-              <!-- 操作列左对齐：表头要压在第一个按钮（运行）上，而不是悬在最后的删除上 -->
-              <th class="w-[16%]">操作</th>
+              <th class="w-[17%]">任务名称</th>
+              <th class="w-[10%]">目标</th>
+              <th class="w-[9%]">动作</th>
+              <th class="w-[10.5%]">计划</th>
+              <th class="w-[10%]">上次执行</th>
+              <th class="w-[11%]">下次执行</th>
+              <th class="w-[7.5%] text-right">启用</th>
+              <!-- 操作列左对齐：表头要压在第一个按钮（运行）上，而不是悬在最后的删除上。
+                   宽度必须放得下「运行 + 编辑 + 删除」三个带图标+文字的按钮：
+                   .dh-table-fixed td 是 overflow:hidden，给窄了超出的按钮会被直接裁掉，
+                   横滑到最右也拿不回来（不是被滚出视口，是被单元格裁没了）。 -->
+              <th class="w-[25%]">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -477,9 +480,11 @@ onUnmounted(() => closeStream?.())
                     <Loader2 v-if="running === s.id" class="h-3 w-3 dh-spin" />
                     <Play v-else class="h-3 w-3" />运行
                   </button>
-                  <button class="dh-btn dh-btn-sm" @click="startEdit(s)">编辑</button>
+                  <button class="dh-btn dh-btn-sm" @click="startEdit(s)">
+                    <PenLine class="h-3 w-3" />编辑
+                  </button>
                   <button class="dh-btn dh-btn-sm dh-btn-danger" @click="removeTarget = s">
-                    <Trash2 class="h-3 w-3" />
+                    <Trash2 class="h-3 w-3" />删除
                   </button>
                 </div>
               </td>

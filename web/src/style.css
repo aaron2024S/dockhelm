@@ -441,7 +441,7 @@ html.light {
   }
   /* 计划任务列多、右侧还有三个操作按钮，给宽一点再横滑 */
   .dh-sched-table {
-    min-width: 900px;
+    min-width: 980px;
   }
 
   /* 拖拽排序手柄（加速源优先级）。
