@@ -219,12 +219,6 @@ function resetForm() {
   saveError.value = ''
 }
 
-/** 「新建任务」按钮：清空表单并把内联卡片滚进视野。 */
-function focusForm() {
-  resetForm()
-  document.getElementById('schedule-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-}
-
 function startEdit(s: Schedule) {
   const mapped = applyCron(s.cron)
   form.value = {
@@ -404,9 +398,9 @@ onUnmounted(() => closeStream?.())
         <button class="dh-btn" :disabled="loading" @click="load">
           <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
         </button>
-        <button class="dh-btn dh-btn-primary" @click="focusForm">
-          <Plus class="h-3.5 w-3.5" />新建任务
-        </button>
+        <!-- 原来这里还有一个「新建任务」主按钮，做的事只是 resetForm + 滚到下面的内联表单。
+             用户 2026-10-25：「计划任务页面右上角的新建任务按钮是多余的，页面上已经有了新建任务区域」
+             —— 那个卡片的标题本来就写着「新建任务」，按钮等于重复一遍，只留「执行历史 / 刷新」。 -->
       </div>
     </div>
 
