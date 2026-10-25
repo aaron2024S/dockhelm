@@ -87,6 +87,18 @@ func (w *Watcher) handle(ev dockerx.Event) {
 		return
 	}
 
+	// 状态真的变了的动作，统一在这里推一条给前端（总览页、容器页据此静默刷新）。
+	// 必须放在下面那个 switch 之前：里面每条分支都可能提前 return（正常退出、dockhelm
+	// 自己发起的停止…），放后面会让「停止」这类最该刷新的事件漏掉。
+	// 走 container 主题 + kind=changed，和 API 里手动操作的 kind=action 区分开，
+	// 容器页只对 action 做强制刷新，自动变化走防抖。
+	switch ev.Action {
+	case "start", "restart", "stop", "die", "kill", "pause", "unpause", "destroy":
+		w.bus.Publish("container", "changed", "info", map[string]any{
+			"name": name, "action": ev.Action,
+		})
+	}
+
 	switch {
 	case ev.Action == "die":
 		code := ev.Actor.Attributes["exitCode"]
@@ -140,10 +152,7 @@ func (w *Watcher) handle(ev dockerx.Event) {
 		// （个别守护进程版本在 OOM 时也会补一条 kill）。
 		w.markAt(w.oomAt, name, time.Now())
 
-	case ev.Action == "start", ev.Action == "restart":
-		w.bus.Publish("container", "event", "info", map[string]any{
-			"name": name, "action": ev.Action,
-		})
+		// start / restart 的刷新事件已经在 switch 之前的统一发布块里发过，这里不再重复。
 	}
 }
 

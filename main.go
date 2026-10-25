@@ -163,7 +163,7 @@ func main() {
 
 	// —— 顺序启动 ——
 	// 只负责「按清单串行启动」，不改重启策略、不做快照。见 internal/boot 包注释。
-	bootSvc := boot.New(dc, st, nt, up.SelfName)
+	bootSvc := boot.New(dc, st, nt, up.SelfName, b)
 
 	// —— HTTP 服务 ——
 	srv := api.New(api.Deps{

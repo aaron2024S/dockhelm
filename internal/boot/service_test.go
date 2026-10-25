@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
 	"github.com/aaron2024s/dockhelm/internal/store"
 )
@@ -105,7 +106,7 @@ func newTestService(t *testing.T) (*Service, *store.Store, *fakeDocker) {
 		t.Fatalf("打开 store 失败：%v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(dc, st, nil, func() string { return "dockhelm" }), st, fd
+	return New(dc, st, nil, func() string { return "dockhelm" }, nil), st, fd
 }
 
 // 一轮完整的执行：跳过的跳过、失败的继续、最后写一条自洽的记录。
@@ -238,5 +239,45 @@ func TestRunDelayAfterEachStart(t *testing.T) {
 	}
 	if got := strings.Join(fd.order, ","); got != "a,b" {
 		t.Errorf("启动顺序应为 a,b，实际 %s", got)
+	}
+}
+
+// 每启动一个容器都要推一条 container/changed —— 总览页靠它刷新「运行 / 停止」计数
+// 和容器状态条；顺序启动不经过 API 的动作接口，没有这条事件页面就一直停在旧数字上。
+func TestRunPublishesContainerChanged(t *testing.T) {
+	svc, _, fd := newTestService(t)
+	b := bus.New()
+	svc.bus = b
+	ch, cancel := b.Subscribe()
+	defer cancel()
+
+	fd.state = map[string]string{"alpha": "exited", "beta": "exited"}
+	fd.policies = map[string]string{"alpha": "on-failure", "beta": "on-failure"}
+	fd.failOn = map[string]string{"beta": "port is already allocated"}
+	_ = svc.SavePlan(Plan{
+		Enabled: true, WaitTimeoutSec: 5, DefaultDelaySec: 0,
+		Items: []Item{{Name: "alpha", Auto: true}, {Name: "beta", Auto: true}},
+	})
+	if err := svc.Run(context.Background(), TriggerManual, true); err != nil {
+		t.Fatalf("执行返回错误：%v", err)
+	}
+
+	got := map[string]string{}
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Topic == "container" && ev.Kind == "changed" {
+				got[ev.Data["name"].(string)] = ev.Status
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if got["alpha"] != "success" {
+		t.Errorf("alpha 应推 success，实际 %q（全部：%v）", got["alpha"], got)
+	}
+	if got["beta"] != "failed" {
+		t.Errorf("beta 应推 failed，实际 %q（全部：%v）", got["beta"], got)
 	}
 }

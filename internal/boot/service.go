@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aaron2024s/dockhelm/internal/bus"
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
 	"github.com/aaron2024s/dockhelm/internal/notify"
 	"github.com/aaron2024s/dockhelm/internal/store"
@@ -51,6 +52,10 @@ type Service struct {
 	dc *dockerx.Client
 	st *store.Store
 	nt *notify.Manager
+	// bus 用来在每次「某个容器起来了」之后通知前端刷新。
+	// 顺序启动直接走 dockerx，不经过 /api/containers/{name}/action，
+	// 少了这一条，总览页的「运行 / 停止」计数和容器状态条会一直停在进入页面那一刻。
+	bus *bus.Bus
 	// selfName 返回 Dockhelm 自身容器名（页面要提示它当前的策略）。
 	selfName func() string
 
@@ -59,12 +64,21 @@ type Service struct {
 	status  Status
 }
 
-// New 创建服务。nt 可以为 nil（单测场景）。
-func New(dc *dockerx.Client, st *store.Store, nt *notify.Manager, selfName func() string) *Service {
+// New 创建服务。nt / b 可以为 nil（单测场景）。
+func New(dc *dockerx.Client, st *store.Store, nt *notify.Manager, selfName func() string, b *bus.Bus) *Service {
 	if selfName == nil {
 		selfName = func() string { return "" }
 	}
-	return &Service{dc: dc, st: st, nt: nt, selfName: selfName, status: Status{Phase: PhaseIdle}}
+	return &Service{dc: dc, st: st, nt: nt, bus: b, selfName: selfName, status: Status{Phase: PhaseIdle}}
+}
+
+// publishChanged 通知前端「这个容器的状态变了」。
+// 走 container 主题 + kind=changed：总览页/容器页都按 topic 收，不看 kind。
+func (s *Service) publishChanged(name, action, status string) {
+	if s.bus == nil {
+		return
+	}
+	s.bus.Publish("container", "changed", status, map[string]any{"name": name, "action": action})
 }
 
 // LastResult 上一次执行的结构化回执（页面顶部那一行）。只是展示，不参与决策。
@@ -362,8 +376,10 @@ func (s *Service) run(ctx context.Context, trigger string, skipInitialDelay bool
 				failedNames = append(failedNames, step.Name)
 				details = append(details, step.Name+"："+err.Error())
 				log.Printf("顺序启动：%s 启动失败（%v），继续下一个", step.Name, err)
+				s.publishChanged(step.Name, "start", "failed")
 			} else {
 				success++
+				s.publishChanged(step.Name, "start", "success")
 				// 「启动成功后等 N 秒再起下一个」—— 方案 §2.2 定死的语义
 				if step.DelaySec > 0 {
 					if err := sleepCtx(ctx, time.Duration(step.DelaySec)*time.Second); err != nil {

@@ -282,6 +282,20 @@ async function load(silent = false) {
   }
 }
 
+/**
+ * 外部引起的容器状态变化的静默刷新（尾随防抖 600ms）。
+ * 顺序启动一轮会连起十几个容器，每个都推一条 changed；逐条刷等于连打十几次列表接口。
+ * 本页自己发起的操作走 kind=action，不经过这里（那种要立刻刷新）。
+ */
+let changedTimer: number | undefined
+function scheduleChangedReload(delay = 600) {
+  if (changedTimer !== undefined) window.clearTimeout(changedTimer)
+  changedTimer = window.setTimeout(() => {
+    changedTimer = undefined
+    void load(true)
+  }, delay)
+}
+
 async function act(c: ContainerView, action: string) {
   busyName.value = c.name
   menuFor.value = ''
@@ -450,13 +464,19 @@ onMounted(() => {
         void load(true)
       }
     }
-    if (topic === 'container' && ev.kind === 'action') {
-      void load(true)
+    if (topic === 'container') {
+      // action：本页发起的手动操作，立刻刷；
+      // changed：顺序启动 / 计划任务 / 外部 docker 操作引起的状态变化，防抖刷
+      if (ev.kind === 'action') void load(true)
+      else scheduleChangedReload()
     }
   })
 })
 
-onUnmounted(() => inner?.())
+onUnmounted(() => {
+  inner?.()
+  if (changedTimer !== undefined) window.clearTimeout(changedTimer)
+})
 
 function closeMenu() {
   menuFor.value = ''

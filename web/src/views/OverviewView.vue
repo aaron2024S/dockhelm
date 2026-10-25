@@ -27,9 +27,17 @@ function later(fn: () => void, ms: number) {
   timers.push(window.setTimeout(fn, ms))
 }
 
-async function load() {
-  loading.value = true
-  errorMsg.value = ''
+/**
+ * 拉总览数据。
+ *
+ * silent=true 用于事件驱动的刷新：不动 loading / errorMsg，页面不会闪骨架，
+ * 单次失败也不弹错误条（下一轮事件还会再拉一次）。
+ */
+async function load(opts: { silent?: boolean } = {}) {
+  if (!opts.silent) {
+    loading.value = true
+    errorMsg.value = ''
+  }
   try {
     const [ov, sch] = await Promise.all([
       api.get<OverviewResponse>('/api/overview'),
@@ -38,10 +46,27 @@ async function load() {
     data.value = ov
     schedules.value = sch.schedules ?? []
   } catch (e) {
-    errorMsg.value = e instanceof Error ? e.message : String(e)
+    if (!opts.silent) errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (!opts.silent) loading.value = false
   }
+}
+
+/**
+ * 容器状态变化的静默刷新（尾随防抖 600ms）。
+ *
+ * 顺序启动一轮要连起十几个容器，每个容器都会推一条事件；逐条刷新等于把
+ * /api/overview（info + list + images 三次 docker 调用）打十几次。
+ * 每次新事件都把定时器往后推，密集启动时只在最后落一次；启动之间隔着延时
+ * （秒级）时，每起一个刷新一次，正好能看着数字往上涨。
+ */
+let reloadTimer: number | undefined
+function scheduleReload(delay = 600) {
+  if (reloadTimer !== undefined) window.clearTimeout(reloadTimer)
+  reloadTimer = window.setTimeout(() => {
+    reloadTimer = undefined
+    void load({ silent: true })
+  }, delay)
 }
 
 // 本页原先的空态「立即巡检」按钮已删：手动检测入口统一到顶栏「检查更新」，
@@ -212,6 +237,16 @@ onMounted(() => {
   // ⚠ 自动/启动巡检发的是 auto_check_done，手动检测才是 check_done —— 只认后者时，
   // 后端自己跑的巡检结束后本页要等下一次手动操作才更新（2026-10-11 修）。
   closeStream = openStream('/api/events/stream', (topic, ev) => {
+    // 容器状态变了（顺序启动在跑、别的页面手动启停、外部 docker 操作）：
+    // 「运行 / 停止」计数和容器状态条要跟着动，否则停在进入页面那一刻。
+    // 顺序启动走的是 dockerx 直连，不发 kind=action，所以这里按 topic 收、不看 kind。
+    if (topic === 'container') {
+      // 连上时的补发快照里可能有一条很久以前的容器事件，别为它白拉一次
+      const at = Date.parse(ev.time ?? '')
+      if (Number.isFinite(at) && Date.now() - at > 15000) return
+      scheduleReload()
+      return
+    }
     if (topic !== 'update' && topic !== 'schedule') return
     if (ev.kind === 'batch_done' || ev.kind === 'check_done' || ev.kind === 'auto_check_done') {
       later(() => void load(), 800)
@@ -226,6 +261,7 @@ onUnmounted(() => {
   closeStream?.()
   window.removeEventListener('resize', syncRecentScroll)
   if (usageTimer !== undefined) window.clearInterval(usageTimer)
+  if (reloadTimer !== undefined) window.clearTimeout(reloadTimer)
   timers.forEach((t) => window.clearTimeout(t))
   timers = []
 })
@@ -236,7 +272,7 @@ onUnmounted(() => {
     <div v-if="errorMsg" class="dh-banner dh-banner-err">
       <AlertTriangle class="h-4 w-4 flex-none" />
       <span class="min-w-0 flex-1">{{ errorMsg }}</span>
-      <button class="dh-btn dh-btn-sm" @click="load">重试</button>
+      <button class="dh-btn dh-btn-sm" @click="load()">重试</button>
     </div>
 
     <div v-if="data?.dockerError" class="dh-banner dh-banner-err">
