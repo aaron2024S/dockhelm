@@ -244,7 +244,12 @@ export function explainCron(expr: string): string {
     }
     if (mon === '*' && dow === '*' && isNum(dom)) return `每月 ${dom} 号 ${hm}`
   }
-  if (min === '*' && isNum(hour)) return `每小时的第 ${hour} 分（${pad(hour)}:${min.replace('*', '00')} 起每分钟）`
+  // 每小时的第 N 分（`30 * * * *`）—— 「每小时」选项生成的就是这种写法。
+  // 必须放在下面那条 `min === '*'` 之前判断：两者 min/hour 正好互斥，这只认 hour 为 *。
+  if (isNum(min) && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
+    return `每小时的第 ${min} 分`
+  }
+  if (min === '*' && isNum(hour)) return `每天 ${pad(hour)} 点这一小时内每分钟`
   if (min.startsWith('*/')) return `每 ${min.slice(2)} 分钟`
   if (hour.startsWith('*/')) return `每 ${hour.slice(2)} 小时`
   return e

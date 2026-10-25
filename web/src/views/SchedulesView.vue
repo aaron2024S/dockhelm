@@ -49,17 +49,12 @@ function blankForm() {
   }
 }
 
+// 只留「常用粒度 + 自定义 cron」：不再单列每周一…每周日。
+// 想指定某一天就选「自定义 cron」写 `30 3 * * 3`，下面的「解析结果」会翻成「每周三 03:30」。
 const repeatOptions = [
   { key: 'daily', label: '每天' },
   { key: 'hourly', label: '每小时' },
   { key: 'weekdays', label: '工作日（周一至周五）' },
-  { key: 'weekly-1', label: '每周一' },
-  { key: 'weekly-2', label: '每周二' },
-  { key: 'weekly-3', label: '每周三' },
-  { key: 'weekly-4', label: '每周四' },
-  { key: 'weekly-5', label: '每周五' },
-  { key: 'weekly-6', label: '每周六' },
-  { key: 'weekly-0', label: '每周日' },
   { key: 'monthly', label: '每月 1 日' },
   { key: 'custom', label: '自定义 cron' },
 ]
@@ -107,10 +102,8 @@ const composedCron = computed(() => {
       return `${mm} ${hh} * * 1-5`
     case 'monthly':
       return `${mm} ${hh} 1 * *`
-    default: {
-      const dow = form.value.repeat.split('-')[1] ?? '0'
-      return `${mm} ${hh} * * ${dow}`
-    }
+    default:
+      return `${mm} ${hh} * * *`
   }
 })
 
@@ -123,7 +116,9 @@ function applyCron(cron: string) {
   m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+1-5$/.exec(t)
   if (m) return { repeat: 'weekdays', time: hhmm(m[2] as string, m[1] as string) }
   m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+([0-7])$/.exec(t)
-  if (m) return { repeat: `weekly-${m[3] === '7' ? '0' : (m[3] as string)}`, time: hhmm(m[2] as string, m[1] as string) }
+  // 每天固定时刻 + 指定星期几：下拉里已经没有「每周X」项，统一落到自定义模式，
+  // 原表达式原样回填（openEdit 里 customCron = s.cron），不丢信息。
+  if (m) return { repeat: 'custom', time: '03:00' }
   m = /^(\d+)\s+(\d+)\s+1\s+\*\s+\*$/.exec(t)
   if (m) return { repeat: 'monthly', time: hhmm(m[2] as string, m[1] as string) }
   m = /^(\d+)\s+\*\s+\*\s+\*\s+\*$/.exec(t)
@@ -526,7 +521,7 @@ onUnmounted(() => closeStream?.())
               </select>
             </div>
             <div>
-              <label class="dh-label">{{ form.repeat === 'hourly' ? '每小时的第几分' : '时间' }}</label>
+              <label class="dh-label">时间</label>
               <input
                 v-if="form.repeat !== 'custom'"
                 v-model="form.time"
