@@ -422,18 +422,20 @@ onUnmounted(() => closeStream?.())
         <table class="dh-table dh-table-fixed dh-sched-table">
           <thead>
             <tr>
-              <th class="w-[17%]">任务名称</th>
-              <th class="w-[10%]">目标</th>
-              <th class="w-[9%]">动作</th>
-              <th class="w-[10.5%]">计划</th>
-              <th class="w-[10%]">上次执行</th>
-              <th class="w-[11%]">下次执行</th>
-              <th class="w-[7.5%] text-right">启用</th>
-              <!-- 操作列左对齐：表头要压在第一个按钮（运行）上，而不是悬在最后的删除上。
-                   宽度必须放得下「运行 + 编辑 + 删除」三个带图标+文字的按钮：
-                   .dh-table-fixed td 是 overflow:hidden，给窄了超出的按钮会被直接裁掉，
-                   横滑到最右也拿不回来（不是被滚出视口，是被单元格裁没了）。 -->
-              <th class="w-[25%]">操作</th>
+              <!-- 任务名称刻意**不写宽度**：table-layout:fixed 下，没指定宽度的列吃掉全部余量。
+                   之前把余量交给操作列（16%/25%）的结果是宽屏上「删除」右侧空出几十到几百像素。
+                   现在操作列按内容定宽（240px），富余一律归名称列 —— 那里本来就放着
+                   被 line-clamp 的执行说明，宽一点正好少折行。 -->
+              <th>任务名称</th>
+              <th class="w-[9%]">目标</th>
+              <th class="w-[8.5%]">动作</th>
+              <th class="w-[9%]">计划</th>
+              <th class="w-[9%]">上次执行</th>
+              <th class="w-[9.5%]">下次执行</th>
+              <th class="w-[7%] text-right">启用</th>
+              <!-- 操作列定宽 = 三个按钮 + 左右内边距：给窄了会被 td 的 overflow:hidden 裁掉
+                   （横滑到最右也拿不回来），给宽了就是右侧一大片空白，所以写死 px 而不是百分比。 -->
+              <th class="w-[240px]">操作</th>
             </tr>
           </thead>
           <tbody>

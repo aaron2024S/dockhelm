@@ -439,9 +439,10 @@ html.light {
   .dh-table-fixed td {
     overflow: hidden;
   }
-  /* 计划任务列多、右侧还有三个操作按钮，给宽一点再横滑 */
+  /* 计划任务列多、右侧还有三个操作按钮，给宽一点再横滑。
+     操作列写死 240px（三个按钮的实际宽度），余量交给不指定宽度的任务名称列。 */
   .dh-sched-table {
-    min-width: 980px;
+    min-width: 1000px;
   }
 
   /* 拖拽排序手柄（加速源优先级）。
