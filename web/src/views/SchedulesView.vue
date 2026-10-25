@@ -97,6 +97,20 @@ function actionTone(key: string) {
   return ACTION_TONE[key] ?? 'dh-badge-plain'
 }
 
+/**
+ * 分钟收敛到 0–59 的整数，唯一入口。
+ * 输入框的 min/max 只拦得住步进和原生校验，拦不住手输、粘贴、`1e2`；
+ * 而 composedCron 同时供预览和保存使用，这里必须兜住，否则非法值会直接拼进 cron。
+ * 空值 / 非数字回退到 fallback（不清成 0，免得把「每小时第 30 分」悄悄改成「整点」）。
+ */
+function clampMinute(raw: string, fallback: string): string {
+  const t = raw.trim()
+  if (t === '') return fallback
+  const n = Number(t)
+  if (!Number.isFinite(n)) return fallback
+  return String(Math.min(59, Math.max(0, Math.trunc(n))))
+}
+
 /** 由「重复 + 时间」拼出 cron（自定义时直接用输入的表达式）。 */
 const composedCron = computed(() => {
   if (form.value.repeat === 'custom') return form.value.customCron.trim()
@@ -107,7 +121,7 @@ const composedCron = computed(() => {
     case 'daily':
       return `${mm} ${hh} * * *`
     case 'hourly':
-      return `${Number(form.value.hourlyMinute) || 0} * * * *`
+      return `${clampMinute(form.value.hourlyMinute, '0')} * * * *`
     case 'weekdays':
       return `${mm} ${hh} * * 1-5`
     case 'monthly':
@@ -135,7 +149,7 @@ function applyCron(cron: string): CronForm {
   if (m) return { repeat: 'monthly', time: hhmm(m[2] as string, m[1] as string) }
   m = /^(\d+)\s+\*\s+\*\s+\*\s+\*$/.exec(t)
   // 每小时只认分钟：time 留默认值不填，分钟进 hourlyMinute（表单里只渲染分钟框）。
-  if (m) return { repeat: 'hourly', time: '03:00', hourlyMinute: String(Number(m[1])) }
+  if (m) return { repeat: 'hourly', time: '03:00', hourlyMinute: clampMinute(m[1] as string, '0') }
   return { repeat: 'custom', time: '03:00' }
 }
 
@@ -191,12 +205,12 @@ async function load() {
   }
 }
 
-/** 每小时的分钟输入：收敛到 0–59 再回写（type=number 的 min/max 拦得住步进，拦不住手输）。 */
+/** 每小时的分钟输入：失焦（change）时收敛到 0–59 并回写显示值。 */
 function setHourlyMinute(ev: Event) {
   const el = ev.target as HTMLInputElement
-  const n = Math.max(0, Math.min(59, Math.floor(Number(el.value) || 0)))
-  form.value.hourlyMinute = String(n)
-  el.value = String(n)
+  const next = clampMinute(el.value, form.value.hourlyMinute)
+  form.value.hourlyMinute = next
+  el.value = next
 }
 
 function resetForm() {
