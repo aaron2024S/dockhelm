@@ -33,6 +33,15 @@ const form = ref({
   /** 重复方式 + 时间的组合，最终换算成 cron；repeat='custom' 时直接用 customCron。 */
   repeat: 'daily',
   time: '03:00',
+  /**
+   * 「每小时」的分钟数，单独一个字段。
+   *
+   * 为什么不复用 time：每小时的 cron 是 `M * * * *`，小时位根本不生效 ——
+   * 用 time 输入框的话用户还能选一个被忽略的小时（选 03:00 实际跑在每小时第 0 分），
+   * 归零也拦不住他再改。这里干脆只给分钟，从控件形态上就没得选。
+   * 字段独立 ⇒ 在「每天」和「每小时」之间来回切，两边的输入值不会互相污染。
+   */
+  hourlyMinute: '0',
   customCron: '0 3 * * *',
 })
 
@@ -45,6 +54,7 @@ function blankForm() {
     enabled: true,
     repeat: 'daily',
     time: '03:00',
+    hourlyMinute: '0',
     customCron: '0 3 * * *',
   }
 }
@@ -97,7 +107,7 @@ const composedCron = computed(() => {
     case 'daily':
       return `${mm} ${hh} * * *`
     case 'hourly':
-      return `${mm} * * * *`
+      return `${Number(form.value.hourlyMinute) || 0} * * * *`
     case 'weekdays':
       return `${mm} ${hh} * * 1-5`
     case 'monthly':
@@ -108,7 +118,9 @@ const composedCron = computed(() => {
 })
 
 /** cron → 表单（编辑已有任务时把表达式翻译回「重复 + 时间」）。 */
-function applyCron(cron: string) {
+type CronForm = { repeat: string; time: string; hourlyMinute?: string }
+
+function applyCron(cron: string): CronForm {
   const t = cron.trim()
   const hhmm = (h: string, m: string) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
   let m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$/.exec(t)
@@ -122,7 +134,8 @@ function applyCron(cron: string) {
   m = /^(\d+)\s+(\d+)\s+1\s+\*\s+\*$/.exec(t)
   if (m) return { repeat: 'monthly', time: hhmm(m[2] as string, m[1] as string) }
   m = /^(\d+)\s+\*\s+\*\s+\*\s+\*$/.exec(t)
-  if (m) return { repeat: 'hourly', time: hhmm('0', m[1] as string) }
+  // 每小时只认分钟：time 留默认值不填，分钟进 hourlyMinute（表单里只渲染分钟框）。
+  if (m) return { repeat: 'hourly', time: '03:00', hourlyMinute: String(Number(m[1])) }
   return { repeat: 'custom', time: '03:00' }
 }
 
@@ -178,6 +191,14 @@ async function load() {
   }
 }
 
+/** 每小时的分钟输入：收敛到 0–59 再回写（type=number 的 min/max 拦得住步进，拦不住手输）。 */
+function setHourlyMinute(ev: Event) {
+  const el = ev.target as HTMLInputElement
+  const n = Math.max(0, Math.min(59, Math.floor(Number(el.value) || 0)))
+  form.value.hourlyMinute = String(n)
+  el.value = String(n)
+}
+
 function resetForm() {
   form.value = blankForm()
   editingId.value = 0
@@ -199,6 +220,7 @@ function startEdit(s: Schedule) {
     enabled: s.enabled,
     repeat: mapped.repeat,
     time: mapped.time,
+    hourlyMinute: mapped.hourlyMinute ?? '0',
     customCron: s.cron,
   }
   editingId.value = s.id
@@ -522,8 +544,21 @@ onUnmounted(() => closeStream?.())
             </div>
             <div>
               <label class="dh-label">时间</label>
+              <!-- 每小时只给分钟：`M * * * *` 里没有小时这一位，给了输入框只会让人选个不生效的值 -->
+              <div v-if="form.repeat === 'hourly'" class="flex items-center gap-2">
+                <input
+                  class="dh-input min-w-0 flex-1 text-center font-mono [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  type="number"
+                  min="0"
+                  max="59"
+                  :value="form.hourlyMinute"
+                  title="每小时的这一分钟执行"
+                  @change="setHourlyMinute"
+                />
+                <span class="flex-none text-[12.5px] text-text-4">分</span>
+              </div>
               <input
-                v-if="form.repeat !== 'custom'"
+                v-else-if="form.repeat !== 'custom'"
                 v-model="form.time"
                 type="time"
                 class="dh-input font-mono"
