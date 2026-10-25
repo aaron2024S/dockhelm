@@ -615,14 +615,14 @@ onUnmounted(() => closeStream?.())
           未来 24 小时内没有安排。
         </div>
         <div v-else class="dh-card-body flex flex-col gap-2.5">
+          <!-- 右侧原来挂一个动作徽标（启动 / 停止 / 清理镜像…），用户 2026-10-25：
+               「去掉右侧的徽标文字，没什么作用」—— 任务名本身通常就写了动作，
+               徽标只是把同一件事再说一遍。这里只留「什么时候 · 哪条任务」。 -->
           <div v-for="u in upcoming" :key="u.s.id" class="flex items-center gap-2.5">
             <span class="w-[74px] flex-none font-mono text-[11.5px] text-accent-text">
               {{ formatDayTime(u.t) }}
             </span>
             <span class="min-w-0 flex-1 truncate text-[12.5px]">{{ u.s.name }}</span>
-            <span class="dh-badge flex-none" :class="actionTone(u.s.action)">
-              {{ shortAction(u.s.action) }}
-            </span>
           </div>
         </div>
       </div>
