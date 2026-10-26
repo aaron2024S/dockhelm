@@ -2,9 +2,11 @@ package notify
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/store"
 )
@@ -349,5 +351,102 @@ func TestBuildValuesToneVsLevel(t *testing.T) {
 	v = buildValues("container_died", map[string]string{"tone": "info"}, "h", "", "t", "x")
 	if v["tags"] != "information_source" || v["priority"] != "4" {
 		t.Fatalf("tone 覆盖后 tags 应跟 tone、priority 应仍跟 level：%v", v)
+	}
+}
+
+// 静默汇总：2026-10-26 用户反馈「看着很简单」——原来只有「· 事件名 ×N」，
+// 挂了两台容器也看不出是哪两台。这组用例把新口径钉住：
+// 逐条点名容器与原因、组序固定（不再随机）、补齐主机/时段/结果、超量折叠。
+func TestDigestMessageListsContainers(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "dx4600"
+	_ = st.SetSetting(KeyPanelURL, "http://192.168.3.10:5923")
+
+	base := time.Date(2026, 10, 26, 1, 30, 0, 0, time.Local)
+	items := []buffered{
+		{Event: "container_died", Vars: map[string]string{"container": "qbittorrent", "message": "退出码 137"}, At: base},
+		{Event: "backup_success", Vars: map[string]string{"result": "配置快照已写入"}, At: base.Add(3 * time.Hour)},
+		{Event: "container_died", Vars: map[string]string{"container": "jellyfin", "message": "退出码 1"}, At: base.Add(90 * time.Minute)},
+		{Event: "schedule_success", Vars: map[string]string{"container": "nginx", "result": "已重启"}, At: base.Add(2 * time.Hour)},
+	}
+
+	title, text := m.digestMessage(items, time.Now())
+	if !strings.HasPrefix(title, "❌ Dockhelm 静默时段汇总 · 4 条") {
+		t.Fatalf("标题应带最坏语气图标与条数，实际 %q", title)
+	}
+	if !strings.Contains(text, "主机：dx4600") {
+		t.Fatalf("缺主机行：%q", text)
+	}
+	// 同一天只写一次日期；跨天才两边都带日期。
+	if !strings.Contains(text, "时段：10-26 01:30 → 04:30（3 小时）") {
+		t.Fatalf("时段行不对：%q", text)
+	}
+	if !strings.Contains(text, "结果：") {
+		t.Fatalf("缺结果行：%q", text)
+	}
+	for _, want := range []string{
+		"容器意外退出（2）",
+		"· qbittorrent — 退出码 137（01:30）",
+		"· jellyfin — 退出码 1（03:00）",
+		"· 配置快照已写入（04:30）",
+		"· nginx — 已重启（03:30）",
+		"面板：http://192.168.3.10:5923",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("汇总缺 %q：\n%s", want, text)
+		}
+	}
+	// 旧的计数式文案必须消失
+	if strings.Contains(text, "×2") || strings.Contains(text, "累计") {
+		t.Fatalf("不该再出现计数式旧文案：\n%s", text)
+	}
+
+	// 组序固定：同一批事件连算 20 次必须逐字节一致（旧实现走 map 会随机）。
+	for i := 0; i < 20; i++ {
+		_, again := m.digestMessage(items, time.Now())
+		if again != text {
+			t.Fatalf("第 %d 次生成的汇总顺序变了：\n%s\n---\n%s", i+1, text, again)
+		}
+	}
+	// 组序按事件目录：容器事件在计划任务之前、计划任务在备份之前。
+	if strings.Index(text, "容器意外退出（2）") > strings.Index(text, "计划任务执行成功（1）") ||
+		strings.Index(text, "计划任务执行成功（1）") > strings.Index(text, "备份完成（1）") {
+		t.Fatalf("组序应按事件目录排列：\n%s", text)
+	}
+}
+
+// 同一事件攒太多时折叠，不能把汇总变成刷屏。
+func TestDigestMessageFoldsLongGroup(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "dx4600"
+
+	base := time.Date(2026, 10, 26, 2, 0, 0, 0, time.Local)
+	items := []buffered{}
+	for i := 0; i < 6; i++ {
+		items = append(items, buffered{
+			Event: "container_died",
+			Vars:  map[string]string{"container": fmt.Sprintf("c%d", i), "message": "退出码 1"},
+			At:    base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	_, text := m.digestMessage(items, time.Now())
+	if !strings.Contains(text, "容器意外退出（6）") {
+		t.Fatalf("组头应写总数 6：\n%s", text)
+	}
+	if !strings.Contains(text, "· 另有 2 条，详见面板「推送历史」") {
+		t.Fatalf("超出部分应折叠：\n%s", text)
+	}
+	if strings.Count(text, "· c") != 4 {
+		t.Fatalf("每组最多列 4 条，实际：\n%s", text)
 	}
 }

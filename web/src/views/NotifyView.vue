@@ -4,6 +4,7 @@ import {
   Bell,
   BellOff,
   CheckCircle2,
+  Copy,
   History,
   Info,
   Loader2,
@@ -23,7 +24,7 @@ import type {
   NotifyRecord,
   NotifySettings,
 } from '@/api/types'
-import { relativeTime } from '@/utils/format'
+import { formatDateTime, relativeTime } from '@/utils/format'
 import { useToastStore } from '@/stores/toast'
 import EmptyState from '@/components/EmptyState.vue'
 import Modal from '@/components/Modal.vue'
@@ -283,6 +284,41 @@ const legacyEventLabels: Record<string, string> = {
 const eventLabel = (event: string) =>
   catalog.value.find((e) => e.event === event)?.label ?? legacyEventLabels[event] ?? event
 
+/** 正在看完整内容的那条推送记录。 */
+const detailRecord = ref<NotifyRecord | null>(null)
+
+/**
+ * 推送历史的正文摘要。
+ *
+ * 普通消息的正文第一行就是标题（compose() 拼的），直接摆出来等于把标题重复一遍，
+ * 所以先去掉；「主机 / 时间 / 面板」这三行对每一行记录都一样，在表格里也是噪音
+ * （点开完整内容才需要），一并折叠掉。剩下的才是这条记录独有的信息：
+ * 结果、详情、失败名单、静默汇总的时段与逐条明细。
+ */
+const BOILERPLATE = ['主机：', '时间：', '面板：']
+
+function bodyPreview(h: NotifyRecord): string {
+  const body = (h.body ?? '').trim()
+  if (!body) return ''
+  const lines = body.split('\n')
+  if (lines[0]?.trim() === (h.title ?? '').trim()) lines.shift()
+  return lines
+    .filter((ln) => !BOILERPLATE.some((p) => ln.trim().startsWith(p)))
+    .join('\n')
+    .trim()
+}
+
+async function copyRecord() {
+  const rec = detailRecord.value
+  if (!rec) return
+  try {
+    await navigator.clipboard.writeText(rec.body || rec.title)
+    toast.success('已复制完整内容')
+  } catch {
+    toast.error('复制失败', '浏览器拒绝了剪贴板访问')
+  }
+}
+
 /**
  * 在模板里安全地渲染「双花括号」变量写法。
  * 不能直接在模板里写字面量 —— Vue 的分隔符会在字符串闭合前抢先结束插值。
@@ -527,36 +563,65 @@ onMounted(() => void load())
           description="通知发出后（无论成功或失败）都会在这里留下一条记录。"
         />
         <div v-else class="overflow-x-auto">
-          <table class="dh-table">
+          <table class="dh-table dh-notify-hist">
             <thead>
               <tr>
-                <th class="w-[140px]">时间</th>
-                <th class="w-[150px]">渠道</th>
-                <th class="w-[150px]">事件</th>
-                <th class="w-[70px]">结果</th>
+                <th class="w-[70px] sm:w-[92px]">时间</th>
+                <th class="hidden w-[112px] sm:table-cell">渠道</th>
+                <th class="hidden w-[104px] sm:table-cell">事件</th>
+                <th
+                  class="hidden w-[86px] sm:table-cell"
+                  title="这条通知是否成功送达该渠道 —— 与事件本身的成败无关"
+                >
+                  送达
+                </th>
                 <th>内容</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="h in history" :key="h.id">
+              <tr
+                v-for="h in history"
+                :key="h.id"
+                class="cursor-pointer"
+                :title="`${h.title}\n\n${bodyPreview(h)}\n\n点击查看完整内容`"
+                @click="detailRecord = h"
+              >
                 <td class="whitespace-nowrap text-[11.5px] text-text-5">{{ relativeTime(h.ts) }}</td>
-                <td class="text-[12px] text-text-3">{{ h.channel || '—' }}</td>
-                <td>
+                <td class="hidden text-[12px] text-text-3 sm:table-cell">{{ h.channel || '—' }}</td>
+                <td class="hidden sm:table-cell">
                   <span class="dh-badge" :class="levelBadge(h.level)" :title="h.event">
                     {{ eventLabel(h.event) }}
                   </span>
                 </td>
-                <td>
+                <td class="hidden sm:table-cell">
                   <span class="dh-badge" :class="h.ok ? 'dh-badge-run' : 'dh-badge-err'">
                     <CheckCircle2 v-if="h.ok" class="h-3 w-3" />
                     <XCircle v-else class="h-3 w-3" />
                     {{ h.ok ? '成功' : '失败' }}
                   </span>
                 </td>
-                <td class="max-w-[420px]">
-                  <div class="truncate text-[12px] text-text-2" :title="h.title">{{ h.title }}</div>
-                  <div v-if="!h.ok && h.errmsg" class="mt-0.5 truncate text-[11px] text-err-text" :title="h.errmsg">
-                    {{ h.errmsg }}
+                <td class="max-w-[460px]">
+                  <!-- 2026-10-26：以前只渲染 title，后端存好的正文（主机/时间/详情/失败名单）
+                       一个字都不显示 —— 用户看到的就是「和手机收到的完全不一样」。
+                       现在标题下面带正文摘要，点整行看完整内容。
+                       窄屏放不下 5 列（硬留会只剩 70px 给内容），事件徽标与送达状态
+                       改成行内小字，把宽度全留给内容。 -->
+                  <span
+                    class="dh-badge mb-1 inline-flex sm:hidden"
+                    :class="levelBadge(h.level)"
+                  >{{ eventLabel(h.event) }}</span>
+                  <div class="truncate text-[12px] text-text-2">{{ h.title }}</div>
+                  <div
+                    v-if="bodyPreview(h)"
+                    class="mt-0.5 line-clamp-2 whitespace-pre-line text-[11px] leading-[1.5] text-text-5 sm:line-clamp-3"
+                  >
+                    {{ bodyPreview(h) }}
+                  </div>
+                  <div
+                    v-if="!h.ok && h.errmsg"
+                    class="mt-0.5 truncate text-[11px] text-err-text"
+                  >
+                    未送达：{{ h.errmsg }}
                   </div>
                 </td>
               </tr>
@@ -565,6 +630,39 @@ onMounted(() => void load())
         </div>
       </div>
     </template>
+
+    <!-- 一条推送的完整内容 -->
+    <Modal
+      :open="!!detailRecord"
+      title="推送内容"
+      subtitle="渠道实际收到的正文（含标题行）"
+      width="620px"
+      @close="detailRecord = null"
+    >
+      <div v-if="detailRecord" class="flex flex-col gap-3">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11.5px] text-text-5">
+          <span>{{ formatDateTime(detailRecord.ts) }}</span>
+          <span v-if="detailRecord.channel">渠道：{{ detailRecord.channel }}</span>
+          <span>事件：{{ eventLabel(detailRecord.event) }}</span>
+          <span :class="detailRecord.ok ? '' : 'text-err-text'">
+            送达：{{ detailRecord.ok ? '成功' : '失败' }}
+          </span>
+        </div>
+        <pre
+          class="max-h-[52vh] overflow-auto whitespace-pre-wrap break-words rounded-[8px] border border-line-1 bg-ink-800 p-3 font-mono text-[12px] leading-relaxed text-text-2"
+          >{{ detailRecord.body || detailRecord.title }}</pre
+        >
+        <div v-if="!detailRecord.ok && detailRecord.errmsg" class="text-[11.5px] text-err-text">
+          失败原因：{{ detailRecord.errmsg }}
+        </div>
+        <div class="flex justify-end gap-2">
+          <button class="dh-btn" @click="detailRecord = null">关闭</button>
+          <button class="dh-btn dh-btn-primary" @click="copyRecord">
+            <Copy class="h-3.5 w-3.5" />复制
+          </button>
+        </div>
+      </div>
+    </Modal>
 
     <!-- 渠道编辑器 -->
     <Modal

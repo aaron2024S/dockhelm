@@ -54,6 +54,40 @@ type BatchNotice struct {
 	Message string
 	// Detail 运行记录用的完整明细（与 Message 相同的信息，换行更宽松）。
 	Detail string
+	// Container 标题里点名的对象。
+	//
+	// 2026-10-26 用户反馈：标题一直显示「更新有失败 · 1 个容器」，
+	// 四条失败记录长得一模一样，看不出是哪台出的问题。原来这里塞的是
+	// fmt.Sprintf("%d 个容器", len(names))（数量），被 compose() 当成
+	// 「· <container>」拼进标题。现在改成点名：
+	//   - 失败 1 个 → 该容器名（最该知道的就是它）
+	//   - 失败多个 → 首台 + 「等 N 个」（沿用正文名单的折叠口径）
+	//   - 全部成功 → 更新的那台；多台同样「首台 等 N 个」
+	//   - 一台都没更新（全跳过）→ 「N 个容器」
+	Container string
+}
+
+// noticeSubject 计算标题里点名的对象（见 BatchNotice.Container 的规则）。
+func noticeSubject(s batchStats, failures []string, updatedNames []string) string {
+	nameOf := func(line string) string {
+		if i := strings.Index(line, "："); i > 0 {
+			return line[:i]
+		}
+		return line
+	}
+	if len(failures) > 0 {
+		if len(failures) == 1 {
+			return nameOf(failures[0])
+		}
+		return fmt.Sprintf("%s 等 %d 个", nameOf(failures[0]), len(failures))
+	}
+	if len(updatedNames) == 1 {
+		return updatedNames[0]
+	}
+	if len(updatedNames) > 1 {
+		return fmt.Sprintf("%s 等 %d 个", updatedNames[0], len(updatedNames))
+	}
+	return fmt.Sprintf("%d 个容器", s.total)
 }
 
 // maxFailureLines 汇总里最多逐行列出的失败条数；超出折叠成一行提示。
@@ -169,9 +203,10 @@ func buildBatchNotice(s batchStats) BatchNotice {
 	}
 
 	return BatchNotice{
-		Event:   event,
-		Result:  label,
-		Message: strings.Join(lines, "\n"),
-		Detail:  strings.Join(detailLines, "\n"),
+		Event:     event,
+		Result:    label,
+		Message:   strings.Join(lines, "\n"),
+		Detail:    strings.Join(detailLines, "\n"),
+		Container: noticeSubject(s, failures, updatedNames),
 	}
 }

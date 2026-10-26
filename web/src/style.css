@@ -444,6 +444,15 @@ html.light {
   .dh-sched-table {
     min-width: 1000px;
   }
+  /* 推送历史：前四列定宽，内容列吃掉余量。
+     必须用 fixed 布局 —— auto 布局下单元格的 min-content 撑不住「标题不换行」，
+     手机上整表会被撑到 515px 被迫横滑，把最该看的内容列挤出屏幕。 */
+  .dh-notify-hist {
+    table-layout: fixed;
+  }
+  .dh-notify-hist td {
+    overflow: hidden;
+  }
 
   /* 拖拽排序手柄（加速源优先级）。
      touch-action:none 是必须的 —— 手机上手指按住手柄往上下拖时，

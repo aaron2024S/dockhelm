@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -242,20 +243,176 @@ func (m *Manager) maybeFlushDigest() {
 	m.sendDigest(items)
 }
 
-func (m *Manager) sendDigest(items []buffered) {
+// maxDigestLinesPerEvent 每组事件最多逐条列几个；超出折叠成一行。
+// 静默一整夜遇上崩溃循环，缓冲里能攒几十条 —— 汇总本身不能变成刷屏。
+const maxDigestLinesPerEvent = 4
+
+// digestMessage 把静默期攒下的事件合成一条汇总。返回 (标题, 正文)。
+//
+// 2026-10-26 用户反馈：原来只有「· 容器意外退出 ×2」这种计数，晚上挂了两台容器，
+// 早上完全看不出是哪两台、什么原因；而且同一批事件每次顺序都不一样
+// （`for ev, n := range counts` 走 Go map，遍历顺序随机），
+// 标题也没有普通消息那个语气图标，混在通知列表里不像同一个来源。
+// 现在：按事件分组 → 组序固定（事件目录顺序）→ 组内逐条点名容器与原因，
+// 并补齐普通消息那套「主机 / 时段 / 结果 / 面板」头部。
+func (m *Manager) digestMessage(items []buffered, now time.Time) (string, string) {
 	if len(items) == 0 {
+		return "", ""
+	}
+
+	groups := map[string][]buffered{}
+	order := make([]string, 0, len(items))
+	for _, it := range items {
+		if _, ok := groups[it.Event]; !ok {
+			order = append(order, it.Event)
+		}
+		groups[it.Event] = append(groups[it.Event], it)
+	}
+	// 组序：按事件目录顺序（与「事件订阅」页的排列一致），目录外的按 key 兜底。
+	rank := make(map[string]int, len(EventCatalog))
+	for i, d := range EventCatalog {
+		rank[d.Event] = i
+	}
+	rankOf := func(ev string) int {
+		if r, ok := rank[ev]; ok {
+			return r
+		}
+		return len(EventCatalog) + 1
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		ri, rj := rankOf(order[i]), rankOf(order[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return order[i] < order[j]
+	})
+
+	// 标题图标取「最坏语气」：汇总里只要有一条失败，就不该挂个提示图标。
+	toneRank := map[string]int{ToneSuccess: 0, ToneInfo: 1, ToneWarning: 2, ToneFailed: 3}
+	worst := ToneSuccess
+	toneCount := map[string]int{}
+	for _, it := range items {
+		t := ToneOf(it.Event)
+		toneCount[t]++
+		if toneRank[t] > toneRank[worst] {
+			worst = t
+		}
+	}
+
+	title := fmt.Sprintf("%s Dockhelm 静默时段汇总 · %d 条", toneIcon[worst], len(items))
+
+	// 时段：首条与末条的实际时间（比写死「23:00–07:00」更准 —— 静默期可能是自定义的，
+	// 而且最后一条之后到汇总之间还隔着一段轮询间隔）。
+	first, last := items[0].At, items[0].At
+	for _, it := range items[1:] {
+		if it.At.Before(first) {
+			first = it.At
+		}
+		if it.At.After(last) {
+			last = it.At
+		}
+	}
+
+	lines := []string{title, "主机：" + m.host}
+	if first.Format("2006-01-02") == last.Format("2006-01-02") {
+		lines = append(lines, fmt.Sprintf("时段：%s → %s（%s）",
+			first.Format("01-02 15:04"), last.Format("15:04"), humanSpan(last.Sub(first))))
+	} else {
+		lines = append(lines, fmt.Sprintf("时段：%s → %s（%s）",
+			first.Format("01-02 15:04"), last.Format("01-02 15:04"), humanSpan(last.Sub(first))))
+	}
+	if parts := toneCountParts(toneCount); parts != "" {
+		lines = append(lines, "结果："+parts)
+	}
+
+	for _, ev := range order {
+		list := groups[ev]
+		lines = append(lines, fmt.Sprintf("%s（%d）", Label(ev), len(list)))
+		shown := list
+		if len(shown) > maxDigestLinesPerEvent {
+			shown = shown[:maxDigestLinesPerEvent]
+		}
+		for _, it := range shown {
+			lines = append(lines, digestItemLine(it))
+		}
+		if rest := len(list) - len(shown); rest > 0 {
+			lines = append(lines, fmt.Sprintf("· 另有 %d 条，详见面板「推送历史」", rest))
+		}
+	}
+
+	if u := m.st.GetSetting(KeyPanelURL, ""); u != "" {
+		lines = append(lines, "面板："+u)
+	}
+	return title, truncateNotifyText(strings.Join(lines, "\n"))
+}
+
+// digestItemLine 汇总里的一行明细：「· 容器名 — 原因（03:12）」。
+// 缺项就少一段，绝不输出「· — （03:12）」这种占位。
+func digestItemLine(it buffered) string {
+	container := strings.TrimSpace(it.Vars["container"])
+	detail := strings.TrimSpace(it.Vars["message"])
+	if i := strings.IndexByte(detail, '\n'); i >= 0 {
+		detail = strings.TrimSpace(detail[:i])
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(it.Vars["result"])
+	}
+	hm := it.At.Format("15:04")
+	switch {
+	case container != "" && detail != "":
+		return fmt.Sprintf("· %s — %s（%s）", container, detail, hm)
+	case container != "":
+		return fmt.Sprintf("· %s（%s）", container, hm)
+	case detail != "":
+		return fmt.Sprintf("· %s（%s）", detail, hm)
+	default:
+		return "· " + hm
+	}
+}
+
+// toneCountParts 把语气计数写成「成功 3 · 失败 1」，零项不出现。
+func toneCountParts(counts map[string]int) string {
+	names := []struct {
+		tone string
+		word string
+	}{
+		{ToneFailed, "失败"},
+		{ToneWarning, "警告"},
+		{ToneInfo, "提示"},
+		{ToneSuccess, "成功"},
+	}
+	out := []string{}
+	for _, n := range names {
+		if counts[n.tone] > 0 {
+			out = append(out, fmt.Sprintf("%s %d", n.word, counts[n.tone]))
+		}
+	}
+	return strings.Join(out, " · ")
+}
+
+// humanSpan 把时长写成「7 小时 46 分」，不足 1 分钟按 1 分钟算。
+func humanSpan(d time.Duration) string {
+	if d < time.Minute {
+		return "不足 1 分钟"
+	}
+	d = d.Round(time.Minute)
+	h, m := int(d.Hours()), int(d.Minutes())%60
+	switch {
+	case h == 0:
+		return fmt.Sprintf("%d 分钟", m)
+	case m == 0:
+		return fmt.Sprintf("%d 小时", h)
+	default:
+		return fmt.Sprintf("%d 小时 %d 分", h, m)
+	}
+}
+
+func (m *Manager) sendDigest(items []buffered) {
+	title, text := m.digestMessage(items, time.Now())
+	if title == "" {
 		return
 	}
-	counts := map[string]int{}
-	for _, it := range items {
-		counts[it.Event]++
-	}
-	lines := []string{}
-	for ev, n := range counts {
-		lines = append(lines, fmt.Sprintf("· %s ×%d", Label(ev), n))
-	}
-	body := fmt.Sprintf("静默时段内累计 %d 条通知：\n%s", len(items), strings.Join(lines, "\n"))
-	m.deliver("digest", LevelNormal, "静默时段汇总（"+strconv.Itoa(len(items))+" 条）", body, nil, true)
+	m.deliver("digest", LevelNormal, title, text, nil, true)
 }
 
 // ---------- 投递 ----------

@@ -1036,8 +1036,10 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	}
 
 	// 通知**无论几个容器都要发**：这是这一轮更新的唯一回执，单台与多台同一条文案。
+	// container 变量决定标题里的「· xxx」：必须点名具体容器（notice.Container），
+	// 以前塞的是「N 个容器」这种数量，多条失败记录在推送历史里完全分不出来。
 	u.notify.Emit(notice.Event, map[string]string{
-		"container": fmt.Sprintf("%d 个容器", len(names)),
+		"container": notice.Container,
 		"result":    notice.Result,
 		"message":   notice.Message,
 	})

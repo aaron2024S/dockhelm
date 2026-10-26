@@ -223,3 +223,32 @@ func TestShortFailureLineNoColon(t *testing.T) {
 		t.Fatalf("无结构错误应截到 40 字：%q", got)
 	}
 }
+
+// 标题里点名谁：2026-10-26 用户反馈「四条更新失败长得一模一样，都写 1 个容器」。
+// 标题的「· xxx」来自 notice.Container，必须是容器名，不能是数量。
+func TestNoticeContainerNamesTheSubject(t *testing.T) {
+	cases := []struct {
+		name string
+		in   batchStats
+		want string
+	}{
+		{"单台失败点名该容器", batchStats{total: 1, failed: 1, failures: []string{"jellyfin：拉取失败"}}, "jellyfin"},
+		{"多台失败首台加等N个", batchStats{total: 4, failed: 3, failures: []string{"a：拉取失败", "b：拉取失败", "c：拉取失败"}}, "a 等 3 个"},
+		{"单台成功点名该容器", batchStats{total: 1, updated: 1, updatedNames: []string{"nginx"}}, "nginx"},
+		{"多台成功首台加等N个", batchStats{total: 3, updated: 3, updatedNames: []string{"a", "b", "c"}}, "a 等 3 个"},
+		{"全部跳过才是数量", batchStats{total: 3, skipped: 3}, "3 个容器"},
+	}
+	for _, c := range cases {
+		if got := buildBatchNotice(c.in).Container; got != c.want {
+			t.Errorf("%s：Container 应为 %q，实际 %q", c.name, c.want, got)
+		}
+	}
+	// 名字里带全角冒号以外的冒号不能把名字截错
+	n := buildBatchNotice(batchStats{
+		total: 1, failed: 1,
+		failures: []string{"my-container：拉取失败：pull failed: timeout"},
+	})
+	if n.Container != "my-container" {
+		t.Fatalf("应从第一个全角冒号处切名字，实际 %q", n.Container)
+	}
+}
