@@ -3,6 +3,8 @@ package notify
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -541,5 +543,115 @@ func TestDigestKeepsPerItemForNonUpdateEvents(t *testing.T) {
 	}
 	if strings.Contains(text, "次更新") {
 		t.Fatalf("容器类事件不该走更新聚合：\n%s", text)
+	}
+}
+
+// 静默时段的边界与「谁能穿透」。
+//
+// 2026-10-27 用户反馈：「设的 23 点开始，但 23 点之后还能收到一条消息，之后才算静默期」。
+// 这组用例把两件事钉死，好判断到底是边界算错了、还是那条本来就是紧急事件：
+//  1. 23:00:00 整点就已经属于静默（不是 23:01、也不是 23:00 之后一分钟）；
+//  2. 静默期内只有 urgent 事件会当场发，普通事件一定进汇总缓冲。
+func TestQuietHoursBoundary(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	_ = st.SetSetting(KeyQuietEnabled, "1")
+	_ = st.SetSetting(KeyQuietStart, "23:00")
+	_ = st.SetSetting(KeyQuietEnd, "07:00")
+
+	day := func(h, mn int) time.Time { return time.Date(2026, 10, 27, h, mn, 0, 0, time.Local) }
+	cases := []struct {
+		at   time.Time
+		want bool
+	}{
+		{day(22, 59), false},
+		{day(23, 0), true}, // 整点即静默
+		{day(23, 59), true},
+		{day(0, 0), true}, // 跨天
+		{day(6, 59), true},
+		{day(7, 0), false}, // 结束时刻已恢复
+		{day(12, 0), false},
+	}
+	for _, c := range cases {
+		if got := m.inQuietHours(c.at); got != c.want {
+			t.Errorf("%s 的静默判定应为 %v，实际 %v", c.at.Format("15:04"), c.want, got)
+		}
+	}
+
+	// 关掉总开关就不该静默
+	_ = st.SetSetting(KeyQuietEnabled, "0")
+	if m.inQuietHours(day(23, 30)) {
+		t.Fatal("关掉静默时段后不该再判为静默")
+	}
+}
+
+// 静默期内：普通事件进缓冲（不发），紧急事件当场发 —— 这是「23 点后还收到一条」的唯一正解。
+func TestQuietBuffersNormalButSendsUrgent(t *testing.T) {
+	var got int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got++
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	st, err := store.Open(t.TempDir() + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 把静默窗口设成「现在前后各一小时」，这样当前时刻一定在静默期内（不看测试机的钟点）
+	now := time.Now()
+	hm := func(d time.Duration) string { return now.Add(d).Format("15:04") }
+	_ = st.SetSetting(KeyQuietEnabled, "1")
+	_ = st.SetSetting(KeyQuietStart, hm(-time.Hour))
+	_ = st.SetSetting(KeyQuietEnd, hm(time.Hour))
+	_ = st.SetSetting(KeyEnabled, "1")
+	_ = st.SetSetting(KeyQuietUrgent, "1")
+
+	if _, err := st.CreateChannel(store.Channel{
+		Name: "test", Type: "webhook", Enabled: true,
+		Config: map[string]any{"url": srv.URL, "method": "POST",
+			"contentType": "application/json", "body": `{"t":"{{title}}"}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(st, nil)
+	m.host = "h"
+	if !m.inQuietHours(time.Now()) {
+		t.Fatalf("窗口 %s–%s 应覆盖当前时刻", st.GetSetting(KeyQuietStart, ""), st.GetSetting(KeyQuietEnd, ""))
+	}
+
+	// 普通事件：不发，进缓冲
+	m.emit("batch_update_done", map[string]string{"container": "nginx", "result": "更新完成"})
+	if got != 0 {
+		t.Fatalf("静默期内普通事件不该直接发出，实际发了 %d 次", got)
+	}
+	m.mu.Lock()
+	buffered := len(m.buffer)
+	m.mu.Unlock()
+	if buffered != 1 {
+		t.Fatalf("普通事件应进缓冲，实际 buffer=%d", buffered)
+	}
+
+	// 紧急事件：当场发
+	m.emit("container_died", map[string]string{"container": "qbittorrent", "message": "退出码 137"})
+	if got != 1 {
+		t.Fatalf("紧急事件在静默期应照常发出，实际发了 %d 次", got)
+	}
+
+	// 关掉「紧急照发」后，紧急事件也进缓冲
+	_ = st.SetSetting(KeyQuietUrgent, "0")
+	m.emit("health_failed", map[string]string{"container": "jellyfin", "message": "unhealthy"})
+	if got != 1 {
+		t.Fatalf("关掉紧急照发后不该再发，实际发了 %d 次", got)
+	}
+	m.mu.Lock()
+	buffered = len(m.buffer)
+	m.mu.Unlock()
+	if buffered != 2 {
+		t.Fatalf("关掉紧急照发后紧急事件也应进缓冲，实际 buffer=%d", buffered)
 	}
 }

@@ -649,10 +649,14 @@ func (m *Manager) deliver(event, level, titleOverride, textOverride string, vars
 			m.st.AddNotifyRecord(event, level, title, text, ch.Name, false, msg)
 		}
 	}
-	m.bus.Publish("notify", "delivered", "info", map[string]any{
-		"event": event, "level": level, "title": title, "text": text,
-		"channels": len(channels), "sent": sent,
-	})
+	// bus 可能为 nil（单测里 New(st, nil)）——Emit 跑在独立 goroutine 里，
+	// 这里 panic 会直接把整个进程带走，所以宁可少推一条事件。
+	if m.bus != nil {
+		m.bus.Publish("notify", "delivered", "info", map[string]any{
+			"event": event, "level": level, "title": title, "text": text,
+			"channels": len(channels), "sent": sent,
+		})
+	}
 }
 
 // sendToChannel 只发某个渠道（测试按钮用）。

@@ -475,7 +475,9 @@ onMounted(() => void load())
             <UiSwitch v-model="settings.quietUrgentSend" />
             <span class="text-[12.5px]">
               紧急事件在静默期照常发送
-              <div class="text-[11px] text-text-5">更新失败、容器意外退出、登录告警属于紧急事件。</div>
+              <div class="text-[11px] leading-relaxed text-text-5">
+                更新失败、容器意外退出／崩溃循环、健康检查失败、备份失败、顺序启动失败、还原完成、Docker 连接断开或恢复、登录告警都属于紧急事件。关掉后它们也会攒进时段结束后的那一条汇总。
+              </div>
             </span>
           </label>
 
