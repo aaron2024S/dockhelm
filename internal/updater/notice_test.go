@@ -252,3 +252,31 @@ func TestNoticeContainerNamesTheSubject(t *testing.T) {
 		t.Fatalf("应从第一个全角冒号处切名字，实际 %q", n.Container)
 	}
 }
+
+// 静默汇总要跨多次更新求和，所以统计必须结构化带出去（notify 按同名键读取）。
+func TestNoticeAggFillsDigestVars(t *testing.T) {
+	n := buildBatchNotice(batchStats{
+		total: 4, updated: 3, failed: 1, reclaimed: 2048,
+		updatedNames: []string{"redis", "nginx"},
+		failures:     []string{"qbittorrent：拉取失败：timeout"},
+	})
+	vars := map[string]string{}
+	n.Agg.FillVars(vars)
+	want := map[string]string{
+		VarAggTotal: "4", VarAggUpdated: "3", VarAggFailed: "1", VarAggSkipped: "0",
+		VarAggReclaimed: "2048",
+		VarAggNames:     "nginx、redis",
+		VarAggFailures:  "qbittorrent：拉取失败：timeout",
+	}
+	for k, w := range want {
+		if vars[k] != w {
+			t.Errorf("%s 应为 %q，实际 %q", k, w, vars[k])
+		}
+	}
+	// 没更新任何容器时不能留空值或 "0 个" 之类
+	empty := map[string]string{}
+	buildBatchNotice(batchStats{total: 2, skipped: 2}).Agg.FillVars(empty)
+	if empty[VarAggNames] != "" || empty[VarAggFailures] != "" {
+		t.Fatalf("没有名单时应该是空串：%v", empty)
+	}
+}

@@ -23,6 +23,7 @@ package updater
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/aaron2024s/dockhelm/internal/dockerx"
@@ -65,6 +66,46 @@ type BatchNotice struct {
 	//   - 全部成功 → 更新的那台；多台同样「首台 等 N 个」
 	//   - 一台都没更新（全跳过）→ 「N 个容器」
 	Container string
+	// Agg 静默时段汇总用的结构化数字。
+	//
+	// 单条推送的文案里这些数字已经写进 Message 了，但汇总要**跨多次更新求和**
+	// （2026-10-27 用户：5 条一模一样的长句，太长）。从拼好的中文串里反解数字
+	// 太脆，所以原样带出去给 notify 的 digestMessage 消费。
+	Agg Agg
+}
+
+// Agg 一次更新的可累加统计。
+type Agg struct {
+	Total     int
+	Updated   int
+	Failed    int
+	Skipped   int
+	Reclaimed int64    // 回收的旧镜像空间（字节）
+	Names     []string // 更新的容器（已排序）
+	Failures  []string // 「容器名：原因」（已排序、已压缩）
+}
+
+// 汇总变量的键名。notify 包按同名常量读取（两边必须一致）。
+const (
+	VarAggTotal     = "aggTotal"
+	VarAggUpdated   = "aggUpdated"
+	VarAggFailed    = "aggFailed"
+	VarAggSkipped   = "aggSkipped"
+	VarAggReclaimed = "aggReclaimed"
+	VarAggNames     = "aggNames"
+	VarAggFailures  = "aggFailures"
+)
+
+// FillVars 把统计写进事件变量表（Emit 的 map）。
+// 名单用「、」连接、失败明细用换行分隔 —— 都是已有文案里的天然分隔符。
+func (a Agg) FillVars(vars map[string]string) {
+	vars[VarAggTotal] = strconv.Itoa(a.Total)
+	vars[VarAggUpdated] = strconv.Itoa(a.Updated)
+	vars[VarAggFailed] = strconv.Itoa(a.Failed)
+	vars[VarAggSkipped] = strconv.Itoa(a.Skipped)
+	vars[VarAggReclaimed] = strconv.FormatInt(a.Reclaimed, 10)
+	vars[VarAggNames] = strings.Join(a.Names, "、")
+	vars[VarAggFailures] = strings.Join(a.Failures, "\n")
 }
 
 // noticeSubject 计算标题里点名的对象（见 BatchNotice.Container 的规则）。
@@ -208,5 +249,9 @@ func buildBatchNotice(s batchStats) BatchNotice {
 		Message:   strings.Join(lines, "\n"),
 		Detail:    strings.Join(detailLines, "\n"),
 		Container: noticeSubject(s, failures, updatedNames),
+		Agg: Agg{
+			Total: s.total, Updated: s.updated, Failed: s.failed, Skipped: s.skipped,
+			Reclaimed: s.reclaimed, Names: updatedNames, Failures: failures,
+		},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/store"
+	"github.com/aaron2024s/dockhelm/internal/updater"
 )
 
 // 2026-10-11 用户反馈沉淀：
@@ -448,5 +449,97 @@ func TestDigestMessageFoldsLongGroup(t *testing.T) {
 	}
 	if strings.Count(text, "· c") != 4 {
 		t.Fatalf("每组最多列 4 条，实际：\n%s", text)
+	}
+}
+
+// 更新类事件的汇总要「求和」，不是一条一条重复长句。
+// 2026-10-27 用户原话：「现在这个静默通知太长了吧……其实可以像单条消息那样总结起来」——
+// 夜里 5 次自动更新，每条都是一模一样的一句「共 1 个容器：更新 1 个、失败 0 个…」。
+func TestDigestAggregatesUpdateRounds(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "DX4600"
+	_ = st.SetSetting(KeyPanelURL, "http://192.168.3.10:5923")
+
+	base := time.Date(2026, 10, 27, 0, 42, 0, 0, time.Local)
+	round := func(name string, min int, reclaimed int64) buffered {
+		v := map[string]string{}
+		updater.Agg{Total: 1, Updated: 1, Reclaimed: reclaimed, Names: []string{name}}.FillVars(v)
+		v["container"] = name
+		v["result"] = "更新完成"
+		v["message"] = "共 1 个容器：更新 1 个、失败 0 个、已是最新/跳过 0 个"
+		return buffered{Event: "batch_update_done", Vars: v, At: base.Add(time.Duration(min) * time.Minute)}
+	}
+	const gb = int64(1024 * 1024 * 1024)
+	items := []buffered{
+		round("rsshub", 0, gb+gb/2),
+		round("iptv-manager", 146, gb),
+		round("iptv-manager", 214, gb), // 同一台更新两次：名单要能去重
+		round("msedge", 283, 3*gb),
+		round("nginx", 350, 0),
+	}
+
+	_, text := m.digestMessage(items, time.Now())
+	if !strings.Contains(text, "更新完成（5）") {
+		t.Fatalf("组头应写总条数 5：\n%s", text)
+	}
+	if !strings.Contains(text, "共 5 次更新：更新 5 个、失败 0 个、已是最新/跳过 0 个，清理旧镜像回收 6.5 GB") {
+		t.Fatalf("统计句（含回收空间求和）不对：\n%s", text)
+	}
+	if !strings.Contains(text, "更新的容器：iptv-manager、msedge、nginx、rsshub") {
+		t.Fatalf("名单应去重排序：\n%s", text)
+	}
+	// 旧的逐条长句必须消失
+	if strings.Contains(text, "· rsshub —") || strings.Contains(text, "共 1 个容器") {
+		t.Fatalf("不该再逐条重复统计句：\n%s", text)
+	}
+	// 行数受控：标题/主机/时段/结果 + 组头 + 统计 + 名单 + 面板 = 8 行
+	if n := len(strings.Split(text, "\n")); n > 8 {
+		t.Fatalf("汇总行数应 ≤8，实际 %d：\n%s", n, text)
+	}
+
+	// 有失败的那组：统计句依旧求和，但失败容器与原因要逐条列出来。
+	fv := map[string]string{}
+	updater.Agg{Total: 2, Updated: 1, Failed: 1, Names: []string{"nginx"},
+		Failures: []string{"jellyfin：拉取失败"}}.FillVars(fv)
+	fv["message"] = "共 2 个容器：更新 1 个、失败 1 个、已是最新/跳过 0 个"
+	items2 := append([]buffered{{Event: "batch_update_failed", Vars: fv, At: base.Add(300 * time.Minute)}}, items[:2]...)
+	_, text2 := m.digestMessage(items2, time.Now())
+	if !strings.Contains(text2, "更新有失败（1）") || !strings.Contains(text2, "共 1 次更新：更新 1 个、失败 1 个、已是最新/跳过 0 个（05:42）") {
+		t.Fatalf("单条失败也应走聚合、并补上时刻：\n%s", text2)
+	}
+	if !strings.Contains(text2, "失败的容器：\n· jellyfin：拉取失败") {
+		t.Fatalf("失败原因必须列出来：\n%s", text2)
+	}
+}
+
+// 没有结构化统计的事件（容器退出、备份…）保持逐条列出 —— 那类事件的
+// 「哪台、什么原因」本身就是全部信息，求和反而丢东西。
+func TestDigestKeepsPerItemForNonUpdateEvents(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir + "/db.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st, nil)
+	m.host = "DX4600"
+
+	base := time.Date(2026, 10, 27, 1, 0, 0, 0, time.Local)
+	items := []buffered{
+		{Event: "container_died", Vars: map[string]string{"container": "a", "message": "退出码 1"}, At: base},
+		{Event: "container_died", Vars: map[string]string{"container": "b", "message": "退出码 2"}, At: base.Add(time.Minute)},
+	}
+	_, text := m.digestMessage(items, time.Now())
+	if !strings.Contains(text, "容器意外退出（2）") ||
+		!strings.Contains(text, "· a — 退出码 1（01:00）") ||
+		!strings.Contains(text, "· b — 退出码 2（01:01）") {
+		t.Fatalf("容器类事件应逐条列出：\n%s", text)
+	}
+	if strings.Contains(text, "次更新") {
+		t.Fatalf("容器类事件不该走更新聚合：\n%s", text)
 	}
 }

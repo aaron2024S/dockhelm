@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/aaron2024s/dockhelm/internal/bus"
+	"github.com/aaron2024s/dockhelm/internal/dockerx"
 	"github.com/aaron2024s/dockhelm/internal/store"
 	"github.com/aaron2024s/dockhelm/internal/version"
 )
@@ -247,6 +248,131 @@ func (m *Manager) maybeFlushDigest() {
 // 静默一整夜遇上崩溃循环，缓冲里能攒几十条 —— 汇总本身不能变成刷屏。
 const maxDigestLinesPerEvent = 4
 
+// maxDigestFailures 聚合块里最多逐条列几台失败容器。
+const maxDigestFailures = 6
+
+// 更新类事件的聚合变量名 —— 必须与 updater.Agg.FillVars 写入的键一致。
+// 不直接 import updater：notify 是被它依赖的下游（靠 Notifier 接口解耦），
+// 反向引用会把这条线绕回来。键名改动两边要一起改。
+const (
+	varAggUpdated   = "aggUpdated"
+	varAggFailed    = "aggFailed"
+	varAggSkipped   = "aggSkipped"
+	varAggReclaimed = "aggReclaimed"
+	varAggNames     = "aggNames"
+	varAggFailures  = "aggFailures"
+)
+
+// isUpdateEvent 这类事件带结构化统计，可以跨多条求和。
+func isUpdateEvent(ev string) bool {
+	return ev == "batch_update_done" || ev == "batch_update_failed"
+}
+
+// updateGroupLines 把同一组更新事件压成「组头 + 合计统计 + 名单」。
+//
+// 2026-10-27 用户反馈：夜里 5 次自动更新，汇总里是 5 行一模一样的长句
+// （「· rsshub — 共 1 个容器：更新 1 个、失败 0 个、已是最新/跳过 0 个，清理旧镜像回收 1.3 GB」），
+// 「太长了吧，其实可以像单条消息那样总结起来」。求和后就是一条统计句 + 一份名单，
+// 和单次更新的文案同构。
+//
+// 只有一条时也走这里：至少能把失败容器与原因列出来（逐条模式只取 message 首行）。
+//
+// ok=false 表示这批事件没带结构化统计（老版本攒下的、或别的生产者），
+// 调用方回落到逐条列出。
+func updateGroupLines(ev string, list []buffered) ([]string, bool) {
+	var updated, failed, skipped int
+	var reclaimed int64
+	names, failures := []string{}, []string{}
+
+	for _, it := range list {
+		u, err := strconv.Atoi(it.Vars[varAggUpdated])
+		if err != nil {
+			return nil, false
+		}
+		f, err := strconv.Atoi(it.Vars[varAggFailed])
+		if err != nil {
+			return nil, false
+		}
+		sk, err := strconv.Atoi(it.Vars[varAggSkipped])
+		if err != nil {
+			return nil, false
+		}
+		rc, _ := strconv.ParseInt(it.Vars[varAggReclaimed], 10, 64)
+		updated += u
+		failed += f
+		skipped += sk
+		reclaimed += rc
+		names = append(names, splitJoin(it.Vars[varAggNames], "、")...)
+		failures = append(failures, splitJoin(it.Vars[varAggFailures], "\n")...)
+	}
+
+	lines := []string{fmt.Sprintf("%s（%d）", Label(ev), len(list))}
+	stats := fmt.Sprintf("共 %d 次更新：更新 %d 个、失败 %d 个、已是最新/跳过 %d 个",
+		len(list), updated, failed, skipped)
+	if reclaimed > 0 {
+		stats += "，清理旧镜像回收 " + dockerx.HumanBytes(reclaimed)
+	}
+	// 只有一次更新时，组头看不出是哪一轮 —— 把时刻补在统计句尾部。
+	if len(list) == 1 {
+		stats += "（" + list[0].At.Format("15:04") + "）"
+	}
+	lines = append(lines, stats)
+
+	if names = uniqueSorted(names); len(names) > 0 {
+		shown := names
+		if len(shown) > 12 {
+			shown = shown[:12]
+		}
+		line := "更新的容器：" + strings.Join(shown, "、")
+		if rest := len(names) - len(shown); rest > 0 {
+			line += fmt.Sprintf(" 等 %d 个", len(names))
+		}
+		lines = append(lines, line)
+	}
+	if failures = uniqueSorted(failures); len(failures) > 0 {
+		lines = append(lines, "失败的容器：")
+		shown := failures
+		if len(shown) > maxDigestFailures {
+			shown = shown[:maxDigestFailures]
+		}
+		for _, f := range shown {
+			lines = append(lines, "· "+f)
+		}
+		if rest := len(failures) - len(shown); rest > 0 {
+			lines = append(lines, fmt.Sprintf("· 另有 %d 条，详见面板「推送历史」", rest))
+		}
+	}
+	return lines, true
+}
+
+// splitJoin 按分隔符切开并丢掉空串。
+func splitJoin(s, sep string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	out := []string{}
+	for _, p := range strings.Split(s, sep) {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// uniqueSorted 去重 + 排序（汇总里的名单必须与遍历顺序无关）。
+func uniqueSorted(in []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // digestMessage 把静默期攒下的事件合成一条汇总。返回 (标题, 正文)。
 //
 // 2026-10-26 用户反馈：原来只有「· 容器意外退出 ×2」这种计数，晚上挂了两台容器，
@@ -327,6 +453,13 @@ func (m *Manager) digestMessage(items []buffered, now time.Time) (string, string
 
 	for _, ev := range order {
 		list := groups[ev]
+		// 更新事件：求和成一条统计句，别刷同样的长句（1 条也走，这样失败原因能列出来）
+		if isUpdateEvent(ev) {
+			if block, ok := updateGroupLines(ev, list); ok {
+				lines = append(lines, block...)
+				continue
+			}
+		}
 		lines = append(lines, fmt.Sprintf("%s（%d）", Label(ev), len(list)))
 		shown := list
 		if len(shown) > maxDigestLinesPerEvent {
