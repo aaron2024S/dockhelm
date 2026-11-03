@@ -16,7 +16,7 @@ import (
 func (s *Server) hListBackups(w http.ResponseWriter, r *http.Request) {
 	items, err := s.bk.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"backups": items})
@@ -52,7 +52,7 @@ func (s *Server) hSnapshot(w http.ResponseWriter, r *http.Request) {
 			"container": in.Container, "result": "备份失败",
 			"message": backup.SnapshotFailReason(err),
 		})
-		writeErr(w, http.StatusBadGateway, "备份失败："+err.Error())
+		writeErr(w, http.StatusBadGateway, "备份失败："+errText(err))
 		return
 	}
 	writeOK(w, item)
@@ -76,7 +76,7 @@ func (s *Server) hSnapshotAll(w http.ResponseWriter, r *http.Request) {
 	if len(names) == 0 {
 		list, err := s.dc.ListContainers(ctx)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, "读取容器列表失败："+err.Error())
+			writeErr(w, http.StatusBadGateway, "读取容器列表失败："+errText(err))
 			return
 		}
 		for _, c := range list {
@@ -119,7 +119,7 @@ func (s *Server) hImportBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.bk.Import(in.Container, in.TS, in.Content)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, errText(err))
 		return
 	}
 	writeOK(w, item)
@@ -136,7 +136,7 @@ func (s *Server) hBackupDiff(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	diff, err := s.bk.Diff(ctx, container, ts)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"diff": diff, "count": len(diff)})
@@ -152,7 +152,7 @@ func (s *Server) hExportBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.bk.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	for _, it := range items {
@@ -161,7 +161,7 @@ func (s *Server) hExportBackup(w http.ResponseWriter, r *http.Request) {
 		}
 		b, err := os.ReadFile(it.Path)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			writeErr(w, http.StatusInternalServerError, errText(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -185,7 +185,7 @@ func (s *Server) hExportBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.bk.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	picked := []backup.SnapshotItem{}
@@ -314,7 +314,7 @@ func (s *Server) hDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	container := pathParam(r, "container")
 	ts := pathParam(r, "ts")
 	if err := s.bk.Delete(container, ts); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true})
@@ -338,7 +338,7 @@ func (s *Server) hListProjects(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	projects, err := s.bk.ListProjects(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{
@@ -372,7 +372,7 @@ func (s *Server) hProjectSnapshot(w http.ResponseWriter, r *http.Request) {
 			"container": in.Project, "result": "项目备份失败",
 			"message": backup.SnapshotFailReason(err),
 		})
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	writeOK(w, item)
@@ -412,7 +412,7 @@ func (s *Server) hProjectBackupDownload(w http.ResponseWriter, r *http.Request) 
 			}
 			b, err := os.ReadFile(f.Path)
 			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
+				writeErr(w, http.StatusInternalServerError, errText(err))
 				return
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -464,7 +464,7 @@ func (s *Server) hDeleteProjectBackup(w http.ResponseWriter, r *http.Request) {
 	project := pathParam(r, "project")
 	ts := pathParam(r, "ts")
 	if err := s.bk.DeleteProjectBackup(project, ts); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true})
@@ -490,7 +490,7 @@ func (s *Server) hReadProjectFile(w http.ResponseWriter, r *http.Request) {
 
 	projects, err := s.bk.ListProjects(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	clean := filepath.Clean(p)
@@ -517,7 +517,7 @@ func (s *Server) hReadProjectFile(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := os.ReadFile(local)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{

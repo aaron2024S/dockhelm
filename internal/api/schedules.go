@@ -33,7 +33,7 @@ func cronPresets() []cronPreset {
 func (s *Server) hListSchedules(w http.ResponseWriter, r *http.Request) {
 	list, err := s.st.ListSchedules()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	next := s.sch.NextRuns()
@@ -76,7 +76,7 @@ func (s *Server) validateSchedule(in scheduleReq) (string, bool) {
 func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	var in scheduleReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if msg, ok := s.validateSchedule(in); !ok {
@@ -88,11 +88,11 @@ func (s *Server) hCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		Targets: in.Targets, Enabled: in.Enabled,
 	})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	if err := s.sch.Reload(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "任务已保存但调度器重载失败："+err.Error())
+		writeErr(w, http.StatusInternalServerError, "任务已保存但调度器重载失败："+errText(err))
 		return
 	}
 	s.st.AddRunLog("schedule", created.Name, "success", "已创建计划任务", created.Cron)
@@ -125,11 +125,11 @@ func (s *Server) hUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	cur.Targets = in.Targets
 	cur.Enabled = in.Enabled
 	if err := s.st.UpdateSchedule(*cur); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	if err := s.sch.Reload(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "任务已保存但调度器重载失败："+err.Error())
+		writeErr(w, http.StatusInternalServerError, "任务已保存但调度器重载失败："+errText(err))
 		return
 	}
 	writeOK(w, cur)
@@ -152,7 +152,7 @@ func (s *Server) hSetScheduleEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 	var in scheduleEnabledReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	cur, err := s.st.GetSchedule(id)
@@ -162,11 +162,11 @@ func (s *Server) hSetScheduleEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 	cur.Enabled = in.Enabled
 	if err := s.st.UpdateSchedule(*cur); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	if err := s.sch.Reload(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "状态已保存但调度器重载失败："+err.Error())
+		writeErr(w, http.StatusInternalServerError, "状态已保存但调度器重载失败："+errText(err))
 		return
 	}
 	writeOK(w, cur)
@@ -179,7 +179,7 @@ func (s *Server) hDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.st.DeleteSchedule(id); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	_ = s.sch.Reload()

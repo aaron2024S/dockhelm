@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Archive,
@@ -26,6 +26,7 @@ import { useAppStore } from '@/stores/app'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useToastStore } from '@/stores/toast'
 import { api, openStream } from '@/api/client'
+import Modal from '@/components/Modal.vue'
 import type { BackupStats, OverviewResponse, Schedule } from '@/api/types'
 
 const app = useAppStore()
@@ -91,6 +92,11 @@ const nav: NavItem[] = [
 
 const collapsed = ref(localStorage.getItem('dockhelm.side') === 'collapsed')
 const mobileOpen = ref(false)
+/** 手机上展开的搜索行（顶栏放不下输入框时的替代方案）。 */
+const mobileSearch = ref(false)
+const mobileSearchInput = ref<HTMLInputElement | null>(null)
+/** 「Docker 离线」说明弹窗。 */
+const dockerHelp = ref(false)
 const searchText = ref('')
 const hostName = ref('')
 const counts = ref<Record<CountKey, number>>({
@@ -110,6 +116,33 @@ const counts = ref<Record<CountKey, number>>({
 const updatesAvailable = computed(() => counts.value.updates)
 
 watch(collapsed, (v) => localStorage.setItem('dockhelm.side', v ? 'collapsed' : 'open'))
+
+/**
+ * 移动端抽屉打开时锁住背景滚动。
+ *
+ * 原来只画了一层遮罩：手指一划，底下的页面还在滚，抽屉却纹丝不动，
+ * 观感上像「卡住了」。
+ */
+watch(mobileOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
+
+/** ESC：先关搜索行、再关抽屉（层次由浅到深）。 */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (mobileSearch.value) {
+    mobileSearch.value = false
+    return
+  }
+  if (mobileOpen.value) mobileOpen.value = false
+}
+
+/** 展开手机搜索行后自动聚焦（点击展开不会触发浏览器的自动聚焦）。 */
+watch(mobileSearch, async (open) => {
+  if (!open) return
+  await nextTick()
+  mobileSearchInput.value?.focus()
+})
 
 /** 顶栏中间那行小字（设计稿每屏都不一样：设置类页面统一带「设置 · 」前缀）。 */
 const contextLabel = computed(() => {
@@ -194,6 +227,7 @@ let countTimer = 0
 let closeEvents: (() => void) | null = null
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
   void loadCounts()
   void updateStatus()
   statusTimer = window.setInterval(updateStatus, 30000)
@@ -211,6 +245,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  document.body.style.overflow = ''
   window.clearInterval(statusTimer)
   window.clearInterval(countTimer)
   closeEvents?.()
@@ -225,6 +261,7 @@ function submitSearch() {
   router.push({ name: 'containers', query: q ? { q } : {} })
   searchText.value = '' // 提交后清空，免得下次回车又搜同一个词
   mobileOpen.value = false
+  mobileSearch.value = false
 }
 
 async function doLogout() {
@@ -298,13 +335,27 @@ async function quickCheck() {
       <div class="min-w-0 truncate text-[12px] text-text-4">{{ contextLabel }}</div>
 
       <div class="ml-auto flex items-center gap-2">
-        <span
+        <!-- Docker 离线：不只是亮个红点，点开有「按顺序查什么」的说明 -->
+        <button
           v-if="!app.dockerOnline"
+          type="button"
           class="dh-badge dh-badge-err whitespace-nowrap"
-          title="无法连接 Docker 守护进程"
+          title="无法连接 Docker 守护进程 · 点击查看排查步骤"
+          @click="dockerHelp = true"
         >
           <span class="h-[7px] w-[7px] rounded-full bg-err" />Docker 离线
-        </span>
+        </button>
+
+        <!-- 手机上顶栏放不下输入框：先放一个放大镜，点开是下面一整行 -->
+        <button
+          type="button"
+          class="dh-iconbtn md:hidden"
+          title="搜索容器"
+          :class="mobileSearch ? '!text-accent' : ''"
+          @click="mobileSearch = !mobileSearch"
+        >
+          <Search class="h-4 w-4" />
+        </button>
 
         <div class="relative max-md:hidden">
           <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-5" />
@@ -345,6 +396,29 @@ async function quickCheck() {
         </button>
       </div>
     </header>
+
+    <!-- 手机搜索行：展开后占满一整行，回车跳容器页 -->
+    <div
+      v-if="mobileSearch"
+      class="flex flex-none items-center gap-2 border-b border-line-2 bg-ink-850 px-[18px] py-2 md:hidden"
+    >
+      <div class="relative min-w-0 flex-1">
+        <Search
+          class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-5"
+        />
+        <input
+          ref="mobileSearchInput"
+          v-model="searchText"
+          class="dh-input w-full !pl-8"
+          placeholder="搜索容器…"
+          enterkeyhint="search"
+          @keyup.enter="submitSearch"
+        />
+      </div>
+      <button type="button" class="dh-btn dh-btn-sm dh-btn-primary" @click="submitSearch">
+        搜索
+      </button>
+    </div>
 
     <div class="flex min-h-0 flex-1">
       <!-- 侧边栏：纯导航，分组 + 数量角标；折叠开关钉在最底下 -->
@@ -421,5 +495,41 @@ async function quickCheck() {
         <slot />
       </main>
     </div>
+
+    <!-- Docker 离线排查说明：全站各页只会显示「连不上」，这里是唯一的「那怎么办」 -->
+    <Modal
+      :open="dockerHelp"
+      title="连不上 Docker 守护进程"
+      subtitle="面板的所有功能都要经过 Docker，先按顺序排查下面几项"
+      width="480px"
+      @close="dockerHelp = false"
+    >
+      <ol class="dh-help-list">
+        <li>
+          <b>套接字有没有挂进容器。</b>
+          compose 的 <code>volumes</code> 里需要有这一行：
+          <code class="blk">- /var/run/docker.sock:/var/run/docker.sock</code>
+          改完 compose 要用 <code>docker compose up -d</code> 重新创建容器 ——
+          只 <code>restart</code> 不会重新挂载。
+        </li>
+        <li>
+          <b>宿主机上的 Docker 服务在不在跑。</b>
+          在 NAS 的套件/服务面板里看一眼，或重启一次 Docker 服务。
+        </li>
+        <li>
+          <b>用远程 Docker 的。</b>
+          确认 <code>DOCKER_HOST</code> 指向的地址和端口可达（默认 2375 / 2376），
+          且对端开启了远程访问。
+        </li>
+        <li>
+          <b>权限问题。</b>
+          套接字权限不足时表现也是「连不上」，容器日志里会写明
+          <code>permission denied</code>。
+        </li>
+      </ol>
+      <p class="mt-3 text-[11.5px] leading-relaxed text-text-5">
+        排查完不用重启面板：这里每 30 秒会自动重探一次，连上之后红色标记自己会消失。
+      </p>
+    </Modal>
   </div>
 </template>

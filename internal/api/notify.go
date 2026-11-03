@@ -44,7 +44,7 @@ func (s *Server) hSaveNotifyEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.st.BulkUpsertNotifyEvents(in.Events); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true, "current": s.st.ListNotifyEvents()})
@@ -71,7 +71,7 @@ func channelCount(s *Server) map[string]int {
 func (s *Server) hSaveNotifySettings(w http.ResponseWriter, r *http.Request) {
 	var in notify.Settings
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if in.DedupeMinutes < 0 {
@@ -84,7 +84,7 @@ func (s *Server) hSaveNotifySettings(w http.ResponseWriter, r *http.Request) {
 		in.QuietMode = "digest"
 	}
 	if err := s.nt.SaveSettings(in); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	// 面板地址同步到通用设置里，供模板变量 {{url}} 使用
@@ -94,7 +94,7 @@ func (s *Server) hSaveNotifySettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hListChannels(w http.ResponseWriter, r *http.Request) {
 	channels, err := s.st.ListChannels()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	if channels == nil {
@@ -132,7 +132,7 @@ func (s *Server) validateChannel(in channelReq) (string, bool) {
 func (s *Server) hCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if msg, ok := s.validateChannel(in); !ok {
@@ -152,7 +152,7 @@ func (s *Server) hCreateChannel(w http.ResponseWriter, r *http.Request) {
 		Name: in.Name, Type: in.Type, Enabled: in.Enabled, Config: in.Config,
 	})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, ch)
@@ -176,7 +176,7 @@ func (s *Server) hUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if err := s.st.UpdateChannel(store.Channel{
 		ID: id, Name: in.Name, Type: in.Type, Enabled: in.Enabled, Config: in.Config,
 	}); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+		writeErr(w, http.StatusNotFound, errText(err))
 		return
 	}
 	ch, _ := s.st.GetChannel(id)
@@ -190,7 +190,7 @@ func (s *Server) hDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.st.DeleteChannel(id); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true})
@@ -217,7 +217,7 @@ func (s *Server) hTestChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hNotifyHistory(w http.ResponseWriter, r *http.Request) {
 	records, err := s.st.ListNotifyRecords(queryInt(r, "limit", 100))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	if records == nil {

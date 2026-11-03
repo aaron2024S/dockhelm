@@ -108,7 +108,9 @@ func (s *Server) hGetRegistries(w http.ResponseWriter, r *http.Request) {
 	if info, err := s.dc.Info(ctx); err == nil {
 		daemonMirrors = info.RegistryConfig.Mirrors
 	} else {
-		daemonErr = err.Error()
+		// 原文只进日志：daemon 连不上时的错误里带着套接字路径与内网地址，
+		// 界面上只需要知道「读不到」。
+		daemonErr = errText(err)
 	}
 
 	// presets 只服务于「列表被删空后一键找回」，不再渲染成页面上独立的「推荐加速源」栏位 ——
@@ -132,7 +134,7 @@ type saveRegistriesReq struct {
 func (s *Server) hSaveRegistries(w http.ResponseWriter, r *http.Request) {
 	var in saveRegistriesReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	clean := []MirrorConfig{}
@@ -154,7 +156,7 @@ func (s *Server) hSaveRegistries(w http.ResponseWriter, r *http.Request) {
 	in.Settings.PullMirror = strings.TrimSpace(in.Settings.PullMirror)
 
 	if err := s.st.SetJSON(registrySettingsKey, in.Settings); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	// 立刻通知更新引擎换用新的加速源

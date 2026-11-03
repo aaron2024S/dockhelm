@@ -275,9 +275,18 @@ onUnmounted(() => {
       <button class="dh-btn dh-btn-sm" @click="load()">重试</button>
     </div>
 
-    <div v-if="data?.dockerError" class="dh-banner dh-banner-err">
-      <AlertTriangle class="h-4 w-4 flex-none" />
-      <span class="min-w-0 flex-1">无法连接 Docker 守护进程：{{ data.dockerError }}</span>
+    <!--
+      dockerError 已经是后端翻译过的人话（原文只进容器日志）。
+      这里只补一句「那怎么办」，指向顶栏那个可以点开的「Docker 离线」。
+    -->
+    <div v-if="data?.dockerError" class="dh-banner dh-banner-err !items-start">
+      <AlertTriangle class="h-4 w-4 flex-none translate-y-[2px]" />
+      <span class="min-w-0 flex-1">
+        {{ data.dockerError }}
+        <span class="mt-[3px] block text-[11.5px] opacity-80">
+          点顶栏右上角的「Docker 离线」可以看排查步骤。
+        </span>
+      </span>
     </div>
 
     <!-- 四个指标 -->

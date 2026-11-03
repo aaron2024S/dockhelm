@@ -111,7 +111,8 @@ func (s *Server) hCheckUpdates(w http.ResponseWriter, r *http.Request) {
 			res, err := s.up.Check(ctx, n)
 			if err != nil {
 				results = append(results, updater.CheckResult{
-					Container: n, Status: updater.StatusUnknown, Reason: err.Error(),
+					// Reason 会出现在容器列表的「检查失败」里，同样只给人话
+					Container: n, Status: updater.StatusUnknown, Reason: errText(err),
 					CheckedAt: time.Now().UTC().Format(time.RFC3339),
 				})
 				continue

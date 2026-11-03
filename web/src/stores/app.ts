@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, setUnauthorizedHandler } from '@/api/client'
+import { api } from '@/api/client'
 import type { SessionInfo, Settings } from '@/api/types'
 
 /** 全局应用状态：登录态、设置、在线状态。 */
@@ -15,7 +15,7 @@ export const useAppStore = defineStore('app', {
     lockedFor: 0,
     /** 锁定提示文案（含「约 N 分钟」），由服务端生成，前端只负责加倒计时。 */
     lockedHint: '',
-    minPasswordLength: 6,
+    minPasswordLength: 8,
     settings: null as Settings | null,
     dockerOnline: true,
     sidebarCollapsed: false,
@@ -47,13 +47,6 @@ export const useAppStore = defineStore('app', {
       }
     },
     async _bootstrap() {
-      setUnauthorizedHandler(() => {
-        this.loggedIn = false
-        this.ready = true
-        if (location.pathname !== '/login') {
-          location.replace('/login')
-        }
-      })
       try {
         const s = await api.get<SessionInfo>('/api/session')
         this.initialized = s.initialized
@@ -63,7 +56,7 @@ export const useAppStore = defineStore('app', {
         this.maxFailures = s.maxFailures
         this.lockedFor = s.lockedFor || 0
         this.lockedHint = s.lockedHint || ''
-        this.minPasswordLength = s.minPassword || 6
+        this.minPasswordLength = s.minPassword || 8
       } catch {
         this.loggedIn = false
       } finally {

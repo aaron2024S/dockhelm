@@ -12,7 +12,9 @@ const isPublic = computed(() => route.meta.public === true)
 const showShell = computed(() => !isPublic.value && app.loggedIn)
 
 onMounted(() => {
-  void app.bootstrap()
+  // main.ts 已经在挂载前取过一次登录态；这里只兜「直接热更新/异常路径」的情况，
+  // 重复调用会被 store 里的 _bootstrapping 去重。
+  if (!app.ready) void app.bootstrap()
 })
 </script>
 

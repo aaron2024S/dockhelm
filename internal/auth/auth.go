@@ -37,7 +37,11 @@ const (
 	SessionTTL     = 24 * time.Hour
 	LockWindow     = 5 * time.Minute
 	MaxFailures    = 5
-	MinPasswordLen = 6
+	// MinPasswordLen 密码长度下限。
+	//
+	// 这个面板等价于宿主机 root（挂着 docker.sock），6 位密码在离线爆破下
+	// 只是多花几分钟。8 位是「不影响可用性的最低限度」。
+	MinPasswordLen = 8
 )
 
 // ErrLocked 连续失败被临时锁定。
@@ -53,6 +57,30 @@ var ErrNotInitialized = errors.New("尚未初始化密码")
 
 // ErrWeakPassword 密码太短。
 var ErrWeakPassword = fmt.Errorf("密码至少需要 %d 位", MinPasswordLen)
+
+// ErrDigitsOnly 纯数字密码。
+var ErrDigitsOnly = errors.New("密码不能全是数字，请混入字母或符号")
+
+// checkPassword 密码强度校验：长度 + 拒绝纯数字。
+//
+// 集中在一处，是因为有三个入口会设密码（首次设置 / 改密 / 环境变量强制重置），
+// 分散写迟早会出现「某个入口能设 123456」的漏洞。
+func checkPassword(pw string) error {
+	if len(pw) < MinPasswordLen {
+		return ErrWeakPassword
+	}
+	digits := true
+	for _, r := range pw {
+		if r < '0' || r > '9' {
+			digits = false
+			break
+		}
+	}
+	if digits {
+		return ErrDigitsOnly
+	}
+	return nil
+}
 
 // ErrAlreadyInitialized 已经设置过密码。
 var ErrAlreadyInitialized = errors.New("密码已设置")
@@ -160,8 +188,8 @@ func (m *Manager) Initialized() bool {
 
 // SetPassword 设置/修改密码。oldPassword 为空时表示首次设置（或已被重置）。
 func (m *Manager) SetPassword(oldPassword, newPassword string) error {
-	if len(newPassword) < MinPasswordLen {
-		return ErrWeakPassword
+	if err := checkPassword(newPassword); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -199,8 +227,8 @@ func (m *Manager) SetPassword(oldPassword, newPassword string) error {
 // 首启接口原来是先 Initialized() 再 ForceSetPassword，两个并发请求可能都通过判断，
 // 后一个把前一个刚设的密码覆盖掉（后者自己还拿到一个会话）。窗口很小，但一次就够。
 func (m *Manager) SetupPassword(pw string) error {
-	if len(pw) < MinPasswordLen {
-		return ErrWeakPassword
+	if err := checkPassword(pw); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	if err != nil {
@@ -224,8 +252,8 @@ func (m *Manager) SetupPassword(pw string) error {
 
 // ForceSetPassword 无条件覆盖密码（DOCKHELM_PASSWORD 环境变量或删除 auth.json 后的首启）。
 func (m *Manager) ForceSetPassword(pw string) error {
-	if len(pw) < MinPasswordLen {
-		return ErrWeakPassword
+	if err := checkPassword(pw); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	if err != nil {
@@ -284,6 +312,8 @@ func (m *Manager) Verify(password, ip, ua string, keep bool) (string, error) {
 	}
 
 	m.store.RecordLogin(ip, true)
+	// 「连续错 N 次」要以成功为界：登录成功就把这个 IP 的失败窗口清零
+	m.store.ClearLoginFailures(ip)
 	ttl := SessionTTL
 	if keep {
 		ttl = SessionTTLKeep

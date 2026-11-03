@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { onUnmounted, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     open: boolean
     title?: string
@@ -19,6 +20,29 @@ withDefaults(
 )
 
 const emit = defineEmits<{ close: [] }>()
+
+/**
+ * ESC 关闭。
+ *
+ * 全站弹窗都靠这一层，缺了它「按 ESC 没反应」会显得整个应用不跟手。
+ * 提交中不响应（与遮罩/× 的行为一致，避免关掉之后就不知道结果了）。
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || !props.open || props.busy) return
+  e.stopPropagation()
+  emit('close')
+}
+
+watch(
+  () => props.open,
+  (open) => {
+    if (open) window.addEventListener('keydown', onKeydown)
+    else window.removeEventListener('keydown', onKeydown)
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>

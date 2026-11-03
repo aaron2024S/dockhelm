@@ -53,7 +53,7 @@ func (s *Server) hListContainers(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	list, err := s.dc.ListContainers(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "读取容器列表失败："+err.Error())
+		writeErr(w, http.StatusBadGateway, "读取容器列表失败："+errText(err))
 		return
 	}
 
@@ -108,7 +108,7 @@ func (s *Server) hInspectContainer(w http.ResponseWriter, r *http.Request) {
 	name := pathParam(r, "name")
 	insp, err := s.dc.Inspect(ctx, name)
 	if err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"inspect": insp, "summary": summarizeInspect(insp)})
@@ -303,7 +303,7 @@ func (s *Server) hContainerLogs(w http.ResponseWriter, r *http.Request) {
 
 	rc, err := s.dc.Logs(ctx, name, tail, follow, queryBool(r, "timestamps", false))
 	if err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	defer rc.Close()
@@ -339,7 +339,7 @@ func (s *Server) hContainerStats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	st, err := s.dc.StatsOneShot(ctx, pathParam(r, "name"))
 	if err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"stats": st, "summary": summarizeStats(st)})
@@ -441,7 +441,7 @@ func (s *Server) hContainerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.dc.ContainerAction(ctx, name, in.Action, timeout); err != nil {
 		intent.Release(name) // 没停成、不会有 die 事件，撤销豁免
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	// 说明写成「对谁做了什么」：原先直接贴 "执行 stop"，中文界面里夹一个英文动作码。
@@ -491,7 +491,7 @@ func (s *Server) hRenameContainer(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.ctx(r)
 	defer cancel()
 	if err := s.dc.RenameContainer(ctx, old, in.NewName); err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	s.st.AddRunLog("container", old, "success", "已改名为 "+in.NewName, "")
@@ -534,7 +534,7 @@ func (s *Server) hRemoveContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.dc.RemoveContainer(ctx, name, force, vols); err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	msg := "已删除容器 " + name
@@ -552,7 +552,7 @@ func (s *Server) hExportContainer(w http.ResponseWriter, r *http.Request) {
 	name := pathParam(r, "name")
 	insp, err := s.dc.Inspect(ctx, name)
 	if err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -583,7 +583,7 @@ func (s *Server) hListImages(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	list, err := s.dc.ListImages(ctx, queryBool(r, "all", false))
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	type imageView struct {
@@ -632,7 +632,7 @@ func (s *Server) hRemoveImage(w http.ResponseWriter, r *http.Request) {
 		name = inspectImageName(insp)
 	}
 	if err := s.dc.RemoveImage(ctx, id, queryBool(r, "force", false), queryBool(r, "noprune", false)); err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	if name == "" {
@@ -688,7 +688,7 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	idx := s.dc.BuildPruneNameIndex(ctx)
 	res, err := s.dc.PruneImages(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	// 说明 = 几个 + 多大 + 名单接在句尾；对象行留空 —— 名单跟在说明后面
@@ -712,7 +712,7 @@ func (s *Server) hListNetworks(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	list, err := s.dc.ListNetworks(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"networks": list})
@@ -723,7 +723,7 @@ func (s *Server) hListVolumes(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	list, err := s.dc.ListVolumes(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"volumes": list})
@@ -734,7 +734,7 @@ func (s *Server) hRemoveVolume(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	name := pathParam(r, "name")
 	if err := s.dc.RemoveVolume(ctx, name, queryBool(r, "force", false)); err != nil {
-		writeErr(w, dockerStatus(err), err.Error())
+		writeErr(w, dockerStatus(err), errText(err))
 		return
 	}
 	s.st.AddRunLog("volume", "", "success", "已删除卷 "+name, "")

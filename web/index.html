@@ -3,33 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      主题预设：必须在样式表加载之前「同步」执行。
-      如果等到打包产物里的 store 初始化再设 class，浏览器会先用默认（深色）画一帧，
-      亮色用户就会看到一次黑白闪烁。所以这段只能内联、只能放最前面。
-
-      ⚠ 逻辑与 src/stores/theme.ts 的 applyTheme() 必须保持一致，改一处要改两处。
-      默认值取 dark：不因为新增了主题功能就把老用户突然变白；想跟随系统的用户点一下按钮即可。
+      主题预设必须在样式表加载之前「同步」执行，否则亮色用户会看到一次黑白闪烁。
+      这一段原来内联在这里，因为全站 CSP 只允许 'self' 脚本，已挪到 public/theme-init.js
+      （保持普通 <script>、不做 defer/async，执行时机与内联完全等价）。
     -->
-    <script>
-      (function () {
-        try {
-          var mode = localStorage.getItem('dockhelm.theme') || 'dark'
-          var dark =
-            mode === 'dark' ||
-            (mode === 'system' &&
-              !!window.matchMedia &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches)
-          var root = document.documentElement
-          root.classList.toggle('dark', dark)
-          root.classList.toggle('light', !dark)
-          root.style.colorScheme = dark ? 'dark' : 'light'
-          var meta = document.querySelector('meta[name="theme-color"]')
-          if (meta) meta.setAttribute('content', dark ? '#05080b' : '#eceff5')
-        } catch (e) {
-          /* 读不到偏好（隐私模式）时保持 HTML 上的默认深色 */
-        }
-      })()
-    </script>
+    <script src="/theme-init.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#05080b" />

@@ -100,7 +100,46 @@ func New(d Deps) *Server {
 
 // Handler 返回根 handler。
 func (s *Server) Handler() http.Handler {
-	return s.recoverMW(s.logMW(s.mux))
+	return s.recoverMW(s.logMW(s.securityMW(s.mux)))
+}
+
+// contentSecurityPolicy 全站 CSP。
+//
+// 说明几处刻意的取舍：
+//   - script-src 只允许 'self'：主题预置脚本已从 index.html 的内联 <script>
+//     挪到 /theme-init.js（内联脚本在 CSP 下要么被拒、要么得开 'unsafe-inline'，
+//     而 'unsafe-inline' 会让这层防线基本失效）。
+//   - style-src 必须带 'unsafe-inline'：Vue 的 :style 绑定与 tailwind 的少量
+//     动态宽度都是行内样式，禁掉会让界面直接错位。
+//   - img-src 放 data:：favicon 就是一个 data:image/svg+xml。
+//   - frame-ancestors 'none' 与 X-Frame-Options 双保险：面板里有「删除容器」
+//     「清空备份」这类一键动作，被别的站点 iframe 嵌进去就能做点击劫持。
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; " +
+	"font-src 'self' data:; " +
+	"connect-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'self'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'"
+
+// securityMW 给每个响应补安全头。
+//
+// 这些头以前一个都没有：面板能被任意站点 iframe 嵌入（点击劫持），
+// 浏览器还会对 Content-Type 做嗅探、把 Referer 里的路径带给外部站点。
+func (s *Server) securityMW(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---------- 路由 ----------
@@ -109,8 +148,11 @@ func (s *Server) routes() {
 	m := s.mux
 
 	// —— 公开接口 ——
+	//
+	// 只用「登录页真正需要」的那几个。注意 /api/about 不在此列：
+	// 它会带出数据目录、Docker 地址、监听端口，首次部署还没设密码时
+	// 局域网里任何人探测一次就知道这台机器挂着 docker.sock、数据放在哪。
 	m.HandleFunc("GET /api/health", s.hHealth)
-	m.HandleFunc("GET /api/about", s.hAbout)
 	m.HandleFunc("GET /api/session", s.hSession)
 	m.HandleFunc("POST /api/login", s.hLogin)
 	m.HandleFunc("POST /api/setup", s.hSetup)
@@ -118,6 +160,8 @@ func (s *Server) routes() {
 
 	// —— 需要登录 ——
 	a := s.requireAuth
+
+	m.HandleFunc("GET /api/about", a(s.hAbout))
 
 	m.HandleFunc("POST /api/account/password", a(s.hChangePassword))
 	m.HandleFunc("POST /api/account/sessions/logout-others", a(s.hLogoutOthers))
@@ -438,6 +482,12 @@ func (s *Server) hAbout(w http.ResponseWriter, r *http.Request) {
 		// 「关于」页直接展示，省得去翻启动日志。
 		"listen":       s.cfg.Listen,
 		"listenSource": s.cfg.ListenSource,
+		// 计划任务的 cron、通知的静默时段都是按服务器本地时区解释的。
+		// 容器里没设 TZ 时本地时区就是 UTC，界面上必须能看出这一点，
+		// 否则用户会以为「8 点的任务没跑」。
+		"timeZone":       tzName(),
+		"localTime":      time.Now().Format("2006-01-02 15:04:05"),
+		"timeZoneOffset": time.Now().Format("-07:00"),
 	}
 	if v := s.dc.APIVersion(); v != "" {
 		extra["dockerApiVersion"] = v
@@ -604,7 +654,7 @@ func (s *Server) hGetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 	var in Settings
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	s.persistSettings(in)
@@ -623,7 +673,7 @@ func (s *Server) hSaveSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hPatchSettings(w http.ResponseWriter, r *http.Request) {
 	var raw map[string]json.RawMessage
 	if err := decodeBody(r, &raw); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if len(raw) == 0 {
@@ -633,12 +683,12 @@ func (s *Server) hPatchSettings(w http.ResponseWriter, r *http.Request) {
 	// 以服务端当前值为底，把请求里出现的键盖上去
 	cur, err := json.Marshal(s.readSettings())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	merged := map[string]json.RawMessage{}
 	if err := json.Unmarshal(cur, &merged); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	for k, v := range raw {
@@ -646,14 +696,14 @@ func (s *Server) hPatchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(merged)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	var next Settings
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields() // 键名写错要报错，不能悄悄忽略
 	if err := dec.Decode(&next); err != nil {
-		writeErr(w, http.StatusBadRequest, "设置项无法识别："+err.Error())
+		writeErr(w, http.StatusBadRequest, "设置项无法识别："+errText(err))
 		return
 	}
 	s.persistSettings(next)
@@ -686,24 +736,32 @@ func (s *Server) persistSettings(in Settings) {
 		in.BackupProjectMaxAgeDays = 0
 	}
 
-	_ = s.st.SetSetting("update.concurrency", strconv.Itoa(in.Concurrency))
-	_ = s.st.SetSetting("update.checkOnStart", boolStr(in.CheckOnStart))
-	_ = s.st.SetSetting("log.retention", strconv.Itoa(in.LogRetention))
-	_ = s.st.SetSetting(notify.KeyPanelURL, in.PanelURL)
-	_ = s.st.SetSetting("update.checkInterval", strconv.Itoa(in.CheckIntervalHours))
-	_ = s.st.SetSetting("update.notifyOnCheck", boolStr(in.NotifyOnCheck))
-	_ = s.st.SetSetting("update.autoApply", boolStr(in.AutoApply))
-	_ = s.st.SetSetting("update.pullOnce", boolStr(in.PullOnce))
-	_ = s.st.SetSetting("update.backupBefore", boolStr(in.BackupBefore))
-	_ = s.st.SetSetting("update.cleanupAfter", boolStr(in.CleanupAfter))
-	_ = s.st.SetSetting("update.directFirst", boolStr(in.DirectFirst))
-	_ = s.st.SetSetting("backup.keepPerContainer", strconv.Itoa(in.BackupKeepPerContainer))
-	_ = s.st.SetSetting("backup.maxAgeDays", strconv.Itoa(in.BackupMaxAgeDays))
-	_ = s.st.SetSetting("backup.maxTotalMB", strconv.Itoa(in.BackupMaxTotalMB))
-	_ = s.st.SetSetting("backup.keepPreUpdate", boolStr(in.BackupKeepPreUpdate))
-	_ = s.st.SetSetting("backup.project.keepPerProject", strconv.Itoa(in.BackupProjectKeepPerProject))
-	_ = s.st.SetSetting("backup.project.maxAgeDays", strconv.Itoa(in.BackupProjectMaxAgeDays))
-	_ = s.st.SetJSON("exclude.containers", in.Exclude)
+	// 一次性写盘：原来这里是 17 次 SetSetting，每次 SetSetting 都完整 fsync 一遍
+	// 整个 JSON —— 保存一次设置等于把整个数据文件写 17 遍。SSD 上感觉不出来，
+	// 但在 NAS 的机械盘/SD 卡上既慢又费寿命。
+	batch := map[string]string{
+		"update.concurrency":            strconv.Itoa(in.Concurrency),
+		"update.checkOnStart":           boolStr(in.CheckOnStart),
+		"log.retention":                 strconv.Itoa(in.LogRetention),
+		notify.KeyPanelURL:              in.PanelURL,
+		"update.checkInterval":          strconv.Itoa(in.CheckIntervalHours),
+		"update.notifyOnCheck":          boolStr(in.NotifyOnCheck),
+		"update.autoApply":              boolStr(in.AutoApply),
+		"update.pullOnce":               boolStr(in.PullOnce),
+		"update.backupBefore":           boolStr(in.BackupBefore),
+		"update.cleanupAfter":           boolStr(in.CleanupAfter),
+		"update.directFirst":            boolStr(in.DirectFirst),
+		"backup.keepPerContainer":       strconv.Itoa(in.BackupKeepPerContainer),
+		"backup.maxAgeDays":             strconv.Itoa(in.BackupMaxAgeDays),
+		"backup.maxTotalMB":             strconv.Itoa(in.BackupMaxTotalMB),
+		"backup.keepPreUpdate":          boolStr(in.BackupKeepPreUpdate),
+		"backup.project.keepPerProject": strconv.Itoa(in.BackupProjectKeepPerProject),
+		"backup.project.maxAgeDays":     strconv.Itoa(in.BackupProjectMaxAgeDays),
+	}
+	if raw, err := json.Marshal(in.Exclude); err == nil {
+		batch["exclude.containers"] = string(raw)
+	}
+	_ = s.st.SetMany(batch)
 
 	s.applyPolicy(in)
 	// 检测频率/自动更新总开关可能刚被改过，唤醒后台循环重新计时；
@@ -739,7 +797,7 @@ func boolStr(b bool) string {
 func (s *Server) hLogs(w http.ResponseWriter, r *http.Request) {
 	logs, err := s.st.ListRunLogs(queryInt(r, "limit", 200))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"logs": logs})
@@ -757,7 +815,7 @@ func (s *Server) hSystem(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	insp, err := s.dc.Info(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "无法连接 Docker 守护进程："+err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	diskFree, diskTotal, diskPath := diskUsage(s.cfg.DataDir)
@@ -791,4 +849,15 @@ func hostname() string {
 		return "unknown"
 	}
 	return h
+}
+
+// tzName 返回给用户看的时区名。
+//
+// time.Local.String() 在 Linux 上会给 IANA 名或 "UTC"（取决于 TZ 与 /etc/localtime），
+// 但在 Windows 上恒为 "Local" —— 那个词对用户没有任何信息量，改用缩写（如 CST）。
+func tzName() string {
+	if name := time.Local.String(); name != "" && name != "Local" {
+		return name
+	}
+	return time.Now().Format("MST")
 }

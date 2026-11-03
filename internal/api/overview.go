@@ -262,7 +262,8 @@ func (s *Server) hOverview(w http.ResponseWriter, r *http.Request) {
 			"mirrors":  info.RegistryConfig.Mirrors,
 		}
 	} else {
-		out["dockerError"] = infoErr.Error()
+		// 原文只进日志：总览页那句提示是给用户看的，不该出现套接字路径与内网地址
+		out["dockerError"] = errText(infoErr)
 	}
 	writeOK(w, out)
 }

@@ -49,6 +49,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("无法打开数据文件 %s：%v", cfg.DBPath(), err)
 	}
+	// 数据文件损坏时 Open 会把坏文件改名留档、按空数据继续跑（进程不能起不来），
+	// 这里负责把这件事喊出来 —— 否则用户只会觉得「设置全没了」。
+	if w := st.LoadWarning(); w != "" {
+		log.Printf("⚠ %s", w)
+	}
 	defer st.Close()
 
 	// —— 事件总线 ——

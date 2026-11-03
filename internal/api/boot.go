@@ -28,7 +28,7 @@ func (s *Server) hGetBoot(w http.ResponseWriter, r *http.Request) {
 
 	infos, err := s.boot.Snapshot(ctx)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err))
 		return
 	}
 	plan := s.boot.PlanMerged(infos)
@@ -74,11 +74,11 @@ func (s *Server) hGetBoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hSaveBoot(w http.ResponseWriter, r *http.Request) {
 	var in boot.Plan
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if err := s.boot.SavePlan(in); err != nil {
-		writeErr(w, http.StatusInternalServerError, "保存失败："+err.Error())
+		writeErr(w, http.StatusInternalServerError, "保存失败："+errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"plan": s.boot.LoadPlan()})
@@ -93,15 +93,15 @@ type bootRunReq struct {
 func (s *Server) hRunBoot(w http.ResponseWriter, r *http.Request) {
 	var in bootRunReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误："+err.Error())
+		writeErr(w, http.StatusBadRequest, "请求体格式错误："+errText(err))
 		return
 	}
 	if err := s.boot.Start(boot.TriggerManual, in.SkipDelay); err != nil {
 		if errors.Is(err, boot.ErrBusy) {
-			writeErr(w, http.StatusConflict, err.Error())
+			writeErr(w, http.StatusConflict, errText(err))
 			return
 		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true})

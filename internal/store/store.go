@@ -11,8 +11,11 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,11 +35,29 @@ const (
 	maxLoginAttempts = 500
 )
 
+// SessionIdle 会话连续多久没被使用就失效。
+//
+// 「保持登录 7 天」管的是 Cookie 寿命，不是「这串 token 永远有效」：
+// 一台被忘在角落的旧手机、一个导出的数据目录，都会把这串 token 一起带走。
+// 48 小时没访问就作废，正常每天都开面板的人完全感觉不到。
+const SessionIdle = 48 * time.Hour
+
+// sessionTouchInterval 两次「刷新最后访问时间」之间的最小间隔。
+//
+// GetSession 在每一次 API 请求上都会跑，每次都落盘等于每个请求一次 fsync。
+// 5 分钟刷一次足够精确（失效判定的粒度本来就是小时级）。
+const sessionTouchInterval = 5 * time.Minute
+
 // Store 持久化句柄。
 type Store struct {
 	path string
 	mu   sync.Mutex
 	db   data
+
+	// loadWarning 启动时发现的问题（如数据文件损坏被隔离），由 main 负责打日志。
+	loadWarning string
+	// lastTouchFlush 上次把「会话最后访问时间」落盘的时刻。
+	lastTouchFlush time.Time
 }
 
 // data 是落盘的完整文档。
@@ -76,7 +97,21 @@ func Open(path string) (*Store, error) {
 	}
 	if len(b) > 0 {
 		if err := json.Unmarshal(b, &s.db); err != nil {
-			return nil, err
+			// 数据文件坏了**不能**让进程起不来：NAS 上那意味着面板进不去、
+			// 容器在重启循环里打转，用户只能 SSH 手删文件（而很多人根本没有 SSH）。
+			// 这里把坏文件改名留档、按空数据启动，并在日志里说清楚发生了什么。
+			//
+			// 不降低安全性：能改这个文件的人本来就能直接删掉它。
+			// 与 auth.json 的处理方式对齐（那边一直有这层兜底，store 之前没有）。
+			quarantine := path + ".corrupt-" + time.Now().Format("20060102-150405")
+			if mvErr := os.Rename(path, quarantine); mvErr != nil {
+				return nil, fmt.Errorf("数据文件解析失败且无法移走：%w（原错误：%v）", mvErr, err)
+			}
+			s.db = emptyData()
+			s.loadWarning = fmt.Sprintf(
+				"数据文件解析失败，已改名为 %s 并按空数据启动（计划任务、通知渠道、设置需要重新配置；原错误：%v）",
+				filepath.Base(quarantine), err)
+			return s, s.flushLocked()
 		}
 	}
 	if s.db.Settings == nil {
@@ -87,6 +122,9 @@ func Open(path string) (*Store, error) {
 	}
 	return s, nil
 }
+
+// LoadWarning 返回启动时的可读告警（目前只有「数据文件损坏已被隔离」一种）。
+func (s *Store) LoadWarning() string { return s.loadWarning }
 
 // Close 立即落盘（进程退出时调用）。
 func (s *Store) Close() error {
@@ -135,11 +173,27 @@ func (s *Store) GetSetting(key, def string) string {
 	return def
 }
 
-// SetSetting 写设置（不立即落盘，批量改完调用 Save）。
+// SetSetting 写单个设置项并立刻落盘。
+//
+// ⚠ 每次调用都是一次「整份 JSON 写盘 + fsync」。一次要改多项时用 SetMany，
+// 否则保存一次设置会把整个数据文件写十几遍（机械盘/SD 卡上很明显）。
 func (s *Store) SetSetting(key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.db.Settings[key] = value
+	return s.flushLocked()
+}
+
+// SetMany 批量写设置项，只落盘一次。
+func (s *Store) SetMany(kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range kv {
+		s.db.Settings[k] = v
+	}
 	return s.flushLocked()
 }
 
@@ -175,12 +229,22 @@ func (s *Store) AllSettings() map[string]string {
 // ---------- sessions ----------
 
 // Session 登录会话。
+//
+// Token 字段存的是 **SHA-256(token)**，不是原文 —— 数据文件一旦被拷走
+// （备份、误传到网盘），拿到的人也没法直接拿去当 Cookie 用。
 type Session struct {
 	Token     string `json:"token"`
 	CreatedAt string `json:"createdAt"`
 	ExpiresAt string `json:"expiresAt"`
+	LastSeen  string `json:"lastSeen,omitempty"`
 	IP        string `json:"ip"`
 	UA        string `json:"ua"`
+}
+
+// hashToken 会话 token 的落盘形式。
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // CreateSession 新建会话。
@@ -189,9 +253,10 @@ func (s *Store) CreateSession(token string, ttl time.Duration, ip, ua string) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.db.Sessions = append(s.db.Sessions, Session{
-		Token:     token,
+		Token:     hashToken(token),
 		CreatedAt: now.UTC().Format(time.RFC3339),
 		ExpiresAt: now.Add(ttl).UTC().Format(time.RFC3339),
+		LastSeen:  now.UTC().Format(time.RFC3339),
 		IP:        ip,
 		UA:        truncate(ua, 200),
 	})
@@ -199,33 +264,57 @@ func (s *Store) CreateSession(token string, ttl time.Duration, ip, ua string) er
 	return s.flushLocked()
 }
 
-// GetSession 取有效会话。
+// GetSession 取有效会话（token 为 Cookie 里的原文）。
+//
+// 同时刷新最后访问时间，用于「空闲超时」。刷新按 5 分钟节流，
+// 否则每个 API 请求都要落盘一次。
 func (s *Store) GetSession(token string) *Session {
 	if token == "" {
 		return nil
 	}
+	h := hashToken(token)
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.db.Sessions {
-		if s.db.Sessions[i].Token == token {
-			et, err := time.Parse(time.RFC3339, s.db.Sessions[i].ExpiresAt)
-			if err != nil || time.Now().After(et) {
-				return nil
-			}
-			cp := s.db.Sessions[i]
-			return &cp
+		it := &s.db.Sessions[i]
+		// 旧版本落盘的是明文 token。第一次带着旧 Cookie 进来时原地升级成哈希，
+		// 用户不会被强制登出。
+		legacy := it.Token == token
+		if it.Token != h && !legacy {
+			continue
 		}
+		et, err := time.Parse(time.RFC3339, it.ExpiresAt)
+		if err != nil || now.After(et) {
+			return nil
+		}
+		if t, err := time.Parse(time.RFC3339, it.LastSeen); err == nil && now.Sub(t) > SessionIdle {
+			return nil
+		}
+		it.LastSeen = now.UTC().Format(time.RFC3339)
+		if legacy {
+			it.Token = h
+			_ = s.flushLocked()
+			s.lastTouchFlush = now
+		} else if now.Sub(s.lastTouchFlush) > sessionTouchInterval {
+			if err := s.flushLocked(); err == nil {
+				s.lastTouchFlush = now
+			}
+		}
+		cp := *it
+		return &cp
 	}
 	return nil
 }
 
 // DeleteSession 删除会话。
 func (s *Store) DeleteSession(token string) error {
+	h := hashToken(token)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.db.Sessions[:0]
 	for _, it := range s.db.Sessions {
-		if it.Token != token {
+		if it.Token != h && it.Token != token {
 			out = append(out, it)
 		}
 	}
@@ -244,12 +333,13 @@ func (s *Store) DeleteAllSessions() error {
 // DeleteOtherSessions 强制登出 current 之外的所有会话（其他浏览器/设备上的残留登录），
 // 当前会话原样保留。返回被登出的会话数。
 func (s *Store) DeleteOtherSessions(current string) (int, error) {
+	h := hashToken(current)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Session, 0, len(s.db.Sessions))
 	removed := 0
 	for _, it := range s.db.Sessions {
-		if it.Token == current {
+		if it.Token == h || it.Token == current {
 			out = append(out, it)
 		} else {
 			removed++
@@ -267,6 +357,9 @@ func (s *Store) SessionCount() int {
 	now := time.Now()
 	for _, it := range s.db.Sessions {
 		if et, err := time.Parse(time.RFC3339, it.ExpiresAt); err == nil && now.Before(et) {
+			if t, err := time.Parse(time.RFC3339, it.LastSeen); err == nil && now.Sub(t) > SessionIdle {
+				continue
+			}
 			n++
 		}
 	}
@@ -286,9 +379,14 @@ func (s *Store) pruneSessionsLocked() bool {
 	now := time.Now()
 	out := s.db.Sessions[:0]
 	for _, it := range s.db.Sessions {
-		if et, err := time.Parse(time.RFC3339, it.ExpiresAt); err == nil && now.Before(et) {
-			out = append(out, it)
+		et, err := time.Parse(time.RFC3339, it.ExpiresAt)
+		if err != nil || !now.Before(et) {
+			continue
 		}
+		if t, err := time.Parse(time.RFC3339, it.LastSeen); err == nil && now.Sub(t) > SessionIdle {
+			continue
+		}
+		out = append(out, it)
 	}
 	changed := len(out) != len(s.db.Sessions)
 	s.db.Sessions = out
@@ -315,6 +413,30 @@ func (s *Store) RecordLogin(ip string, ok bool) {
 		s.db.Logins = s.db.Logins[len(s.db.Logins)-maxLoginAttempts:]
 	}
 	_ = s.flushLocked()
+}
+
+// ClearLoginFailures 清掉某 IP 的失败记录（登录成功后调用）。
+//
+// 锁定的语义是「**连续**错 N 次」，所以成功一次就该把窗口清零。
+// 不清的话「错 4 次 → 成功 → 再错 1 次」也会被锁，和界面上那句
+// 「连续错 5 次会临时锁定」对不上 —— 用户会觉得莫名其妙。
+// 首启设置密码的失败也走这套计数，成功设置后一并清零，免得刚设完就被锁。
+func (s *Store) ClearLoginFailures(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.db.Logins[:0]
+	changed := false
+	for _, it := range s.db.Logins {
+		if !it.OK && it.IP == ip {
+			changed = true
+			continue
+		}
+		out = append(out, it)
+	}
+	s.db.Logins = out
+	if changed {
+		_ = s.flushLocked()
+	}
 }
 
 // CountRecentFailures 某 IP 在窗口内的失败次数。

@@ -57,21 +57,43 @@ const (
 const stopWindow = 3 * time.Minute
 
 // Run 启动事件循环与连通性巡检，直到 ctx 取消。
+//
+// 重连用指数退避（1s → 2 → 4 … 封顶 60s），并且**只在状态翻转时打日志**。
+// 原来固定 2 秒重连且每次都打一行：Docker 套接字挂错一整天，日志就是
+// 每小时 1800 行，把 NAS 的 SD 卡写满、也把真正有用的日志冲没了。
 func (w *Watcher) Run(ctx context.Context) {
 	go w.pingLoop(ctx)
+	backoff := time.Second
+	connOK := true
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.dc.Events(ctx, w.handle); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Printf("docker 事件流中断，2 秒后重连：%v", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
+		started := time.Now()
+		err := w.dc.Events(ctx, w.handle)
+		if ctx.Err() != nil {
+			return
+		}
+		// 连上并能稳定工作超过 30 秒，就算这一轮是正常的
+		lived := time.Since(started) > 30*time.Second
+		wasOK := connOK
+		connOK = lived
+		if connOK && !wasOK {
+			log.Printf("docker 事件流已恢复")
+			backoff = time.Second
+		}
+		if !connOK && wasOK {
+			log.Printf("docker 事件流中断，按指数退避重连（最长 60 秒）：%v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < time.Minute {
+			backoff *= 2
+			if backoff > time.Minute {
+				backoff = time.Minute
 			}
 		}
 	}

@@ -18,16 +18,22 @@ func (s *Server) hSession(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := s.clientIP(r)
 	left := s.auth.LockedFor(ip)
-	writeOK(w, map[string]any{
-		"initialized":  s.auth.Initialized(),
-		"loggedIn":     loggedIn,
-		"failures":     s.auth.Failures(ip),
-		"maxFailures":  auth.MaxFailures,
-		"lockedFor":    retryAfterSeconds(left),
-		"lockedHint":   auth.LockedHint(left),
-		"minPassword":  auth.MinPasswordLen,
-		"sessionCount": s.st.SessionCount(),
-	})
+	out := map[string]any{
+		"initialized": s.auth.Initialized(),
+		"loggedIn":    loggedIn,
+		"failures":    s.auth.Failures(ip),
+		"maxFailures": auth.MaxFailures,
+		"lockedFor":   retryAfterSeconds(left),
+		"lockedHint":  auth.LockedHint(left),
+		"minPassword": auth.MinPasswordLen,
+		// 会话数只给已登录用户：未登录时把「这台机器上有几个登录态」暴露出去，
+		// 对攻击者是个有用的信号（有人用过 = 密码存在），对登录页没有任何用处。
+		"sessionCount": 0,
+	}
+	if loggedIn {
+		out["sessionCount"] = s.st.SessionCount()
+	}
+	writeOK(w, out)
 }
 
 // retryAfterSeconds 把剩余锁定时间换算成给前端的整数秒（向上取整）。
@@ -143,18 +149,49 @@ type setupReq struct {
 }
 
 // hSetup 首启设置密码。只在尚未初始化时可用。
+//
+// 这个接口有个天然的窗口期：容器起来到主人设完密码之间，**任何能访问到端口的人
+// 都能抢先设一个密码**（first-run takeover）。彻底解决要么上「日志里打印一次性
+// token」，要么强制本机访问 —— 两者都会把首启体验做坏，所以这里做两件不伤体验的事：
+//
+//  1. 与登录共用同一套滑动窗口限流：脚本没法无限次刷（弱密码会被拒、重试会计次）；
+//  2. 设置成功写一条通知 + 登录记录，主人事后能看见「谁在什么时候设的密码」。
 func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 	if s.auth.Initialized() {
 		writeErrCode(w, http.StatusConflict, "密码已设置，如需重置请在 NAS 面板里删除 data/auth.json 后重启容器", "already_initialized")
 		return
 	}
+	ip := s.clientIP(r)
+	if left := s.auth.LockedFor(ip); left > 0 {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":      auth.LockedHint(left),
+			"code":       "locked",
+			"retryAfter": retryAfterSeconds(left),
+		})
+		return
+	}
+	// 失败一律记一次（和登录共用计数），不给脚本无限试的机会。
+	// 第 5 次失败当场返回 429：前端能立刻起倒计时，而不是再点一次才知道被锁了。
+	reject := func(status int, msg, code string) {
+		s.st.RecordLogin(ip, false)
+		if left := s.auth.LockedFor(ip); left > 0 {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":      auth.LockedHint(left),
+				"code":       "locked",
+				"retryAfter": retryAfterSeconds(left),
+			})
+			return
+		}
+		writeErrCode(w, status, msg, code)
+	}
+
 	var in setupReq
 	if err := decodeBody(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体格式错误")
+		reject(http.StatusBadRequest, "请求体格式错误", "")
 		return
 	}
 	if in.Password != in.Confirm {
-		writeErr(w, http.StatusBadRequest, "两次输入的密码不一致")
+		reject(http.StatusBadRequest, "两次输入的密码不一致", "")
 		return
 	}
 	// 走 SetupPassword 而不是 ForceSetPassword：只靠上面那次 Initialized() 判断
@@ -164,11 +201,17 @@ func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 			writeErrCode(w, http.StatusConflict, "密码已设置，如需重置请在 NAS 面板里删除 data/auth.json 后重启容器", "already_initialized")
 			return
 		}
-		writeErr(w, http.StatusBadRequest, err.Error())
+		reject(http.StatusBadRequest, err.Error(), "")
 		return
 	}
+	s.st.RecordLogin(ip, true)
+	// 刚设密码时的几次手滑不该拖累第一次登录（与登录共用同一套计数）
+	s.st.ClearLoginFailures(ip)
+	s.nt.Emit("password_changed", map[string]string{
+		"result":  "首次设置登录密码",
+		"message": "来源 IP " + ip + "。如果不是你本人操作，请立刻删除 data/auth.json 重启并重新设置",
+	})
 	// 设置完直接登录，省一次输入
-	ip := s.clientIP(r)
 	token, err := s.auth.Verify(in.Password, ip, r.UserAgent(), true)
 	if err != nil {
 		writeOK(w, map[string]any{"ok": true, "autoLogin": false})
@@ -225,7 +268,7 @@ func (s *Server) hLogoutOthers(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.st.DeleteOtherSessions(c.Value)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err))
 		return
 	}
 	writeOK(w, map[string]any{"ok": true, "revoked": n})
@@ -249,7 +292,7 @@ func (s *Server) hChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.auth.SetPassword(in.OldPassword, in.NewPassword); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, errText(err))
 		return
 	}
 	// 旧 Cookie 已随会话一起失效，清掉它

@@ -40,6 +40,11 @@ const runtime = computed(() => (data.value?.runtime ?? {}) as Record<string, any
 const ver = computed(() => about.value?.version || version)
 
 const uptimeSeconds = computed(() => Number(runtime.value.uptimeSeconds ?? 0))
+/** 服务器是不是跑在 UTC（没设 TZ 的默认情况）—— 这时要给一句明确的提醒。 */
+const isUTC = computed(() => {
+  const tz = String(runtime.value.timeZone ?? '')
+  return tz === 'UTC' || tz === 'Etc/UTC'
+})
 
 async function load() {
   loading.value = true
@@ -255,6 +260,20 @@ onMounted(() => void load())
           <div class="text-text-5">容器 / 镜像总数</div>
           <div class="text-text-2">
             {{ runtime.containersTotal ?? '—' }} 个容器 · {{ runtime.imagesTotal ?? '—' }} 个镜像
+          </div>
+          <!--
+            时区必须露出来：计划任务的 cron 与通知的静默时段都是按服务器本地时区解释的。
+            容器里没设 TZ 时本地时区就是 UTC，用户会看到「8 点的任务 16 点才跑」，
+            却找不到任何地方能确认这件事。
+          -->
+          <div class="text-text-5">服务器时区</div>
+          <div class="text-text-2">
+            {{ runtime.timeZone ?? '—' }}
+            <span class="text-text-5">（UTC{{ runtime.timeZoneOffset ?? '' }}）</span>
+            <div v-if="isUTC" class="mt-1 text-[11px] leading-relaxed text-warn-text">
+              当前是 UTC。计划任务与静默时段都按这个时区计算，想用本地时间请在 compose 里设置
+              <code class="font-mono">TZ=Asia/Shanghai</code> 并重启容器。
+            </div>
           </div>
         </div>
       </div>

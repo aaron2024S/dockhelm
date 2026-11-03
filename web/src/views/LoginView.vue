@@ -11,8 +11,8 @@
  * ② 刷新页面时若仍在锁定期，倒计时必须接上（否则用户以为能试、一直失败）；
  * ③ 服务端返回的剩余次数要用服务端的值，不能自己减（多标签页各错一次就错乱了）。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   ArchiveRestore,
   ArrowRight,
@@ -30,15 +30,21 @@ import {
 } from 'lucide-vue-next'
 import { useAppStore } from '@/stores/app'
 import { ApiError } from '@/api/client'
+import { safeRedirect } from '@/router'
 import { version } from '@/config'
 
 const app = useAppStore()
 const router = useRouter()
+const route = useRoute()
 
 const mode = ref<'loading' | 'setup' | 'login'>('loading')
 const password = ref('')
 const confirm = ref('')
 const showPw = ref(false)
+/** 密码输入框：登录失败后要把焦点放回去，不然光标掉到 BODY 上得再点一次。 */
+const pwInput = ref<HTMLInputElement | null>(null)
+/** 「忘记密码」的展开状态。 */
+const showForgot = ref(false)
 const keep = ref(true)
 const busy = ref(false)
 const errorMsg = ref('')
@@ -117,7 +123,7 @@ const strength = computed(() => {
   const p = password.value
   if (!p) return 0
   let s = 0
-  if (p.length >= 6) s++
+  if (p.length >= app.minPasswordLength) s++
   if (p.length >= 10) s++
   if (/[A-Za-z]/.test(p) && /\d/.test(p)) s++
   if (/[^A-Za-z0-9]/.test(p)) s++
@@ -162,20 +168,36 @@ const submitLabel = computed(() => {
   return isSetup.value ? '设置并进入' : '登 录'
 })
 
+/**
+ * 登录成功后的落脚点。
+ *
+ * 优先回「被踢出去时所在的那一页」（?redirect=…）—— 从容器详情页掉线，
+ * 回来不该再从总览点三层。只接受站内绝对路径（见 safeRedirect）。
+ */
+function goAfterLogin() {
+  const back = safeRedirect(route.query.redirect)
+  router.replace(back ?? '/overview')
+}
+
 onMounted(async () => {
   if (!app.ready) await app.bootstrap()
   if (!app.initialized) {
     mode.value = 'setup'
+    await nextTick()
+    pwInput.value?.focus()
     return
   }
   if (app.loggedIn) {
-    router.replace('/overview')
+    goAfterLogin()
     return
   }
   mode.value = 'login'
   remaining.value = app.maxFailures - app.failures
   // 刷新页面后仍在锁定期：提示与倒计时都要接上，别让用户以为能试却一直失败
   if (app.lockedFor > 0) applyLock(app.lockedHint, app.lockedFor)
+  // autofocus 只在首次解析 DOM 时生效；表单是条件渲染出来的，得手动聚焦
+  await nextTick()
+  pwInput.value?.focus()
 })
 
 async function submit() {
@@ -186,15 +208,17 @@ async function submit() {
     if (isSetup.value) {
       const res = await app.setup(password.value, confirm.value)
       if (res.autoLogin) {
-        router.replace('/overview')
+        goAfterLogin()
       } else {
         mode.value = 'login'
         password.value = ''
         confirm.value = ''
+        await nextTick()
+        pwInput.value?.focus()
       }
     } else {
       await app.login(password.value, keep.value)
-      router.replace('/overview')
+      goAfterLogin()
     }
   } catch (e) {
     if (e instanceof ApiError) {
@@ -205,6 +229,9 @@ async function submit() {
         errorMsg.value = e.message
         if (typeof payload?.remaining === 'number') remaining.value = payload.remaining
         if (e.code === 'bad_password') password.value = ''
+        // 密码被清空了，焦点必须跟着回去：否则光标停在 BODY 上，用户得再点一次输入框
+        await nextTick()
+        pwInput.value?.focus()
       }
     } else {
       errorMsg.value = e instanceof Error ? e.message : String(e)
@@ -285,6 +312,7 @@ async function submit() {
               <Lock class="h-[15px] w-[15px] flex-none text-text-6" />
               <input
                 id="dh-pw"
+                ref="pwInput"
                 v-model="password"
                 :type="showPw ? 'text' : 'password'"
                 :placeholder="isSetup ? `至少 ${app.minPasswordLength} 位` : '请输入密码'"
@@ -368,7 +396,31 @@ async function submit() {
             密码只存 <code class="font-mono">bcrypt</code> 哈希，明文不落盘、也不写日志。<br />
             Dockhelm 持有 Docker 套接字，等于宿主机 root 权限，请务必设置密码。
           </p>
-          <p v-else class="dh-auth-note">连续错 {{ app.maxFailures }} 次锁定 5 分钟</p>
+          <template v-else>
+            <!--
+              「锁定 5 分钟」这句以前不准确：锁定是滑动窗口，放行时刻取决于最早那次
+              失败滑出窗口的瞬间，实际可能只有 4 分多。文案改成上限说法，和倒计时不再打架。
+            -->
+            <p class="dh-auth-note">
+              连续错 {{ app.maxFailures }} 次会临时锁定，最长 5 分钟<br />
+              会话连续 48 小时没使用也会自动失效
+            </p>
+
+            <div class="dh-auth-forgot">
+              <button type="button" class="dh-auth-link" @click="showForgot = !showForgot">
+                {{ showForgot ? '收起' : '忘记密码？' }}
+              </button>
+              <div v-if="showForgot" class="dh-auth-tip">
+                <p>面板不联网、也不存明文密码，所以没有「找回」入口，只能重置：</p>
+                <ol>
+                  <li>在 NAS 的文件管理里找到 Dockhelm 的数据目录（compose 里挂载的那个）。</li>
+                  <li>删掉目录里的 <code>auth.json</code>。</li>
+                  <li>重启容器，再打开面板就会回到「设置密码」。</li>
+                </ol>
+                <p class="dh-auth-tip-warn">重置后，所有设备上已有的登录会一并失效。</p>
+              </div>
+            </div>
+          </template>
         </template>
       </form>
 

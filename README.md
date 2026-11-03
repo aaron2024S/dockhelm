@@ -138,7 +138,7 @@ docker compose up -d
 
 打开 `http://<你的NAS_IP>:5923`，首次进入会让你设置访问密码。
 
-> **首次登录没有默认密码**，也不会有 `admin/admin` 这种出厂账号 —— 容器起来后打开面板，会直接进入「设置访问密码」引导页，密码由你自己设定（至少 6 位，只保存 bcrypt 哈希，明文不落盘）。想跳过这一步，可以在 compose 里加一行 `DOCKHELM_PASSWORD=你的密码`，容器启动时会直接设好。忘了密码：删掉 `data/auth.json` 后重启容器即可重设。
+> **首次登录没有默认密码**，也不会有 `admin/admin` 这种出厂账号 —— 容器起来后打开面板，会直接进入「设置访问密码」引导页，密码由你自己设定（**至少 8 位，不能是纯数字**，只保存 bcrypt 哈希，明文不落盘）。想跳过这一步，可以在 compose 里加一行 `DOCKHELM_PASSWORD=你的密码`，容器启动时会直接设好。忘了密码：删掉 `data/auth.json` 后重启容器即可重设（登录页的「忘记密码？」里也写了这条）。
 
 镜像 tag 有两个，按需选一个：
 
@@ -259,6 +259,7 @@ environment:
 | `DOCKHELM_HOST_LABEL` | 空 | 通知里「主机」显示什么。默认自动取机器型号（读 DMI/设备树，如 dx4600），取不到用主机名；想自定义就填这个 |
 | `DOCKHELM_TRUSTED_PROXIES` | 空 | 反代 IP 白名单。**只有填了它，后端才会信任 `X-Forwarded-For`** |
 | `DOCKHELM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `TZ` | 空（容器内即 UTC） | 服务器时区。**计划任务的 cron 与通知的「静默时段」都按它解释**；不设会整体偏 8 小时（在「关于」页能看到当前生效的时区） |
 
 ---
 
@@ -441,7 +442,14 @@ Dockhelm 挂载了 `/var/run/docker.sock`，**这等价于宿主机的 root 权�
 - 需要在公网访问时，请套一层带 HTTPS 与额外认证的反向代理，
   在设置里填好「面板地址」，并把 `DOCKHELM_TRUSTED_PROXIES` 设成你的反代 IP
 - 忘记密码：在 NAS 面板里删掉 `data/auth.json` 后重启容器即可重设；
-  或者在 compose 里临时加一行 `DOCKHELM_PASSWORD=新密码`
+  或者在 compose 里临时加一行 `DOCKHELM_PASSWORD=新密码`（登录页的「忘记密码？」里也写着这条）
+- 密码规则：至少 8 位、不能是纯数字；连续错 5 次会临时锁定最长 5 分钟
+- 会话：勾「保持登录」有效期 7 天，但连续 48 小时没访问会失效；
+  服务端只存 token 的 SHA-256，数据目录被整份拷走也拿不到可用的登录态
+- 首启设置密码没有默认口令，所以**请尽快完成首次设置**：在没设密码之前，
+  任何能访问到端口的人都能抢先设一个。完成设置会推一条「密码已设置」通知，可据此核对
+- 面板会下发 `Content-Security-Policy` / `X-Frame-Options: DENY` 等安全头，
+  且拒绝被任何站点用 iframe 嵌入
 
 ---
 
