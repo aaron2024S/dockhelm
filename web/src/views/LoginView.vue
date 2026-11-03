@@ -1,9 +1,36 @@
 <script setup lang="ts">
+/**
+ * 登录 / 首次设置密码。
+ *
+ * 布局：左边品牌区（介绍面板能干什么 + 鉴权说明），右边表单。
+ * 单用户密码模式 —— mailnest 那种「用户名 + 密码」在这里没有意义，
+ * 所以首次部署只让设一个密码，之后也只要求输密码。
+ *
+ * 交互上几件容易被忽略的事，都在下面处理了：
+ * ① 用真 <form> + submit：回车能提交，浏览器密码管理器也认得出这是登录框；
+ * ② 刷新页面时若仍在锁定期，倒计时必须接上（否则用户以为能试、一直失败）；
+ * ③ 服务端返回的剩余次数要用服务端的值，不能自己减（多标签页各错一次就错乱了）。
+ */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Eye, EyeOff, Loader2 } from 'lucide-vue-next'
+import {
+  ArchiveRestore,
+  ArrowRight,
+  Bell,
+  Boxes,
+  CalendarClock,
+  Eye,
+  EyeOff,
+  Layers,
+  ListOrdered,
+  Loader2,
+  Lock,
+  RefreshCw,
+  TriangleAlert,
+} from 'lucide-vue-next'
 import { useAppStore } from '@/stores/app'
 import { ApiError } from '@/api/client'
+import { version } from '@/config'
 
 const app = useAppStore()
 const router = useRouter()
@@ -22,6 +49,17 @@ const lockDeadline = ref(0)
 /** 每秒推一下的「现在」，只为驱动倒计时重算。 */
 const nowTick = ref(Date.now())
 let lockTimer: number | undefined
+
+/** 左侧品牌区条目：只写用户真正能感知的能力，不写实现细节。 */
+const features = [
+  { icon: Boxes, name: '容器', desc: '启停重启、日志跟随、实时资源占用，环境变量自动脱敏' },
+  { icon: Layers, name: '镜像与加速源', desc: '体积与引用数、清理未使用；实测生效的加速站与 daemon.json' },
+  { icon: RefreshCw, name: '更新与自动更新', desc: '巡检后标出可更新，按周期自动更新；镜像没变就不动容器' },
+  { icon: CalendarClock, name: '计划任务', desc: '5 段 cron：启动 / 停止 / 重启 / 更新 / 备份 / 清理' },
+  { icon: ListOrdered, name: '顺序启动', desc: '开机后按你排的顺序串行拉起：拖拽排序、逐行延时、逐行开关' },
+  { icon: ArchiveRestore, name: '备份与恢复', desc: '配置快照、差异预览、一键还原；compose / .env 一并备份' },
+  { icon: Bell, name: '通知', desc: '11 类渠道、按事件订阅；静默时段、去重、失败重试与推送历史' },
+]
 
 /** 锁定还要等多少秒（向上取整，0 表示已解锁）。 */
 const lockLeft = computed(() => {
@@ -73,8 +111,6 @@ onUnmounted(() => {
 })
 
 const isSetup = computed(() => mode.value === 'setup')
-const title = computed(() => (isSetup.value ? '首次启动' : 'Dockhelm'))
-const subtitle = computed(() => (isSetup.value ? '设置访问密码后才能使用' : '请输入密码以继续'))
 
 /** 密码强度：0~4 */
 const strength = computed(() => {
@@ -89,9 +125,17 @@ const strength = computed(() => {
 })
 const strengthLabel = computed(() => ['', '偏弱', '一般', '较强', '很强'][strength.value])
 
+/** 强度条下的说明：没输入时别显示「强度：」这个空壳。 */
+const strengthHint = computed(() =>
+  password.value
+    ? `强度：${strengthLabel.value} · 至少 ${app.minPasswordLength} 位，建议含数字与符号`
+    : `至少 ${app.minPasswordLength} 位，建议含数字与符号`,
+)
+
 const canSubmit = computed(() => {
   if (busy.value || locked.value) return false
-  if (isSetup.value) return password.value.length >= app.minPasswordLength && password.value === confirm.value
+  if (isSetup.value)
+    return password.value.length >= app.minPasswordLength && password.value === confirm.value
   return password.value.length > 0
 })
 
@@ -103,15 +147,19 @@ const bannerTone = computed(() =>
 const bannerText = computed(() => {
   if (locked.value) {
     // 光说「请稍后再试」等于没说：把服务端的「约 N 分钟」和本地倒计时一起摆出来
-    return lockLeft.value > 0
-      ? `${errorMsg.value}（剩余 ${mmss(lockLeft.value)}）`
-      : errorMsg.value
+    return lockLeft.value > 0 ? `${errorMsg.value}（剩余 ${mmss(lockLeft.value)}）` : errorMsg.value
   }
   if (!errorMsg.value) return ''
   if (remaining.value !== null && remaining.value > 0) {
     return `${errorMsg.value}，还可尝试 ${remaining.value} 次`
   }
   return errorMsg.value
+})
+
+const submitLabel = computed(() => {
+  if (busy.value) return '请稍候…'
+  if (locked.value) return lockLeft.value > 0 ? `已锁定 ${mmss(lockLeft.value)}` : '已锁定'
+  return isSetup.value ? '设置并进入' : '登 录'
 })
 
 onMounted(async () => {
@@ -165,46 +213,15 @@ async function submit() {
     busy.value = false
   }
 }
-
-function onEnter() {
-  void submit()
-}
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-ink-900">
-    <!-- 全宽顶栏（与其它页面同一套外壳） -->
-    <header class="flex flex-none items-center gap-2.5 border-b border-line-2 bg-ink-850 px-[18px] py-3">
-      <!--
-        顶栏标必须与 AppShell 完全一致（同一套罗盘标）。
-        这里原来落着一个字母「D」—— 2026-10-09 换标时漏了这一处（当时只算了 5 个落点）。
-      -->
-      <div
-        class="grid h-[27px] w-[27px] flex-none place-items-center rounded-[9px] bg-accent text-accent-ink"
-      >
-        <svg viewBox="0 0 32 32" class="h-[19px] w-[19px]">
-          <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
-          <path
-            fill-rule="evenodd"
-            fill="currentColor"
-            d="M16 5.9 18.76 13.24 26.1 16 18.76 18.76 16 26.1 13.24 18.76 5.9 16 13.24 13.24ZM18.2 16A2.2 2.2 0 1 0 13.8 16A2.2 2.2 0 1 0 18.2 16Z"
-          />
-        </svg>
-      </div>
-      <div class="text-[14px] font-semibold tracking-[.2px]">Dockhelm</div>
-      <div class="text-[12px] text-text-4">登录与账户</div>
-    </header>
-
-    <div class="relative flex flex-1 flex-col items-center justify-center gap-[14px] px-5 py-10">
-      <!-- 顶部柔光，对应设计稿 .lgpane.soft -->
-      <div
-        class="pointer-events-none absolute inset-x-0 top-0 h-[420px]"
-        style="background: radial-gradient(560px 260px at 50% 0%, var(--color-glow), transparent 72%)"
-      />
-
-      <div class="relative flex w-[312px] flex-col gap-[13px] rounded-[16px] border border-line-1 bg-ink-700 p-[22px]">
-        <div class="dh-lglogo">
-          <svg viewBox="0 0 32 32" class="h-[29px] w-[29px]">
+  <div class="dh-auth">
+    <!-- ============ 左：品牌区 ============ -->
+    <aside class="dh-auth-brand">
+      <div class="dh-auth-top">
+        <div class="dh-auth-mark">
+          <svg viewBox="0 0 32 32" class="h-[21px] w-[21px]">
             <circle cx="16" cy="16" r="12.3" fill="none" stroke="currentColor" stroke-width="2.6" />
             <path
               fill-rule="evenodd"
@@ -213,81 +230,66 @@ function onEnter() {
             />
           </svg>
         </div>
+        <div class="text-[16px] font-semibold tracking-[-.2px]">Dockhelm</div>
+      </div>
 
-        <div class="text-center">
-          <div class="text-[16px] font-semibold">{{ title }}</div>
-          <div class="mt-[3px] text-[12px] text-text-4">{{ subtitle }}</div>
-        </div>
+      <div class="dh-auth-mid">
+        <h1>容器、镜像、任务，<br />一个面板全收住</h1>
+        <p class="dh-auth-lead">
+          打开就是总览：容器、镜像、更新、任务都在这儿。<br />
+          不用再记一堆 docker 命令，也不用 SSH 翻 compose。
+        </p>
+        <ul class="dh-auth-feats">
+          <li v-for="f in features" :key="f.name">
+            <span class="dh-auth-ico">
+              <component :is="f.icon" class="h-[15px] w-[15px]" />
+            </span>
+            <div>
+              <b>{{ f.name }}</b>
+              <span class="d">{{ f.desc }}</span>
+            </div>
+          </li>
+        </ul>
+        <p class="dh-auth-extra">
+          登录只要一个密码：<b>bcrypt</b> 哈希落盘、HttpOnly 会话、连续失败锁定。
+        </p>
+      </div>
 
-        <div v-if="mode === 'loading'" class="grid h-[110px] place-items-center text-text-5">
+      <div class="dh-auth-brandfoot">© 2026 Dockhelm · MIT 许可</div>
+    </aside>
+
+    <!-- ============ 右：表单 ============ -->
+    <main class="dh-auth-form">
+      <form class="dh-auth-box" @submit.prevent="submit">
+        <template v-if="isSetup">
+          <span class="dh-auth-eyebrow"><i />首次启动</span>
+          <h2>设置访问密码</h2>
+          <p class="dh-auth-sub">这台 Dockhelm 还没有密码。先设一个，之后用它进入面板。</p>
+        </template>
+        <template v-else>
+          <h2>登录 Dockhelm</h2>
+          <p class="dh-auth-sub">输入访问密码继续。</p>
+        </template>
+
+        <div v-if="mode === 'loading'" class="grid h-[120px] place-items-center text-text-5">
           <Loader2 class="h-5 w-5 dh-spin" />
         </div>
 
         <template v-else>
-          <!-- 首次启动 -->
-          <template v-if="isSetup">
-            <div>
-              <label class="mb-[5px] block text-[12px] text-text-4">新密码</label>
-              <div class="dh-field">
-                <input
-                  v-model="password"
-                  :type="showPw ? 'text' : 'password'"
-                  :placeholder="`至少 ${app.minPasswordLength} 位`"
-                  autocomplete="new-password"
-                  autofocus
-                  @keyup.enter="onEnter"
-                />
-                <button
-                  type="button"
-                  class="dh-eye"
-                  :title="showPw ? '隐藏密码' : '显示密码'"
-                  :aria-label="showPw ? '隐藏密码' : '显示密码'"
-                  @click="showPw = !showPw"
-                >
-                  <EyeOff v-if="showPw" class="h-[15px] w-[15px]" />
-                  <Eye v-else class="h-[15px] w-[15px]" />
-                </button>
-              </div>
-              <div class="mt-[7px] flex gap-1">
-                <i
-                  v-for="i in 4"
-                  :key="i"
-                  class="h-[4px] flex-1 rounded-[2px]"
-                  :class="i <= strength ? 'bg-run' : 'bg-line-1'"
-                />
-              </div>
-              <div class="mt-[5px] text-[11.5px] text-text-5">
-                强度：{{ strengthLabel }} · 至少 {{ app.minPasswordLength }} 位，建议含数字与符号
-              </div>
-            </div>
-
-            <div>
-              <label class="mb-[5px] block text-[12px] text-text-4">确认密码</label>
-              <div class="dh-field">
-                <input
-                  v-model="confirm"
-                  :type="showPw ? 'text' : 'password'"
-                  placeholder="再输一次"
-                  autocomplete="new-password"
-                  @keyup.enter="onEnter"
-                />
-              </div>
-              <div v-if="confirm && confirm !== password" class="mt-[5px] text-[11.5px] text-err-text">
-                两次输入不一致
-              </div>
-            </div>
-          </template>
-
-          <!-- 正常登录 -->
-          <template v-else>
-            <div class="dh-field">
+          <!-- 密码（首次要输两遍） -->
+          <div class="mb-[15px]">
+            <label class="mb-[7px] block text-[12.5px] font-semibold text-text-3" for="dh-pw">
+              {{ isSetup ? '密码' : '访问密码' }}
+            </label>
+            <div class="dh-field !h-[42px]">
+              <Lock class="h-[15px] w-[15px] flex-none text-text-6" />
               <input
+                id="dh-pw"
                 v-model="password"
                 :type="showPw ? 'text' : 'password'"
-                placeholder="请输入密码"
-                autocomplete="current-password"
+                :placeholder="isSetup ? `至少 ${app.minPasswordLength} 位` : '请输入密码'"
+                :autocomplete="isSetup ? 'new-password' : 'current-password'"
                 autofocus
-                @keyup.enter="onEnter"
               />
               <button
                 type="button"
@@ -300,15 +302,47 @@ function onEnter() {
                 <Eye v-else class="h-[15px] w-[15px]" />
               </button>
             </div>
-          </template>
+
+            <template v-if="isSetup">
+              <div class="mt-[8px] flex gap-1">
+                <i
+                  v-for="i in 4"
+                  :key="i"
+                  class="h-[4px] flex-1 rounded-[2px]"
+                  :class="i <= strength ? 'bg-run' : 'bg-line-1'"
+                />
+              </div>
+              <p class="mt-[6px] text-[11.5px] text-text-6">{{ strengthHint }}</p>
+            </template>
+          </div>
+
+          <div v-if="isSetup" class="mb-[15px]">
+            <label class="mb-[7px] block text-[12.5px] font-semibold text-text-3" for="dh-pw2">
+              确认密码
+            </label>
+            <div class="dh-field !h-[42px]">
+              <Lock class="h-[15px] w-[15px] flex-none text-text-6" />
+              <input
+                id="dh-pw2"
+                v-model="confirm"
+                :type="showPw ? 'text' : 'password'"
+                placeholder="再输一次"
+                autocomplete="new-password"
+              />
+            </div>
+            <p v-if="confirm && confirm !== password" class="mt-[6px] text-[11.5px] text-err-text">
+              两次输入不一致
+            </p>
+          </div>
 
           <div
             v-if="bannerText"
-            class="dh-banner !gap-2.5 !py-2 !pl-[11px] !pr-[11px] !text-[12px]"
+            class="dh-banner mb-[14px] !items-start !gap-2 !py-[9px] !pl-[11px] !pr-[11px] !text-[12.5px]"
             :class="bannerTone"
+            role="alert"
           >
-            <span class="h-[13px] w-[13px] flex-none rounded-[4px] bg-current opacity-50" />
-            {{ bannerText }}
+            <TriangleAlert class="h-[14px] w-[14px] flex-none translate-y-[1px]" />
+            <span>{{ bannerText }}</span>
           </div>
 
           <label
@@ -320,25 +354,27 @@ function onEnter() {
           </label>
 
           <button
-            type="button"
-            class="w-full rounded-[10px] bg-accent px-3 py-2.5 text-center text-[13px] font-semibold text-accent-ink transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
+            type="submit"
+            class="dh-auth-submit"
             :disabled="!canSubmit"
-            @click="submit"
+            :aria-busy="busy"
           >
-            {{ busy ? '请稍候…' : locked ? `已锁定 ${mmss(lockLeft)}` : isSetup ? '完成并进入' : '登 录' }}
+            <Loader2 v-if="busy" class="h-[15px] w-[15px] dh-spin" />
+            <span>{{ submitLabel }}</span>
+            <ArrowRight v-if="!busy" class="arrow" />
           </button>
 
-          <div v-if="!isSetup" class="text-center text-[11.5px] text-text-6">
-            连续错 {{ app.maxFailures }} 次锁定 5 分钟
-          </div>
+          <p v-if="isSetup" class="dh-auth-note">
+            密码只存 <code class="font-mono">bcrypt</code> 哈希，明文不落盘、也不写日志。<br />
+            Dockhelm 持有 Docker 套接字，等于宿主机 root 权限，请务必设置密码。
+          </p>
+          <p v-else class="dh-auth-note">连续错 {{ app.maxFailures }} 次锁定 5 分钟</p>
         </template>
-      </div>
+      </form>
 
-      <div v-if="isSetup" class="relative w-[312px] text-center text-[11.5px] leading-[1.7] text-text-6">
-        密码只存 <span class="font-mono">bcrypt</span> 哈希，明文不落盘、也不写日志。
-        <br />
-        Dockhelm 持有 Docker 套接字，等于拥有宿主机 root 权限，请务必设置密码。
+      <div class="dh-auth-formfoot">
+        Dockhelm {{ version }}<span class="sep">·</span>单用户密码
       </div>
-    </div>
+    </main>
   </div>
 </template>

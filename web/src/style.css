@@ -1015,3 +1015,346 @@ html.light {
     }
   }
 }
+
+/* ===== 登录 / 首次设置页（左品牌区 + 右表单，2026-11-03 改版） =====
+   左栏是**固定深青渐变**（两套主题都用它，文字颜色因此写死为浅色），
+   右栏跟着主题走。这样亮色主题下左右仍有对比，不会变成一整片白。 */
+@layer components {
+  .dh-auth {
+    display: grid;
+    grid-template-columns: minmax(360px, 44%) minmax(0, 1fr);
+    min-height: 100vh;
+  }
+
+  /* ---- 左：品牌区 ---- */
+  .dh-auth-brand {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 38px 26px;
+    color: #eafbf8;
+    background: linear-gradient(158deg, #04161a 0%, #06262b 26%, #0a4247 62%, #0f6b66 100%);
+  }
+  .dh-auth-brand::before,
+  .dh-auth-brand::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .dh-auth-brand::before {
+    width: 760px;
+    height: 760px;
+    right: -250px;
+    top: -300px;
+    background: radial-gradient(
+      circle,
+      rgba(94, 234, 212, 0.2) 0%,
+      rgba(94, 234, 212, 0.05) 44%,
+      transparent 70%
+    );
+  }
+  .dh-auth-brand::after {
+    width: 620px;
+    height: 620px;
+    left: -240px;
+    bottom: -300px;
+    background: radial-gradient(
+      circle,
+      rgba(45, 212, 191, 0.18) 0%,
+      rgba(45, 212, 191, 0.04) 46%,
+      transparent 72%
+    );
+  }
+  .dh-auth-top {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    flex: none;
+  }
+  .dh-auth-mark {
+    width: 34px;
+    height: 34px;
+    flex: none;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    color: #7ff0e0;
+    background: rgba(94, 234, 212, 0.14);
+    border: 1px solid rgba(94, 234, 212, 0.28);
+  }
+  .dh-auth-mid {
+    position: relative;
+    z-index: 2;
+    /* 上下 auto 外边距 = 品牌区在栏内垂直居中；内容超高时自动退化为顶对齐 */
+    margin: auto 0;
+    padding: 30px 0 26px;
+    max-width: 452px;
+  }
+  .dh-auth-mid h1 {
+    margin: 0 0 14px;
+    font-size: clamp(25px, 2.6vw, 36px);
+    line-height: 1.28;
+    font-weight: 700;
+    letter-spacing: -1px;
+  }
+  .dh-auth-lead {
+    margin: 0 0 22px;
+    font-size: 13px;
+    line-height: 1.85;
+    color: rgba(255, 255, 255, 0.72);
+    max-width: 386px;
+  }
+  .dh-auth-feats {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .dh-auth-feats li {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+  }
+  .dh-auth-feats b {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    color: rgba(255, 255, 255, 0.95);
+  }
+  /* 描述单行：宽度够时**绝不换行**（换行会让整块高度失控），宽度不足由外层 media 收 */
+  .dh-auth-feats .d {
+    display: block;
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.66);
+  }
+  .dh-auth-ico {
+    width: 29px;
+    height: 29px;
+    flex: none;
+    margin-top: 1px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+  }
+  .dh-auth-extra {
+    margin: 18px 0 0;
+    padding-top: 15px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: rgba(255, 255, 255, 0.52);
+  }
+  .dh-auth-extra b {
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.72);
+  }
+  .dh-auth-brandfoot {
+    position: relative;
+    z-index: 2;
+    flex: none;
+    font-size: 11.5px;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  /* ---- 右：表单区 ---- */
+  .dh-auth-form {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 28px 64px;
+    background: var(--color-ink-900);
+  }
+  .dh-auth-box {
+    width: 100%;
+    max-width: 346px;
+  }
+  .dh-auth-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 13px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 99px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--color-accent-text);
+    background: var(--color-accent-soft);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  }
+  .dh-auth-eyebrow i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .dh-auth-box h2 {
+    margin: 0 0 7px;
+    font-size: 22px;
+    line-height: 1.3;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+  }
+  .dh-auth-sub {
+    margin: 0 0 22px;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--color-text-5);
+  }
+  .dh-auth-note {
+    margin: 14px 0 0;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--color-text-6);
+    text-align: center;
+  }
+  .dh-auth-formfoot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 22px;
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--color-text-6);
+  }
+  .dh-auth-formfoot .sep {
+    margin: 0 6px;
+    opacity: 0.5;
+  }
+
+  /* 主按钮：比列表页的 .dh-btn 大一档（登录页只有这一个动作，值得占满宽度） */
+  .dh-auth-submit {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    width: 100%;
+    height: 44px;
+    margin-top: 16px;
+    border: 0;
+    border-radius: 11px;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--color-accent-ink);
+    background: var(--color-accent);
+    cursor: pointer;
+    transition:
+      filter 0.18s,
+      transform 0.12s,
+      opacity 0.18s;
+  }
+  .dh-auth-submit:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .dh-auth-submit:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  /* 键盘 Tab 到按钮时必须有可见焦点，否则纯键盘操作会「不知道停在哪」 */
+  .dh-auth-submit:focus-visible {
+    outline: 2px solid var(--color-accent-line);
+    outline-offset: 2px;
+  }
+  .dh-auth-submit:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .dh-auth-submit .arrow {
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    width: 15px;
+    height: 15px;
+    transform: translateY(-50%);
+  }
+}
+
+/* ---- 窄屏（<900px）：品牌区收成一条顶栏，只留 logo + 名称，表单占满 ---- */
+@media (max-width: 900px) {
+  .dh-auth {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .dh-auth-brand {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    background: linear-gradient(120deg, #06262b 0%, #0a4247 70%, #0f6b66 100%);
+  }
+  .dh-auth-brand::after {
+    display: none;
+  }
+  .dh-auth-mid,
+  .dh-auth-brandfoot {
+    display: none;
+  }
+  .dh-auth-form {
+    justify-content: flex-start;
+    padding: 30px 22px 64px;
+  }
+  .dh-auth-box {
+    margin-top: 22px;
+  }
+}
+
+/* ---- 窄一些的桌面（1024 一带）：品牌区只有约 330px 内容宽，描述字号降半档防折行 ---- */
+@media (max-width: 1100px) and (min-width: 901px) {
+  .dh-auth-feats .d {
+    font-size: 11.5px;
+  }
+}
+
+/* ---- 矮屏（横向空间够但高度紧张，如 1366×768）：压缩品牌区，别把页脚挤出去 ---- */
+@media (max-height: 820px) and (min-width: 901px) {
+  .dh-auth-brand {
+    padding: 22px 32px 20px;
+  }
+  .dh-auth-mid {
+    padding: 20px 0 18px;
+  }
+  .dh-auth-mid h1 {
+    font-size: 25px;
+    margin-bottom: 10px;
+  }
+  .dh-auth-lead {
+    margin-bottom: 15px;
+    line-height: 1.72;
+  }
+  .dh-auth-feats {
+    gap: 9px;
+  }
+  .dh-auth-feats .d {
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .dh-auth-extra {
+    display: none;
+  }
+}
+@media (max-height: 680px) and (min-width: 901px) {
+  .dh-auth-form {
+    justify-content: flex-start;
+    overflow-y: auto;
+  }
+  .dh-auth-formfoot {
+    display: none;
+  }
+}
+@media (max-height: 620px) and (min-width: 901px) {
+  .dh-auth-feats li:nth-child(n + 6) {
+    display: none;
+  }
+}
