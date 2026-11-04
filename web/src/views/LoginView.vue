@@ -266,15 +266,6 @@ async function submit() {
           打开就是总览：容器、镜像、更新、任务都在这儿。<br />
           不用再记一堆 docker 命令，也不用 SSH 翻 compose。
         </p>
-        <!--
-          手机端的能力标签：窄屏放不下 7 条带描述的说明（会把表单挤到折叠线以下），
-          但又不能只剩一个 logo —— 那看起来像「加载到一半」。用标签保留能力全貌。
-          桌面端隐藏，那里用的是下面那份带描述的完整列表。
-        -->
-        <ul class="dh-auth-chips">
-          <li v-for="f in features" :key="f.name">{{ f.name }}</li>
-        </ul>
-
         <ul class="dh-auth-feats">
           <li v-for="f in features" :key="f.name">
             <span class="dh-auth-ico">

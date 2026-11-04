@@ -52,8 +52,9 @@ export const useAppStore = defineStore('app', {
         this.initialized = s.initialized
         this.loggedIn = s.loggedIn
         this.sessionCount = s.sessionCount
-        this.failures = s.failures
-        this.maxFailures = s.maxFailures
+        this.failures = s.failures || 0
+        // 后端字段缺失时不能让「连续错 N 次」变成「连续错  次」，给默认值兜底
+        this.maxFailures = s.maxFailures || 5
         this.lockedFor = s.lockedFor || 0
         this.lockedHint = s.lockedHint || ''
         this.minPasswordLength = s.minPassword || 8
