@@ -1108,6 +1108,10 @@ html.light {
     color: rgba(255, 255, 255, 0.72);
     max-width: 386px;
   }
+  /* 能力标签只在手机端出现（见下方的窄屏规则），桌面端用带描述的 .dh-auth-feats */
+  .dh-auth-chips {
+    display: none;
+  }
   .dh-auth-feats {
     list-style: none;
     margin: 0;
@@ -1281,32 +1285,113 @@ html.light {
   }
 }
 
-/* ---- 窄屏（<900px）：品牌区收成一条顶栏，只留 logo + 名称，表单占满 ---- */
+/* ---- 窄屏（<900px）：品牌区收成一张顶部卡片 ----
+   原来是「一条细栏只留 logo + 名称」，手机上看着像页面没加载完。
+   改成 mailnest 那种做法：logo 行 + 大标题 + 一句说明 + 能力标签，
+   底部做圆角，和下面的表单形成层次。
+   带描述的 7 条列表仍然隐藏 —— 手机首屏要优先保证表单和按钮可见。 */
 @media (max-width: 900px) {
   .dh-auth {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
   }
   .dh-auth-brand {
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 20px;
-    background: linear-gradient(120deg, #06262b 0%, #0a4247 70%, #0f6b66 100%);
+    flex-direction: column;
+    align-items: stretch;
+    padding: 18px 20px 20px;
+    border-radius: 0 0 24px 24px;
+    background: linear-gradient(150deg, #04161a 0%, #072a2e 42%, #0a4247 78%, #0e5b57 100%);
+  }
+  .dh-auth-brand::before {
+    width: 520px;
+    height: 520px;
+    right: -230px;
+    top: -260px;
   }
   .dh-auth-brand::after {
     display: none;
   }
-  .dh-auth-mid,
+
+  .dh-auth-mid {
+    margin: 0;
+    padding: 16px 0 0;
+    max-width: none;
+  }
+  .dh-auth-mid h1 {
+    margin-bottom: 8px;
+    font-size: 21px;
+    line-height: 1.36;
+    letter-spacing: -0.4px;
+  }
+  .dh-auth-lead {
+    margin-bottom: 13px;
+    max-width: none;
+    font-size: 12.5px;
+    line-height: 1.72;
+  }
+  /* 说明段继续用桌面那两行：手机上每行都还放得下，
+     去掉 <br> 反而会让两句话连成一段（换行处的空白会留成空格）。 */
+
+  .dh-auth-feats,
+  .dh-auth-extra,
   .dh-auth-brandfoot {
     display: none;
   }
+
+  .dh-auth-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .dh-auth-chips li {
+    padding: 3px 9px;
+    border-radius: 99px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+  }
+
   .dh-auth-form {
     justify-content: flex-start;
-    padding: 30px 22px 64px;
+    padding: 26px 20px 58px;
   }
   .dh-auth-box {
-    margin-top: 22px;
+    margin-top: 0;
+  }
+}
+
+/* ---- 超窄屏（<380px）：标题与标签降半档，别让小屏上标签折成三行 ---- */
+@media (max-width: 380px) {
+  .dh-auth-brand {
+    padding: 16px 16px 18px;
+  }
+  .dh-auth-mid h1 {
+    font-size: 19px;
+  }
+  .dh-auth-chips li {
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+  .dh-auth-form {
+    padding: 22px 16px 54px;
+  }
+}
+
+/* ---- 矮屏手机（如 568px 高）：说明让位，保住标题 + 标签 + 表单同屏 ---- */
+@media (max-width: 900px) and (max-height: 660px) {
+  .dh-auth-lead {
+    display: none;
+  }
+  .dh-auth-mid {
+    padding-top: 12px;
+  }
+  .dh-auth-mid h1 {
+    margin-bottom: 10px;
   }
 }
 
