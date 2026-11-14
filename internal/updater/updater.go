@@ -564,6 +564,14 @@ func (u *Updater) status(res *Result, st ResultStatus, msg string) {
 //
 // 语义：**镜像没变就完全不动容器**。这是对 dockerCopilot 那个
 // 「一键更新 10 个，没更新的也被停掉」缺陷的直接修复。
+//
+// ⚠ 本函数**不写运行记录**。一次操作只该在总览里留一行：
+//   - 批量（自动更新 / 手动全选）由 UpdateMany 在整轮结束后写一条汇总；
+//   - 计划任务由 scheduler 按「一次任务执行」写一条。
+//
+// 2026-11-14 之前是每台容器各写一条，于是一次更新了 2 个容器的自动更新
+// 会在同一分钟刷出「ntfy 镜像已更新」「rsshub 镜像已更新」（外加一条汇总），
+// 用户看得出这是同一个动作，要求合并成一条。
 func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Result {
 	started := time.Now()
 	res := &Result{Container: nameOrID}
@@ -571,7 +579,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	lk, err := u.lockForContainer(ctx, nameOrID)
 	if err != nil {
 		u.status(res, ResultFailed, "读取容器信息失败："+err.Error())
-		u.log("update", nameOrID, "failed", res.Message, "")
 		return res
 	}
 	lk.Lock()
@@ -582,7 +589,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	insp, err := u.dc.Inspect(ctx, nameOrID)
 	if err != nil {
 		u.status(res, ResultFailed, "读取容器信息失败："+err.Error())
-		u.log("update", nameOrID, "failed", res.Message, "")
 		return res
 	}
 	name := inspectName(insp)
@@ -615,7 +621,6 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	})
 	if err != nil {
 		u.status(res, ResultFailed, "拉取失败："+err.Error())
-		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -631,19 +636,16 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 	if res.NewImageID != "" && res.NewImageID == res.OldImageID && !force {
 		u.status(res, ResultUpToDate, "镜像已是最新")
 		u.step(res, "镜像 ID 未变化（%s），跳过重建", dockerx.ShortID(res.OldImageID))
-		u.log("update", name, "up_to_date", "镜像已是最新", strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
 	if res.NewImageID == "" {
 		u.status(res, ResultFailed, "拉取后无法读取镜像 ID，拒绝在不确定状态下重建容器")
-		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
 	if pr.UpToDate && !force && !fromCache {
 		u.status(res, ResultUpToDate, "镜像已是最新")
-		u.log("update", name, "up_to_date", "镜像已是最新", strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
@@ -670,17 +672,13 @@ func (u *Updater) Update(ctx context.Context, nameOrID string, force bool) *Resu
 		} else {
 			u.status(res, ResultBroken, failMsg+"（回滚失败，请手工处理）")
 		}
-		u.log("update", name, "failed", res.Message, strings.Join(res.Steps, "\n"))
 		res.Duration = time.Since(started).Milliseconds()
 		return res
 	}
 	res.NewImageID = newID
 	u.status(res, ResultUpdated, "更新成功"+map[bool]string{true: "", false: "（原容器为停止状态，保持停止）"}[wasRunning])
-	// 运行记录带上镜像引用：容器名在对象列，说明里补「哪个镜像被换了」——
-	// 用户 2026-10-13 的要求是「一看知道是哪个镜像发生了什么」。
-	// 注意带的是**镜像引用**（nginx:1.27）而不是镜像 ID：同 tag 反复更新时
-	// ID 每次都变，那才是纯噪音；完整过程仍在 detail 里。
-	u.log("update", name, "success", "镜像已更新", strings.Join(res.Steps, "\n"))
+	// 「哪个镜像被换了」不再写进运行记录说明（记录合并成一条后由汇总点名容器），
+	// 完整过程仍在 res.Steps 里，随汇总记录的 detail 一起落盘。
 
 	// 9. 清理旧镜像：只在确认没有任何容器再引用它时才动手。
 	res.ReclaimedBytes = u.cleanupOldImage(ctx, res.OldImageID, res.NewImageID, res)
@@ -953,6 +951,113 @@ func (u *Updater) waitHealthy(ctx context.Context, id string, before map[string]
 	}
 }
 
+// maxLogNames 运行记录里最多点名几个容器（再多就折成「等 N 个」）。
+const maxLogNames = 6
+
+// logBatch 把一整轮更新写成**一条**运行记录。
+//
+// 一次操作 = 一行：自动更新这一轮改了 3 个容器，总览里就是
+// 「更新 · 成功 · 更新了 ntfy、rsshub、dockge」一行，而不是每台一行。
+//
+// 2026-11-14 用户：「你这一个时间更新了 2 个镜像，为什么不写成一条记录」。
+// 之前是每台容器的 Update 各写一条（外加多容器时一条汇总），同一分钟里
+// 出现「ntfy 镜像已更新」「rsshub 镜像已更新」「自动更新完成」三行 ——
+// 同一个动作拆成三条，读起来像三次操作，还得自己在心里合并。
+//
+// 单台单独更新的文案保持原样（「ntfy 镜像已更新」），连续性和历史记录对得上。
+func (u *Updater) logBatch(out []Result) {
+	if len(out) == 0 {
+		return
+	}
+
+	var (
+		updated  []string // 真更新成功的容器名
+		failures []string // 「容器名：原因」
+		upToDate int
+		skipped  int
+	)
+	for _, r := range out {
+		switch r.Status {
+		case ResultUpdated:
+			updated = append(updated, r.Container)
+		case ResultUpToDate:
+			upToDate++
+		case ResultSkipped:
+			skipped++
+		default:
+			failures = append(failures, r.Container+"："+r.Message)
+		}
+	}
+	// 结果集来自并发更新，完成顺序不确定 —— 先排序，同一轮重跑文案才稳定。
+	sort.Strings(updated)
+	sort.Strings(failures)
+
+	// 明细：逐台一段，排查时仍能看到每台的过程（总览只显示一行，详情里可查）。
+	details := make([]string, 0, len(out))
+	for _, r := range out {
+		if len(r.Steps) == 0 {
+			continue
+		}
+		details = append(details, "【"+r.Container+"】\n"+strings.Join(r.Steps, "\n"))
+	}
+	detail := strings.Join(details, "\n\n")
+
+	total := len(out)
+	var status, message string
+	switch {
+	case len(failures) > 0:
+		status = "failed"
+		parts := []string{}
+		if len(updated) > 0 {
+			parts = append(parts, "更新了 "+joinNameList(updated, maxLogNames))
+		}
+		parts = append(parts, "失败 "+joinNameList(failureSubjects(failures), 3))
+		message = fmt.Sprintf("共 %d 个容器：%s", total, strings.Join(parts, "，"))
+	case len(updated) > 0 && total == 1:
+		// 单台且成功了：沿用历史文案，不因为合并逻辑变成「更新了 xxx」。
+		status = "success"
+		message = "镜像已更新"
+	case len(updated) > 0:
+		status = "success"
+		message = "更新了 " + joinNameList(updated, maxLogNames)
+		if rest := total - len(updated); rest > 0 {
+			message += fmt.Sprintf("，另有 %d 个已是最新", rest)
+		}
+	case total == 1:
+		status = "up_to_date"
+		message = out[0].Message
+	case upToDate == total:
+		status = "up_to_date"
+		message = fmt.Sprintf("共 %d 个容器，镜像均是最新", total)
+	case skipped == total:
+		status = "up_to_date"
+		message = fmt.Sprintf("共 %d 个容器，均已跳过", total)
+	default:
+		status = "up_to_date"
+		message = fmt.Sprintf("共 %d 个容器，均无需更新", total)
+	}
+
+	ref := "batch" // 名单在说明里，对象列留白（runRefShown 会隐藏 batch 占位）
+	if total == 1 {
+		ref = out[0].Container
+	}
+	u.log("update", ref, status, message, detail)
+}
+
+// failureSubjects 把「容器名：拉取失败：read tcp …」压成「容器名（拉取失败）」，
+// 运行记录一行放得下的同时仍说清是哪台、哪一步失败的。
+func failureSubjects(failures []string) []string {
+	out := make([]string, 0, len(failures))
+	for _, f := range failures {
+		if i := strings.Index(f, "："); i > 0 {
+			out = append(out, f[:i]+"（"+ShortPhase(f[i+len("："):])+"）")
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // UpdateMany 更新入口（有界并发），并把这一轮的结果汇总成**一条**通知。
 //
 // source 只影响文案前缀："auto" = 定时/启动自动更新（写「自动更新…」），其余写「更新…」。
@@ -1029,11 +1134,9 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	}
 	notice := buildBatchNotice(stats)
 
-	// 运行记录只由每台容器的 Update 各写一条（「镜像已更新」/「镜像已是最新」/失败）。
-	// 这里原本在多容器时再补一条「自动更新完成」汇总，结果是同一轮更新在总览里
-	// 多出一行，而且**只在超过 1 台时出现**（1 台没有），看起来像随机重复
-	// （2026-11-14 用户：「有时候有，有的时候没有，这一条是多余的」）。已删除。
-	// 需要总体统计时看通知 / 更新页的上一轮结果，两者都在。
+	// 运行记录：整轮**只写一条**（见 logBatch 的说明）。原来这里是让每台容器的
+	// Update 各写一条、多容器时再补一条「自动更新完成」汇总，2 台就是 3 行。
+	u.logBatch(out)
 
 	// 通知**无论几个容器都要发**：这是这一轮更新的唯一回执，单台与多台同一条文案。
 	// container 变量决定标题里的「· xxx」：必须点名具体容器（notice.Container），
