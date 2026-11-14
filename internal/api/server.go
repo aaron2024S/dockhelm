@@ -89,9 +89,11 @@ func New(d Deps) *Server {
 		mux: http.NewServeMux(), static: d.Static,
 		autoWake: make(chan wakeAction, 1),
 	}
-	// 设置是常驻状态的真相，进程一起来就先把它推给更新引擎，
+	// 设置是常驻状态的真相，进程一起来就先把它推给各常驻对象，
 	// 免得「重启之后策略回到默认值、直到用户手动存一次设置才生效」。
-	s.applyPolicy(s.readSettings())
+	cfg := s.readSettings()
+	s.applyPolicy(cfg)
+	s.applyAuthPolicy(cfg)
 	// 首次启动把预置的常用加速源直接写进「我的加速源」（只灌一次，之后用户说了算）。
 	seedRegistries(d.Store)
 	s.routes()
@@ -563,6 +565,15 @@ type Settings struct {
 	// （或还原前自动）才写，体积几十 KB，默认不碰它比误删安全得多。
 	BackupProjectKeepPerProject int `json:"backupProjectKeepPerProject"`
 	BackupProjectMaxAgeDays     int `json:"backupProjectMaxAgeDays"`
+
+	// —— 登录保护（设置页「账户」里可调，见 auth.LockPolicy） ——
+	//
+	// 放在通用设置里而不是 auth.json：这两项是「偏好」不是「凭据」，
+	// 跟数据目录一起备份、走同一套设置接口改，比塞进认证文件顺手得多。
+	// LockMaxFailures 连续失败多少次触发临时锁定。
+	LockMaxFailures int `json:"lockMaxFailures"`
+	// LockMinutes 锁定时长（分钟）。
+	LockMinutes int `json:"lockMinutes"`
 }
 
 // 检测间隔的可选值（小时）。前端下拉框与后端校验共用这一份，避免两边说法不一致。
@@ -588,6 +599,8 @@ func (s *Server) readSettings() Settings {
 	out.BackupMaxAgeDays = 30
 	out.BackupMaxTotalMB = 2048
 	out.BackupKeepPreUpdate = true
+	out.LockMaxFailures = auth.MaxFailures
+	out.LockMinutes = int(auth.LockWindow.Minutes())
 
 	readInt := func(key string, dst *int) {
 		if v := s.st.GetSetting(key, ""); v != "" {
@@ -623,6 +636,9 @@ func (s *Server) readSettings() Settings {
 	// 就把用户已有的 compose 备份清掉。
 	readInt("backup.project.keepPerProject", &out.BackupProjectKeepPerProject)
 	readInt("backup.project.maxAgeDays", &out.BackupProjectMaxAgeDays)
+	readInt("auth.maxFailures", &out.LockMaxFailures)
+	readInt("auth.lockMinutes", &out.LockMinutes)
+	out.LockMaxFailures, out.LockMinutes = normalizeLockPolicy(out.LockMaxFailures, out.LockMinutes)
 
 	out.PanelURL = s.st.GetSetting(notify.KeyPanelURL, "")
 	s.st.GetJSON("exclude.containers", &out.Exclude)
@@ -645,6 +661,39 @@ func (s *Server) applyPolicy(in Settings) {
 		DirectFirst:  in.DirectFirst,
 	})
 	s.up.SetOptions(opt)
+}
+
+// applyAuthPolicy 把「登录保护」推给认证管理器。
+//
+// 和 applyPolicy 同理：这两项改了必须立刻生效。用户把「错 3 次锁 2 分钟」
+// 存下来，结果要等重启才按 3 次算，那这个设置就是假的。
+func (s *Server) applyAuthPolicy(in Settings) {
+	s.auth.SetLockPolicy(in.LockMaxFailures, in.LockMinutes)
+}
+
+// normalizeLockPolicy 把两个数字收进合法区间。
+//
+// 0 或负数视为「没配过」，用默认值；超上限夹到上限（用户填 999 的意思就是
+// 「尽量大」）。读的时候也要过一遍 —— 直接改 JSON 把值写坏（0 / 负 / 超大）
+// 不该让面板变成「永不锁定」或者「一次就锁死」。
+func normalizeLockPolicy(maxFailures, minutes int) (int, int) {
+	switch {
+	case maxFailures <= 0:
+		maxFailures = auth.MaxFailures
+	case maxFailures < auth.MinFailureLimit:
+		maxFailures = auth.MinFailureLimit
+	case maxFailures > auth.MaxFailureLimit:
+		maxFailures = auth.MaxFailureLimit
+	}
+	switch {
+	case minutes <= 0:
+		minutes = int(auth.LockWindow.Minutes())
+	case minutes < auth.MinLockMinutes:
+		minutes = auth.MinLockMinutes
+	case minutes > auth.MaxLockMinutes:
+		minutes = auth.MaxLockMinutes
+	}
+	return maxFailures, minutes
 }
 
 func (s *Server) hGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -735,6 +784,7 @@ func (s *Server) persistSettings(in Settings) {
 	if in.BackupProjectMaxAgeDays < 0 {
 		in.BackupProjectMaxAgeDays = 0
 	}
+	in.LockMaxFailures, in.LockMinutes = normalizeLockPolicy(in.LockMaxFailures, in.LockMinutes)
 
 	// 一次性写盘：原来这里是 17 次 SetSetting，每次 SetSetting 都完整 fsync 一遍
 	// 整个 JSON —— 保存一次设置等于把整个数据文件写 17 遍。SSD 上感觉不出来，
@@ -757,6 +807,8 @@ func (s *Server) persistSettings(in Settings) {
 		"backup.keepPreUpdate":          boolStr(in.BackupKeepPreUpdate),
 		"backup.project.keepPerProject": strconv.Itoa(in.BackupProjectKeepPerProject),
 		"backup.project.maxAgeDays":     strconv.Itoa(in.BackupProjectMaxAgeDays),
+		"auth.maxFailures":              strconv.Itoa(in.LockMaxFailures),
+		"auth.lockMinutes":              strconv.Itoa(in.LockMinutes),
 	}
 	if raw, err := json.Marshal(in.Exclude); err == nil {
 		batch["exclude.containers"] = string(raw)
@@ -764,6 +816,7 @@ func (s *Server) persistSettings(in Settings) {
 	_ = s.st.SetMany(batch)
 
 	s.applyPolicy(in)
+	s.applyAuthPolicy(in)
 	// 检测频率/自动更新总开关可能刚被改过，唤醒后台循环重新计时；
 	// 若属于「刚打开自动更新」或「把间隔调小了」，则把下一轮提前（见 wakeDecision）。
 	s.wakeAutoLoop(wakeDecision(prev, in))

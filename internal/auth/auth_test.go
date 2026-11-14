@@ -140,7 +140,51 @@ func TestLockedForCountsFromTriggeringFailure(t *testing.T) {
 	}
 }
 
-// TestLockedForIgnoresOutOfWindowFailures 窗口外的失败与成功记录都不算数。
+// TestSetLockPolicyTakesEffect 设置页改完策略后，**下一次**校验就按新值算。
+//
+// 「改了要重启才生效」在这种场景下等于没改：用户把 5 次改成 3 次，多半是因为
+// 想立刻更严一点，结果还要回来重启一次容器 —— 那这个开关就是假的。
+func TestSetLockPolicyTakesEffect(t *testing.T) {
+	const ip = "10.0.0.10"
+	m := newTestManager(t)
+	m.SetLockPolicy(3, 2)
+
+	for i := 1; i <= 2; i++ {
+		if _, err := m.Verify("wrong", ip, "ua", false); !errors.Is(err, ErrBadPassword) {
+			t.Fatalf("第 %d 次失败：err = %v，期望 ErrBadPassword", i, err)
+		}
+	}
+	if _, err := m.Verify("wrong", ip, "ua", false); !errors.Is(err, ErrLocked) {
+		t.Fatalf("策略改成 3 次后，第 3 次就该锁：err = %v", err)
+	}
+	// 时长也用新值：2 分钟，不是默认的 5 分钟
+	if left := m.LockedFor(ip); left < 100*time.Second || left > 2*time.Minute {
+		t.Fatalf("LockedFor = %v，期望约 2 分钟", left)
+	}
+	if got := m.Policy(); got.MaxFailures != 3 || got.Window != 2*time.Minute {
+		t.Fatalf("Policy = %+v，期望 3 次 / 2 分钟", got)
+	}
+}
+
+// TestSetLockPolicyClamps 越界值夹到合法区间。
+//
+// 0 或负数如果被原样接受，锁定就彻底失效（n >= 0 恒成立会一直锁，
+// 或窗口为 0 永远数不到）；反过来填个 10000 分钟等于把自己永久关在门外。
+func TestSetLockPolicyClamps(t *testing.T) {
+	m := newTestManager(t)
+
+	m.SetLockPolicy(0, 0)
+	if got := m.Policy(); got.MaxFailures != MinFailureLimit || got.Window != time.Duration(MinLockMinutes)*time.Minute {
+		t.Fatalf("0 值应夹到下限，得到 %+v", got)
+	}
+
+	m.SetLockPolicy(999, 9999)
+	if got := m.Policy(); got.MaxFailures != MaxFailureLimit || got.Window != time.Duration(MaxLockMinutes)*time.Minute {
+		t.Fatalf("超大值应夹到上限，得到 %+v", got)
+	}
+}
+
+
 func TestLockedForIgnoresOutOfWindowFailures(t *testing.T) {
 	const ip = "10.0.0.5"
 	// 5 条里 2 条已滑出窗口 ⇒ 窗口内只有 3 条，不该锁

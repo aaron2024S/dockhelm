@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aaron2024s/dockhelm/internal/auth"
+)
 
 // TestSessionCookie 钉住「保持登录」的语义 —— 这是登录页那句文案背后的真实行为。
 //
@@ -41,5 +45,32 @@ func TestSessionCookie(t *testing.T) {
 	}
 	if sessionTTL(false).Hours() != 24 {
 		t.Fatalf("不勾：服务端 TTL = %v，期望 24h 兜底", sessionTTL(false))
+	}
+}
+
+// TestNormalizeLockPolicy 登录保护这两项读写都要收进合法区间。
+//
+// 直接改 JSON 把值写坏（0 / 负数 / 超大）不该让面板变成「永不锁定」或
+// 「一次就锁死」—— 读的时候过一遍比只在保存时校验更可靠。
+func TestNormalizeLockPolicy(t *testing.T) {
+	def := auth.MaxFailures
+	defMin := int(auth.LockWindow.Minutes())
+	cases := []struct {
+		in      int
+		wantMax int
+		wantMin int
+	}{
+		{5, 5, 5}, // 正常值原样保留
+		{0, def, defMin},   // 没配过 ⇒ 默认
+		{-3, def, defMin},  // 负值 ⇒ 默认
+		{1, auth.MinFailureLimit, auth.MinLockMinutes}, // 太小 ⇒ 下限
+		{999, auth.MaxFailureLimit, auth.MaxLockMinutes}, // 太大 ⇒ 上限
+	}
+	for _, c := range cases {
+		gotMax, gotMin := normalizeLockPolicy(c.in, c.in)
+		if gotMax != c.wantMax || gotMin != c.wantMin {
+			t.Fatalf("normalizeLockPolicy(%d, %d) = (%d, %d)，期望 (%d, %d)",
+				c.in, c.in, gotMax, gotMin, c.wantMax, c.wantMin)
+		}
 	}
 }

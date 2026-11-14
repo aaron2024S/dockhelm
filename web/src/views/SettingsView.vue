@@ -11,6 +11,7 @@ import {
   Save,
   ScrollText,
   SearchCheck,
+  ShieldAlert,
   SlidersHorizontal,
   Trash2,
   User,
@@ -49,6 +50,8 @@ const settings = ref<Settings>({
   backupKeepPreUpdate: true,
   backupProjectKeepPerProject: 0,
   backupProjectMaxAgeDays: 0,
+  lockMaxFailures: 5,
+  lockMinutes: 5,
 })
 const containers = ref<ContainerView[]>([])
 const logs = ref<RunLog[]>([])
@@ -58,6 +61,16 @@ const auto = ref<AutoUpdateInfo | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const newExclude = ref('')
+
+/**
+ * 登录保护：账户卡里单独编辑、单独保存。
+ *
+ * 不复用顶部那颗「保存」——它在页面最上面，用户在账户卡里改完两个数字
+ * 还要滚回去点一次，很容易以为已经存了。
+ */
+const lockMax = ref(5)
+const lockMinutes = ref(5)
+const savingLock = ref(false)
 
 const oldPw = ref('')
 const newPw = ref('')
@@ -115,6 +128,9 @@ async function load() {
     settings.value = s
     // 记下进页面时的基线：之后点「保存」先和它对比，没有变化就不发请求、不弹提示。
     savedSnapshot.value = JSON.stringify(patchBody(s))
+    // 登录保护单独编辑（在账户卡里），用独立的两份值，点它自己的「保存」才落盘
+    lockMax.value = s.lockMaxFailures
+    lockMinutes.value = s.lockMinutes
     containers.value = c.containers ?? []
     logs.value = l.logs ?? []
     account.value = a
@@ -219,6 +235,41 @@ async function save() {
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
   } finally {
     saving.value = false
+  }
+}
+
+/**
+ * 保存登录保护（连续输错次数 + 锁定时长）。
+ *
+ * 只 PATCH 这两个键：顶部「保存」管的是更新/检测/排除列表，两处互不覆盖。
+ * 后端会把越界值夹进合法区间，所以保存后一律用返回值回填，别让输入框停在
+ * 一个「看起来存了、其实被改成别的」的数字上。
+ */
+async function saveLockPolicy() {
+  if (lockMax.value === settings.value.lockMaxFailures && lockMinutes.value === settings.value.lockMinutes) {
+    toast.info('没有改动', '登录保护与上次保存时一致')
+    return
+  }
+  savingLock.value = true
+  try {
+    const next = await api.patch<Settings>('/api/settings', {
+      lockMaxFailures: lockMax.value,
+      lockMinutes: lockMinutes.value,
+    })
+    settings.value = next
+    lockMax.value = next.lockMaxFailures
+    lockMinutes.value = next.lockMinutes
+    // 登录页「还可尝试 N 次」读的是 app.maxFailures，这里同步一下，
+    // 免得回登录页看到的还是旧门限。
+    app.maxFailures = next.lockMaxFailures
+    toast.success(
+      '登录保护已保存',
+      `连续输错 ${next.lockMaxFailures} 次后锁定 ${next.lockMinutes} 分钟`,
+    )
+  } catch (e) {
+    toast.error('保存失败', e instanceof Error ? e.message : String(e))
+  } finally {
+    savingLock.value = false
   }
 }
 
@@ -542,6 +593,50 @@ onMounted(() => void load())
                   保存新密码
                 </button>
               </div>
+            </div>
+          </div>
+
+          <!--
+            登录保护：连错几次锁、锁多久。以前是 auth 包里的两个常量，
+            想调只能改代码重编镜像；现在跟着设置走，保存后下一次登录校验就按新值算。
+          -->
+          <div class="border-t border-line-1 pt-3.5">
+            <div class="mb-2.5 flex items-center gap-2 text-[12.5px] font-medium">
+              <ShieldAlert class="h-3.5 w-3.5 text-text-4" />登录保护
+              <button
+                class="dh-btn dh-btn-sm ml-auto font-normal"
+                :disabled="savingLock"
+                @click="saveLockPolicy"
+              >
+                <Loader2 v-if="savingLock" class="h-3 w-3 dh-spin" />
+                <Save v-else class="h-3 w-3" />保存
+              </button>
+            </div>
+            <div class="flex flex-col gap-2.5">
+              <SettingRow title="连续输错多少次后锁定" sub="按来源 IP 计数；登录成功即清零，不是累计" stack>
+                <div class="flex items-center gap-1.5">
+                  <input
+                    v-model.number="lockMax"
+                    type="number"
+                    min="2"
+                    max="20"
+                    class="dh-input !w-[62px] text-center"
+                  />
+                  <span class="text-[11.5px] text-text-5">次</span>
+                </div>
+              </SettingRow>
+              <SettingRow title="锁定时长" sub="从触发锁定的那次失败起算，倒计时结束自动解除" stack>
+                <div class="flex items-center gap-1.5">
+                  <input
+                    v-model.number="lockMinutes"
+                    type="number"
+                    min="1"
+                    max="60"
+                    class="dh-input !w-[62px] text-center"
+                  />
+                  <span class="text-[11.5px] text-text-5">分钟</span>
+                </div>
+              </SettingRow>
             </div>
           </div>
 

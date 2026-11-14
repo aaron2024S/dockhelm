@@ -22,7 +22,7 @@ func (s *Server) hSession(w http.ResponseWriter, r *http.Request) {
 		"initialized": s.auth.Initialized(),
 		"loggedIn":    loggedIn,
 		"failures":    s.auth.Failures(ip),
-		"maxFailures": auth.MaxFailures,
+		"maxFailures": s.auth.Policy().MaxFailures,
 		"lockedFor":   retryAfterSeconds(left),
 		"lockedHint":  auth.LockedHint(left),
 		"minPassword": auth.MinPasswordLen,
@@ -79,7 +79,7 @@ func (s *Server) hLogin(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		remaining := auth.MaxFailures - s.auth.Failures(ip)
+		remaining := s.auth.Policy().MaxFailures - s.auth.Failures(ip)
 		if remaining < 0 {
 			remaining = 0
 		}

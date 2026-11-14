@@ -453,6 +453,12 @@ export interface Settings {
   // —— compose 项目备份保留策略（与容器快照完全独立，0 = 不限制） ——
   backupProjectKeepPerProject: number
   backupProjectMaxAgeDays: number
+
+  // —— 登录保护（设置页「账户」里可调） ——
+  /** 连续输错多少次后临时锁定。后端会夹到 2–20。 */
+  lockMaxFailures: number
+  /** 锁定时长（分钟）。后端会夹到 1–60。 */
+  lockMinutes: number
 }
 
 /** 自动更新：单个容器在本轮里的去向。 */

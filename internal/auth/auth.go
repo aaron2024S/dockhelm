@@ -35,14 +35,36 @@ const CookieName = "dockhelm_session"
 const (
 	SessionTTLKeep = 7 * 24 * time.Hour
 	SessionTTL     = 24 * time.Hour
-	LockWindow     = 5 * time.Minute
-	MaxFailures    = 5
+
+	// MaxFailures / LockWindow 是锁定策略的**默认值**：设置页「账户 → 登录保护」
+	// 里可以改（存进 settings，由 SetLockPolicy 推过来）。这两个常量同时充当
+	// 配置读坏时的兜底，所以别拿它们直接做判断 —— 一律走 Manager.Policy()。
+	MaxFailures = 5
+	LockWindow  = 5 * time.Minute
+
 	// MinPasswordLen 密码长度下限。
 	//
 	// 这个面板等价于宿主机 root（挂着 docker.sock），6 位密码在离线爆破下
 	// 只是多花几分钟。8 位是「不影响可用性的最低限度」。
 	MinPasswordLen = 8
 )
+
+// 锁定策略的可调范围（设置页输入框与后端校验共用这一份）。
+//
+// 下限不能是 1：手滑一次就锁死自己，等于把面板变成需要删文件的砖头。
+// 上限也别放开：单用户面板不需要「错 200 次才锁」，那和没锁一样。
+const (
+	MinFailureLimit = 2
+	MaxFailureLimit = 20
+	MinLockMinutes  = 1
+	MaxLockMinutes  = 60
+)
+
+// LockPolicy 一次锁定策略：连错多少次、锁多久。
+type LockPolicy struct {
+	MaxFailures int
+	Window      time.Duration
+}
 
 // ErrLocked 连续失败被临时锁定。
 //
@@ -102,17 +124,58 @@ type Manager struct {
 	// loadWarning 启动时发现的问题（如 auth.json 损坏被隔离），由 main 负责打日志。
 	loadWarning string
 
+	// 登录锁定策略，默认 MaxFailures / LockWindow，可由设置页改写。
+	// 单独一把锁：Verify 里读密码哈希时已经持着 mu，别把两件事挤到同一把锁上。
+	policyMu    sync.RWMutex
+	maxFailures int
+	lockWindow  time.Duration
+
 	// Notify 登录成功/失败的告警钩子（由 main 注入，避免循环依赖）
 	Notify func(event string, vars map[string]string)
 }
 
 // New 创建认证管理器。path 为 auth.json 路径。
 func New(path string, st *store.Store) (*Manager, error) {
-	m := &Manager{path: path, store: st}
+	m := &Manager{
+		path:        path,
+		store:       st,
+		maxFailures: MaxFailures,
+		lockWindow:  LockWindow,
+	}
 	if err := m.load(); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// Policy 返回当前锁定策略。
+func (m *Manager) Policy() LockPolicy {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return LockPolicy{MaxFailures: m.maxFailures, Window: m.lockWindow}
+}
+
+// SetLockPolicy 更新锁定策略（设置页保存后调用，下一次校验立即生效）。
+//
+// 越界值夹到合法区间而不是拒绝：这个数字来自界面输入，让保存因为一个数字
+// 失败没有必要；但也绝不能让它变成 0 或负数 —— 那等于关掉锁定或永久锁死。
+func (m *Manager) SetLockPolicy(maxFailures, lockMinutes int) {
+	if maxFailures < MinFailureLimit {
+		maxFailures = MinFailureLimit
+	}
+	if maxFailures > MaxFailureLimit {
+		maxFailures = MaxFailureLimit
+	}
+	if lockMinutes < MinLockMinutes {
+		lockMinutes = MinLockMinutes
+	}
+	if lockMinutes > MaxLockMinutes {
+		lockMinutes = MaxLockMinutes
+	}
+	m.policyMu.Lock()
+	m.maxFailures = maxFailures
+	m.lockWindow = time.Duration(lockMinutes) * time.Minute
+	m.policyMu.Unlock()
 }
 
 func (m *Manager) load() error {
@@ -276,6 +339,7 @@ func (m *Manager) ForceSetPassword(pw string) error {
 
 // Verify 校验密码，成功返回新会话 token。
 func (m *Manager) Verify(password, ip, ua string, keep bool) (string, error) {
+	p := m.Policy()
 	if m.LockedFor(ip) > 0 {
 		return "", ErrLocked
 	}
@@ -296,14 +360,14 @@ func (m *Manager) Verify(password, ip, ua string, keep bool) (string, error) {
 		//
 		// 触发锁定的这一次也直接按「已锁定」返回：否则前端只会看到「密码错误，还可尝试 0 次」，
 		// 既不说锁了多久，也不说什么时候能重试。
-		if n := m.store.CountRecentFailures(ip, LockWindow); n >= MaxFailures {
+		if n := m.store.CountRecentFailures(ip, p.Window); n >= p.MaxFailures {
 			if m.Notify != nil {
 				m.Notify("login_locked", map[string]string{
 					// 文案不要直接格式化 time.Duration —— 会输出「5m0s」这种 Go 原文，
 					// 在中文消息里很突兀；也别漏了 result（其余 19 个事件都有）。
 					"result": "登录连续失败，已临时锁定",
 					"message": fmt.Sprintf("来源 %s 连续 %d 次密码错误，已锁定 %d 分钟",
-						ip, n, int(LockWindow.Minutes())),
+						ip, n, int(p.Window.Minutes())),
 				})
 			}
 			return "", ErrLocked
@@ -343,7 +407,7 @@ func (m *Manager) Logout(token string) error {
 
 // Failures 返回某 IP 当前窗口内的失败次数（前端用来显示剩余尝试次数）。
 func (m *Manager) Failures(ip string) int {
-	return m.store.CountRecentFailures(ip, LockWindow)
+	return m.store.CountRecentFailures(ip, m.Policy().Window)
 }
 
 // LockedFor 返回该 IP 还需要等多久才能再次尝试；未锁定返回 0。
@@ -357,15 +421,16 @@ func (m *Manager) Failures(ip string) int {
 // 解锁判定仍要求窗口内失败数真的跌破门限：并发提交时窗口里可能不止 MaxFailures 条，
 // 那就以后面那条为准（i 取两者较大者），避免出现「倒计时归零却还被拒」。
 func (m *Manager) LockedFor(ip string) time.Duration {
-	ts := m.store.RecentFailureTimes(ip, LockWindow)
-	if len(ts) < MaxFailures {
+	p := m.Policy()
+	ts := m.store.RecentFailureTimes(ip, p.Window)
+	if len(ts) < p.MaxFailures {
 		return 0
 	}
-	i := len(ts) - MaxFailures // 它滑出窗口时计数才跌破门限
-	if i < MaxFailures-1 {
-		i = MaxFailures - 1 // 但不早于「触发锁定的那次」
+	i := len(ts) - p.MaxFailures // 它滑出窗口时计数才跌破门限
+	if i < p.MaxFailures-1 {
+		i = p.MaxFailures - 1 // 但不早于「触发锁定的那次」
 	}
-	unlock := ts[i].Add(LockWindow)
+	unlock := ts[i].Add(p.Window)
 	if left := time.Until(unlock); left > 0 {
 		return left
 	}
