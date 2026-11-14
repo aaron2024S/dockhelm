@@ -98,6 +98,12 @@ func TestVerifyLocksOnFifthFailure(t *testing.T) {
 		t.Fatalf("第 %d 次失败：err = %v，期望 ErrLocked", MaxFailures, err)
 	}
 
+	// 刚触发锁定就该剩整整一个窗口：前端拿 retryAfter 起的倒计时必须是 5:00，
+	// 不能因为「最早那次失败已经过去几秒」一上来就少掉一截。
+	if left := m.LockedFor(ip); left < LockWindow-10*time.Second {
+		t.Fatalf("刚锁定 LockedFor = %v，期望约 %v", left, LockWindow)
+	}
+
 	// 锁定期内即便密码正确也进不去，且返回的仍是 ErrLocked（前端据此起倒计时）
 	if _, err := m.Verify("correct-horse", ip, "ua", false); !errors.Is(err, ErrLocked) {
 		t.Fatalf("锁定期内正确密码：err = %v，期望 ErrLocked", err)
@@ -109,12 +115,13 @@ func TestVerifyLocksOnFifthFailure(t *testing.T) {
 	}
 }
 
-// TestLockedForCountsFromOldestFailure 剩余时长按**第 (n-MaxFailures+1) 早的那次失败**
-// 滑出窗口来算，不是「最后一次失败 + 5 分钟」。
+// TestLockedForCountsFromTriggeringFailure 倒计时从「触发锁定的那次失败」起算，
+// 锁满一个完整窗口。
 //
-// 5 次失败里最早那次已过去 4 分钟 ⇒ 还剩约 1 分钟就解锁。若按「最后一次 + 5 分钟」算，
-// 会报成近 5 分钟，用户白白多等 4 分钟 —— 这条测试就是钉死这个差异。
-func TestLockedForCountsFromOldestFailure(t *testing.T) {
+// 旧实现按窗口里**最早**那次失败算：快速连错 5 次（前后只差十几秒）倒计时一上来
+// 就是 4:50，慢一点错（每次间隔 1 分钟）甚至只剩 1 分钟 —— 提示写着 5 分钟，
+// 实感却是个随机值。用户报的「怎么从 4:50 开始」就是这条。
+func TestLockedForCountsFromTriggeringFailure(t *testing.T) {
 	const ip = "10.0.0.6"
 	m := newManagerWithAttempts(t, []store.LoginAttempt{
 		failAt(4*time.Minute, ip),
@@ -127,11 +134,9 @@ func TestLockedForCountsFromOldestFailure(t *testing.T) {
 	if left <= 0 {
 		t.Fatal("5 次窗口内失败应当处于锁定态")
 	}
-	if left > 2*time.Minute {
-		t.Fatalf("LockedFor = %v，明显按「最后一次失败 + 窗口」算了；期望约 1 分钟", left)
-	}
-	if left < 30*time.Second {
-		t.Fatalf("LockedFor = %v，期望约 1 分钟（最早那次 4 分钟前失败）", left)
+	// 起点是最后一次失败（10 秒前）⇒ 还剩约 4 分 50 秒
+	if left < 4*time.Minute+40*time.Second || left > 5*time.Minute {
+		t.Fatalf("LockedFor = %v，期望约 4 分 50 秒（从触发锁定的那次失败起算）", left)
 	}
 }
 

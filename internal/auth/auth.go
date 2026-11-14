@@ -348,15 +348,24 @@ func (m *Manager) Failures(ip string) int {
 
 // LockedFor 返回该 IP 还需要等多久才能再次尝试；未锁定返回 0。
 //
-// 锁定是滑动窗口（窗口内失败 ≥ MaxFailures 就锁），所以解锁时刻不是「最后一次失败
-// + 5 分钟」，而是**第 (n-MaxFailures+1) 早的那次失败滑出窗口**的瞬间 —— 只有它掉出
-// 窗口，计数才会跌破 MaxFailures。按前者算会把等待时间报长，按后者才和真实放行时刻对上。
+// 计时起点是**触发锁定的那次失败**（窗口内第 MaxFailures 次），不是窗口里最早的
+// 那次失败。早先按最早那次算，数学上对（那条滑出窗口时计数才跌破门限），但体验很怪：
+// 快速连错 5 次前后只差十几秒，倒计时一上来就是 4:50；慢一点错（每次间隔 1 分钟）
+// 甚至只剩 1 分钟 —— 界面会提示「约 5 分钟后再试」，实感却是个随机值。
+// 用户按下第 5 次回车的那一刻才是「被锁」的开始，5 分钟理应从那里走。
+//
+// 解锁判定仍要求窗口内失败数真的跌破门限：并发提交时窗口里可能不止 MaxFailures 条，
+// 那就以后面那条为准（i 取两者较大者），避免出现「倒计时归零却还被拒」。
 func (m *Manager) LockedFor(ip string) time.Duration {
 	ts := m.store.RecentFailureTimes(ip, LockWindow)
 	if len(ts) < MaxFailures {
 		return 0
 	}
-	unlock := ts[len(ts)-MaxFailures].Add(LockWindow)
+	i := len(ts) - MaxFailures // 它滑出窗口时计数才跌破门限
+	if i < MaxFailures-1 {
+		i = MaxFailures - 1 // 但不早于「触发锁定的那次」
+	}
+	unlock := ts[i].Add(LockWindow)
 	if left := time.Until(unlock); left > 0 {
 		return left
 	}

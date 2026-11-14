@@ -446,8 +446,8 @@ func (s *Store) CountRecentFailures(ip string, window time.Duration) int {
 
 // RecentFailureTimes 某 IP 在窗口内的失败时刻，按时间升序返回。
 //
-// 给「还要锁多久」用：锁定是滑动窗口，解锁时刻 = 第 (n-MaxFailures+1) 早的那次
-// 失败滑出窗口的瞬间。只想知道次数的话用 CountRecentFailures。
+// 给「还要锁多久」用：锁定从触发锁定的那次失败（第 MaxFailures 条）起算一个窗口，
+// 所以 auth 侧要的是整串时刻而不是只要个数。只想知道次数就用 CountRecentFailures。
 func (s *Store) RecentFailureTimes(ip string, window time.Duration) []time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()

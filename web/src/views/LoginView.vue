@@ -397,15 +397,6 @@ async function submit() {
             Dockhelm 持有 Docker 套接字，等于宿主机 root 权限，请务必设置密码。
           </p>
           <template v-else>
-            <!--
-              「锁定 5 分钟」这句以前不准确：锁定是滑动窗口，放行时刻取决于最早那次
-              失败滑出窗口的瞬间，实际可能只有 4 分多。文案改成上限说法，和倒计时不再打架。
-            -->
-            <p class="dh-auth-note">
-              连续错 {{ app.maxFailures }} 次会临时锁定，最长 5 分钟<br />
-              会话连续 48 小时没使用也会自动失效
-            </p>
-
             <div class="dh-auth-forgot">
               <button type="button" class="dh-auth-link" @click="showForgot = !showForgot">
                 {{ showForgot ? '收起' : '忘记密码？' }}
