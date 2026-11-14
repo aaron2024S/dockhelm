@@ -542,10 +542,6 @@ onMounted(() => void load())
                   保存新密码
                 </button>
               </div>
-              <div class="text-[11px] leading-relaxed text-text-5">
-                忘记密码时：在 NAS 面板里删除 <code class="text-text-3">data/auth.json</code> 后重启容器，
-                或在 compose 里临时加 <code class="text-text-3">DOCKHELM_PASSWORD=新密码</code>。
-              </div>
             </div>
           </div>
 
