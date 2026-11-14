@@ -455,9 +455,9 @@ export interface Settings {
   backupProjectMaxAgeDays: number
 
   // —— 登录保护（设置页「账户」里可调） ——
-  /** 连续输错多少次后临时锁定。后端会夹到 2–20。 */
+  /** 最大连续登录失败次数，超过即锁定。后端会夹到 2–20。 */
   lockMaxFailures: number
-  /** 锁定时长（分钟）。后端会夹到 1–60。 */
+  /** 连续登录失败锁定时长（分钟）。后端会夹到 1–60。 */
   lockMinutes: number
 }
 

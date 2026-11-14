@@ -239,7 +239,7 @@ async function save() {
 }
 
 /**
- * 保存登录保护（连续输错次数 + 锁定时长）。
+ * 保存登录保护（最大连续失败次数 + 锁定时长）。
  *
  * 只 PATCH 这两个键：顶部「保存」管的是更新/检测/排除列表，两处互不覆盖。
  * 后端会把越界值夹进合法区间，所以保存后一律用返回值回填，别让输入框停在
@@ -264,7 +264,7 @@ async function saveLockPolicy() {
     app.maxFailures = next.lockMaxFailures
     toast.success(
       '登录保护已保存',
-      `连续输错 ${next.lockMaxFailures} 次后锁定 ${next.lockMinutes} 分钟`,
+      `连续失败 ${next.lockMaxFailures} 次后锁定 ${next.lockMinutes} 分钟`,
     )
   } catch (e) {
     toast.error('保存失败', e instanceof Error ? e.message : String(e))
@@ -613,7 +613,7 @@ onMounted(() => void load())
               </button>
             </div>
             <div class="flex flex-col gap-2.5">
-              <SettingRow title="连续输错多少次后锁定" sub="按来源 IP 计数；登录成功即清零，不是累计" stack>
+              <SettingRow title="最大连续登录失败次数" sub="按来源 IP 计数，登录成功即清零" stack>
                 <div class="flex items-center gap-1.5">
                   <input
                     v-model.number="lockMax"
@@ -625,7 +625,7 @@ onMounted(() => void load())
                   <span class="text-[11.5px] text-text-5">次</span>
                 </div>
               </SettingRow>
-              <SettingRow title="锁定时长" sub="从触发锁定的那次失败起算，倒计时结束自动解除" stack>
+              <SettingRow title="连续登录失败锁定时长" sub="从触发锁定的那次失败起算，倒计时结束自动解除" stack>
                 <div class="flex items-center gap-1.5">
                   <input
                     v-model.number="lockMinutes"
