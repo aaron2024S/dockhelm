@@ -686,7 +686,9 @@ func (s *Server) hPruneImages(w http.ResponseWriter, r *http.Request) {
 	// （用户 2026-10-13 的原话：「原 ID 行就要显示出删除了哪些镜像」）。
 	// 抓不到不影响清理本身，兜底是「无标签镜像 <短ID>」（随镜像删掉的层不列）。
 	idx := s.dc.BuildPruneNameIndex(ctx)
-	res, err := s.dc.PruneImages(ctx)
+	// all=1 ⇒ 连「有 tag 但没有任何容器在用」的镜像一起清（前端在存在这类镜像时
+	// 会先弹确认）。不带这个参数就只清悬空镜像，和以前一致。
+	res, err := s.dc.PruneImages(ctx, queryBool(r, "all", false))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, errText(err))
 		return

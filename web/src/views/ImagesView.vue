@@ -15,8 +15,10 @@ const loading = ref(false)
 const pruning = ref(false)
 const removing = ref(false)
 const keyword = ref('')
-const onlyDangling = ref(false)
+const onlyUnused = ref(false)
 const removeTarget = ref<ImageView | null>(null)
+/** 「清理未使用镜像」的二次确认（存在带标签的未使用镜像时才弹）。 */
+const pruneConfirm = ref(false)
 
 const filtered = computed(() => {
   let list = images.value
@@ -29,14 +31,22 @@ const filtered = computed(() => {
         i.shortId.includes(k),
     )
   }
-  if (onlyDangling.value) list = list.filter((i) => i.dangling)
+  if (onlyUnused.value) list = list.filter((i) => i.containers === 0)
   return list
 })
 
-const danglingCount = computed(() => images.value.filter((i) => i.dangling).length)
-const danglingSize = computed(() =>
-  images.value.filter((i) => i.dangling).reduce((sum, i) => sum + (i.size || 0), 0),
+/**
+ * 「未使用」的唯一口径：没有任何容器引用（containers === 0）。
+ * 与表格「被引用」列的徽标同源 —— 之前这里筛的是 dangling（无 tag），
+ * 于是列表里明明标着「未使用」的 ipv6sync:latest，勾上筛选却一个都不剩。
+ */
+const unusedImages = computed(() => images.value.filter((i) => i.containers === 0))
+const unusedCount = computed(() => unusedImages.value.length)
+const unusedSize = computed(() =>
+  unusedImages.value.reduce((sum, i) => sum + (i.size || 0), 0),
 )
+/** 带标签的未使用镜像：删掉后本地就没了，用到它的容器下次启动要重新拉取。 */
+const taggedUnused = computed(() => unusedImages.value.filter((i) => i.tags.length > 0))
 
 async function load() {
   loading.value = true
@@ -51,19 +61,31 @@ async function load() {
   }
 }
 
-async function prune() {
+async function prune(all: boolean) {
   pruning.value = true
   try {
-    const res = await api.post<{ count: number; freedBytes: number }>('/api/images/prune')
+    const res = await api.post<{ count: number; freedBytes: number }>(
+      `/api/images/prune${all ? '?all=1' : ''}`,
+    )
     // 数字要跟运行记录同一句：几个 + 多大（只报体积的话「清了几个」得靠猜）
     if (!res.count) toast.success('没有可清理的未使用镜像', '当前已是干净状态')
     else toast.success(`已清理 ${res.count} 个未使用镜像`, `释放 ${formatBytes(res.freedBytes)}`)
+    pruneConfirm.value = false
     await load()
   } catch (e) {
     toast.error('清理失败', e instanceof Error ? e.message : String(e))
   } finally {
     pruning.value = false
   }
+}
+
+/** 有带标签的未使用镜像时先确认：它们删掉后要重新 pull，不能悄悄删。 */
+function startPrune() {
+  if (taggedUnused.value.length > 0) {
+    pruneConfirm.value = true
+    return
+  }
+  void prune(false)
 }
 
 async function confirmRemove() {
@@ -91,13 +113,13 @@ onMounted(() => void load())
       <div class="dh-h1">镜像</div>
       <div class="dh-sub">
         {{ images.length }} 个 · 占用 {{ formatBytes(totalSize) }} ·
-        未使用 {{ danglingCount }} 个（可回收 {{ formatBytes(danglingSize) }}）
+        未使用 {{ unusedCount }} 个（可回收 {{ formatBytes(unusedSize) }}）
       </div>
       <div class="ml-auto flex gap-2">
         <button class="dh-btn" :disabled="loading" @click="load">
           <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'dh-spin' : ''" />刷新
         </button>
-        <button class="dh-btn dh-btn-primary" :disabled="pruning || !danglingCount" @click="prune">
+        <button class="dh-btn dh-btn-primary" :disabled="pruning || !unusedCount" @click="startPrune">
           <Sparkles class="h-3.5 w-3.5" :class="pruning ? 'dh-spin' : ''" />
           清理未使用镜像
         </button>
@@ -111,8 +133,8 @@ onMounted(() => void load())
       </div>
 
       <label class="flex cursor-pointer items-center gap-2 text-[12px] text-text-3">
-        <input v-model="onlyDangling" type="checkbox" class="h-[14px] w-[14px] accent-accent" />
-        只看未使用镜像 ({{ danglingCount }})
+        <input v-model="onlyUnused" type="checkbox" class="h-[14px] w-[14px] accent-accent" />
+        只看未使用镜像 ({{ unusedCount }})
       </label>
     </div>
 
@@ -198,6 +220,49 @@ onMounted(() => void load())
         <button class="dh-btn" :disabled="removing" @click="removeTarget = null">取消</button>
         <button class="dh-btn dh-btn-danger" :disabled="removing" @click="confirmRemove">
           {{ removing ? '删除中…' : '确认删除' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!--
+      清理确认：只有存在「带标签的未使用镜像」时才出现。
+      这类镜像删掉后本地就没了，不像悬空镜像那样纯粹是残渣，必须先说清楚。
+    -->
+    <Modal
+      :open="pruneConfirm"
+      title="清理未使用镜像"
+      width="480px"
+      :busy="pruning"
+      @close="pruneConfirm = false"
+    >
+      <div class="space-y-2.5 text-[12px] leading-relaxed text-text-3">
+        <p>
+          共 {{ unusedCount }} 个未使用镜像，合计 {{ formatBytes(unusedSize) }}。
+        </p>
+        <div v-if="taggedUnused.length">
+          <p>
+            其中 <b class="text-text-1">{{ taggedUnused.length }} 个带标签</b>：
+          </p>
+          <!-- 一行一个，别用「、」连成一段：仓库名很长，连起来会从词中间折断 -->
+          <ul class="mt-1 space-y-0.5 font-mono text-[11.5px] text-text-2">
+            <li v-for="t in taggedUnused.slice(0, 5)" :key="t.id" class="[overflow-wrap:anywhere]">
+              {{ t.tags[0] }}
+            </li>
+            <li v-if="taggedUnused.length > 5" class="text-text-4">
+              …等 {{ taggedUnused.length }} 个
+            </li>
+          </ul>
+        </div>
+        <div
+          class="rounded-[10px] border border-line-err bg-soft-err px-3 py-2.5 text-[12px] leading-relaxed text-err-text"
+        >
+          带标签的镜像删掉后本地就没有了：用到它的容器下次启动会重新拉取，网络不通时会启动失败。
+        </div>
+      </div>
+      <template #footer>
+        <button class="dh-btn" :disabled="pruning" @click="pruneConfirm = false">取消</button>
+        <button class="dh-btn dh-btn-primary" :disabled="pruning" @click="prune(true)">
+          {{ pruning ? '清理中…' : '确认清理' }}
         </button>
       </template>
     </Modal>

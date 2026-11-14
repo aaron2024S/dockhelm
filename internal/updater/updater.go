@@ -1029,11 +1029,11 @@ func (u *Updater) UpdateMany(ctx context.Context, names []string, force bool, so
 	}
 	notice := buildBatchNotice(stats)
 
-	// 运行记录只在**多容器**时补一条批次汇总：单容器在上面的 Update 里已经写了一条
-	// （「已更新」/「失败」），再补汇总就是同一次更新在总览里出现两行。
-	if len(names) > 1 {
-		u.log("update", "batch", "done", notice.Result, notice.Detail)
-	}
+	// 运行记录只由每台容器的 Update 各写一条（「镜像已更新」/「镜像已是最新」/失败）。
+	// 这里原本在多容器时再补一条「自动更新完成」汇总，结果是同一轮更新在总览里
+	// 多出一行，而且**只在超过 1 台时出现**（1 台没有），看起来像随机重复
+	// （2026-11-14 用户：「有时候有，有的时候没有，这一条是多余的」）。已删除。
+	// 需要总体统计时看通知 / 更新页的上一轮结果，两者都在。
 
 	// 通知**无论几个容器都要发**：这是这一轮更新的唯一回执，单台与多台同一条文案。
 	// container 变量决定标题里的「· xxx」：必须点名具体容器（notice.Container），

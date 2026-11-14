@@ -195,8 +195,10 @@ func (s *Server) hOverview(w http.ResponseWriter, r *http.Request) {
 	var imageBytes, reclaimable int64
 	for _, im := range images {
 		imageBytes += im.Size
-		// 没有 tag 的镜像就是悬空的，随时可以回收
-		if len(im.RepoTags) == 0 {
+		// 口径必须与镜像页的「未使用」一致：**没有任何容器引用**就算可回收
+		// （含无 tag 的悬空镜像）。原先只认无 tag，导致总览说「可回收 0」、
+		// 镜像列表却列着好几个「未使用」，两处对不上。
+		if im.Containers == 0 {
 			reclaimable += im.Size
 		}
 	}

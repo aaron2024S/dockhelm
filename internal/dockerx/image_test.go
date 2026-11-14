@@ -335,3 +335,49 @@ func TestImageDisplayName(t *testing.T) {
 		}
 	}
 }
+
+// PruneImages 的 all 开关决定清理范围：
+//
+//	all=false ⇒ 不带 filters，只清悬空镜像（docker image prune）
+//	all=true  ⇒ filters={"dangling":["false"]}，连有标签但没容器使用的也清
+//
+// 2026-11-14 用户反馈：镜像页明明标着两个「未使用」，勾筛选却是 0 个 ——
+// 根因是页面口径（无容器引用）与清理口径（无标签）不是一回事。统一后
+// 「清理未使用镜像」必须真能清掉那些带标签的，否则按钮名不副实。
+func TestPruneImagesAllFilter(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/prune" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		got = append(got, r.URL.Query().Get("filters"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ImagesDeleted":[{"Untagged":"filebrowser/filebrowser:latest"}],"SpaceReclaimed":36700160}`))
+	}))
+	defer srv.Close()
+
+	c, err := New("tcp://" + strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	res, err := c.PruneImages(context.Background(), false)
+	if err != nil {
+		t.Fatalf("prune dangling: %v", err)
+	}
+	if res.Freed != 36700160 {
+		t.Errorf("Freed = %d, want 36700160", res.Freed)
+	}
+	if _, err := c.PruneImages(context.Background(), true); err != nil {
+		t.Fatalf("prune all: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(got))
+	}
+	if got[0] != "" {
+		t.Errorf("all=false 不该带 filters，got %q", got[0])
+	}
+	if got[1] != `{"dangling":["false"]}` {
+		t.Errorf("all=true 的 filters = %q", got[1])
+	}
+}

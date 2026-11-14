@@ -326,7 +326,9 @@ func (r *Runner) Execute(ctx context.Context, sc store.Schedule) Outcome {
 	case "prune_images":
 		// 同 api 的手动清理：名字要在清理**之前**抓，否则记录里只剩裸 ID。
 		idx := r.dc.BuildPruneNameIndex(ctx)
-		res, err := r.dc.PruneImages(ctx)
+		// 定时任务只清悬空镜像：无人值守时不能删掉「有 tag 但暂时没容器在用」的镜像
+		// （用户可能刚 pull 下来准备用），那属于需要人工确认的动作。
+		res, err := r.dc.PruneImages(ctx, false)
 		if err != nil {
 			return outcome("清理未使用镜像失败："+err.Error(), false)
 		}

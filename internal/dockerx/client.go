@@ -666,13 +666,27 @@ func ImageDisplayName(im ImageSummary) string {
 	return ""
 }
 
-// PruneImages 清理悬空镜像，返回删除明细与释放的字节数。
-func (c *Client) PruneImages(ctx context.Context) (PruneImageResult, error) {
+// PruneImages 清理未被容器引用的镜像，返回删除明细与释放的字节数。
+//
+// all 决定清到什么程度：
+//   - false：只清悬空镜像（无 tag 的 <none>:<none>），等价 `docker image prune`。
+//     这些镜像已经没有任何名字，留着只占空间，删了不影响任何东西。
+//   - true：连带「有 tag、但没有容器在用」的镜像一起清，等价 `docker image prune -a`。
+//     删完这些镜像本地就没了，下次启动需要它的容器会重新拉取 —— 调用方必须先
+//     让用户确认（镜像页点了「清理未使用镜像」且确实存在这类镜像时）。
+//
+// 两种模式都不会动「被任何容器（含已停止）引用」的镜像，Docker 自己会跳过。
+func (c *Client) PruneImages(ctx context.Context, all bool) (PruneImageResult, error) {
 	var out struct {
 		ImagesDeleted  []map[string]string `json:"ImagesDeleted"`
 		SpaceReclaimed int64               `json:"SpaceReclaimed"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/images/prune", nil, map[string]any{}, nil, &out); err != nil {
+	q := url.Values{}
+	if all {
+		// dangling=false ⇒ 连有 tag 的未使用镜像一起清
+		q.Set("filters", `{"dangling":["false"]}`)
+	}
+	if err := c.do(ctx, http.MethodPost, "/images/prune", q, map[string]any{}, nil, &out); err != nil {
 		return PruneImageResult{}, err
 	}
 	res := PruneImageResult{Freed: out.SpaceReclaimed}
