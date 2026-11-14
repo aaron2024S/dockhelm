@@ -480,9 +480,9 @@ onMounted(() => void load())
       </div>
     </div>
 
-    <!-- items-start：卡片高度贴合各自内容。默认 stretch 会把两卡拉到同高，
-         而运行记录列表有 max-h 封顶 —— 左卡更高时多出的高度全变成卡内空白
-         （列表下面一截纯白，看起来像没渲染完）。 -->
+    <!-- items-start：账户卡高度贴合自身内容 —— 运行记录很长时不会把左卡拉高（不然密码区
+         下面会多出一大片空白）。右卡自己加 self-stretch：账户卡更高时它跟着拉齐，
+         拉齐多出来的高度由列表区吃掉，所以不会出现「卡片到这儿就结束了」的错位感。 -->
     <div class="grid grid-cols-1 items-start gap-3.5 xl:grid-cols-2">
       <!-- 账户 -->
       <div class="dh-card">
@@ -667,7 +667,14 @@ onMounted(() => void load())
       </div>
 
       <!-- 运行记录 -->
-      <div id="runlogs" class="dh-card scroll-mt-3">
+      <!--
+        高度对齐账户卡：xl 下取 self-stretch + 列表绝对定位。
+        列表一旦进了文档流，它自己有多长就把 grid 行撑多长（100 条记录能撑出好几千像素），
+        所以 xl 断点里把列表改成 absolute 铺满卡片剩余空间 —— 它对「卡片自然高度」的贡献变成 0，
+        行高就只由账户卡决定，两卡自然等高；多出来的高度由列表内部滚动吃掉。
+        手机端（单列）不 stretch，列表仍是正常流 + 560px 上限。
+      -->
+      <div id="runlogs" class="dh-card scroll-mt-3 flex flex-col xl:self-stretch">
         <div class="dh-card-head">
           <ScrollText class="h-3.5 w-3.5 text-text-4" />
           <span>运行记录</span>
@@ -684,11 +691,11 @@ onMounted(() => void load())
             </button>
           </div>
         </div>
-        <div v-if="!logs.length" class="dh-card-body text-[12.5px] text-text-4">暂无记录</div>
+        <div v-if="!logs.length" class="dh-card-body flex-1 text-[12.5px] text-text-4">暂无记录</div>
         <!-- 与总览「最近执行记录」同一行组件、同一列（时间 / 类型 / 结果 / 对象名+说明一行）。
              以前这里是表格：说明一行、对象名又一行，跟总览对不上（2026-10-13 用户指出）。 -->
-        <div v-else class="dh-card-body py-1">
-          <div class="dh-scroll max-h-[560px] overflow-auto">
+        <div v-else class="dh-card-body relative min-h-0 py-1 xl:flex-1">
+          <div class="dh-scroll max-h-[560px] overflow-auto xl:absolute xl:inset-x-0 xl:inset-y-1 xl:max-h-none">
             <RunLogRow v-for="l in logs" :key="l.id" :log="l" />
           </div>
         </div>
