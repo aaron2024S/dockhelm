@@ -613,7 +613,7 @@ onMounted(() => void load())
               </button>
             </div>
             <div class="flex flex-col gap-2.5">
-              <SettingRow title="最大连续登录失败次数" sub="按来源 IP 计数，锁定到期或登录成功后重新计数" stack>
+              <SettingRow title="最大连续登录失败次数" sub="按来源 IP 计数，锁定到期或登录成功都会重新计数" stack>
                 <div class="flex items-center gap-1.5">
                   <input
                     v-model.number="lockMax"
