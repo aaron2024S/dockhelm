@@ -24,6 +24,10 @@ data/
 # 需要它在编译时存在。Docker/CI 构建会用真实构建结果覆盖它。
 # 所以这里不要写 web/dist。
 
+# 重编前把旧产物改名成 dist-old-N（vite build 会先清空 outDir，本机被删除守卫拦）。
+# 这是临时目录，绝不该入库 —— 2026-11-14 发现 dist-old-9 / dist-old-11 已误提交进 main。
+web/dist-old-*/
+
 # ── 编辑器 / 系统 ──
 .DS_Store
 Thumbs.db

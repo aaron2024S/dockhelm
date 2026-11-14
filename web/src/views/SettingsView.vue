@@ -118,7 +118,10 @@ async function load() {
   try {
     const [s, c, l, a, au] = await Promise.all([
       api.get<Settings>('/api/settings'),
-      api.get<{ containers: ContainerView[] }>('/api/containers'),
+      // 容器列表只为「排除列表」那一行做名字提示。Docker 连不上时这个接口会 503，
+      // 若让它把整页 Promise.all 拖崩，用户会看到设置页一片空白（连密码、会话都读不到）——
+      // 那恰恰是最需要进设置页改东西的时候。所以这里单独降级成空列表。
+      api.get<{ containers: ContainerView[] }>('/api/containers').catch(() => null),
       api.get<{ logs: RunLog[] }>('/api/logs', { limit: 120 }),
       api.get<Record<string, any>>('/api/account'),
       // 自动更新的运行状态（下次巡检时间）—— 原来只在已删除的「更新中心」页展示，
@@ -131,7 +134,7 @@ async function load() {
     // 登录保护单独编辑（在账户卡里），用独立的两份值，点它自己的「保存」才落盘
     lockMax.value = s.lockMaxFailures
     lockMinutes.value = s.lockMinutes
-    containers.value = c.containers ?? []
+    containers.value = c?.containers ?? []
     logs.value = l.logs ?? []
     account.value = a
     auto.value = au

@@ -10,6 +10,13 @@ import (
 	"github.com/aaron2024s/dockhelm/internal/auth"
 )
 
+// msgAlreadyInitialized 想在「已经设过密码」的状态下再走一次首启设置时的提示。
+//
+// 两条重置路径都写出来：删 auth.json（最直接）、临时设 DOCKHELM_PASSWORD 重建容器
+// （进不去文件管理时用）。登录页的「忘记密码？」给的就是这两条，两处口径必须一致 ——
+// 以前这里只写删文件，用户按提示找不到 auth.json 就卡住了。
+const msgAlreadyInitialized = "密码已设置；如需重置，删掉数据目录里的 auth.json 后重启容器，或临时设置环境变量 DOCKHELM_PASSWORD 重建容器"
+
 // hSession 返回登录状态（前端启动时第一个调用的接口）。
 func (s *Server) hSession(w http.ResponseWriter, r *http.Request) {
 	loggedIn := false
@@ -158,7 +165,7 @@ type setupReq struct {
 //  2. 设置成功写一条通知 + 登录记录，主人事后能看见「谁在什么时候设的密码」。
 func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 	if s.auth.Initialized() {
-		writeErrCode(w, http.StatusConflict, "密码已设置，如需重置请在 NAS 面板里删除 data/auth.json 后重启容器", "already_initialized")
+		writeErrCode(w, http.StatusConflict, msgAlreadyInitialized, "already_initialized")
 		return
 	}
 	ip := s.clientIP(r)
@@ -198,7 +205,7 @@ func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 	// 是「检查后使用」，两个并发请求会双双通过，后来者覆盖先来者设的密码。
 	if err := s.auth.SetupPassword(in.Password); err != nil {
 		if errors.Is(err, auth.ErrAlreadyInitialized) {
-			writeErrCode(w, http.StatusConflict, "密码已设置，如需重置请在 NAS 面板里删除 data/auth.json 后重启容器", "already_initialized")
+			writeErrCode(w, http.StatusConflict, msgAlreadyInitialized, "already_initialized")
 			return
 		}
 		reject(http.StatusBadRequest, err.Error(), "")
@@ -209,7 +216,7 @@ func (s *Server) hSetup(w http.ResponseWriter, r *http.Request) {
 	s.st.ClearLoginFailures(ip)
 	s.nt.Emit("password_changed", map[string]string{
 		"result":  "首次设置登录密码",
-		"message": "来源 IP " + ip + "。如果不是你本人操作，请立刻删除 data/auth.json 重启并重新设置",
+		"message": "来源 IP " + ip + "。如果不是你本人操作，请立刻重置密码：删掉 data/auth.json 后重启容器，或设置 DOCKHELM_PASSWORD 重建容器",
 	})
 	// 设置完直接登录，省一次输入
 	token, err := s.auth.Verify(in.Password, ip, r.UserAgent(), true)

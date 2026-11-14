@@ -491,7 +491,9 @@ onUnmounted(() => closeStream?.())
     </div>
 
     <!-- 新建/编辑 + 时间轴 -->
-    <div class="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+    <!-- items-start：时间轴卡只包住自己那几行。默认 stretch 会把它拉到跟左边的表单一样高，
+         左边表单字段多、右边常常只有两三条，「一大片空白」比不对齐更难看。 -->
+    <div class="grid grid-cols-1 items-start gap-3.5 xl:grid-cols-2">
       <div id="schedule-form" class="dh-card">
         <div class="dh-card-head">
           <span>{{ editingId ? '编辑任务' : '新建任务' }}</span>

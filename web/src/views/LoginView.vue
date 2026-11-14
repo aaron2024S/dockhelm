@@ -278,9 +278,6 @@ async function submit() {
             </div>
           </li>
         </ul>
-        <p class="dh-auth-extra">
-          登录只要一个密码：<b>bcrypt</b> 哈希落盘、HttpOnly 会话、连续失败锁定。
-        </p>
       </div>
 
       <div class="dh-auth-brandfoot">© 2026 Dockhelm · MIT 许可</div>

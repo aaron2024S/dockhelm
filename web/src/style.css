@@ -1147,18 +1147,6 @@ html.light {
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.16);
   }
-  .dh-auth-extra {
-    margin: 18px 0 0;
-    padding-top: 15px;
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
-    font-size: 11.5px;
-    line-height: 1.7;
-    color: rgba(255, 255, 255, 0.52);
-  }
-  .dh-auth-extra b {
-    font-weight: 600;
-    color: rgba(255, 255, 255, 0.72);
-  }
   .dh-auth-brandfoot {
     position: relative;
     z-index: 2;
@@ -1329,7 +1317,6 @@ html.light {
      去掉 <br> 反而会让两句话连成一段（换行处的空白会留成空格）。 */
 
   .dh-auth-feats,
-  .dh-auth-extra,
   .dh-auth-brandfoot {
     display: none;
   }
@@ -1398,9 +1385,6 @@ html.light {
   .dh-auth-feats .d {
     margin-top: 2px;
     line-height: 1.4;
-  }
-  .dh-auth-extra {
-    display: none;
   }
 }
 @media (max-height: 680px) and (min-width: 901px) {
