@@ -1454,6 +1454,14 @@ html.light {
     padding-left: 17px;
     list-style: decimal;
   }
+  /* 两组兜底办法各自的小标题：和上一段拉开一点，和下面的列表贴紧 */
+  .dh-auth-tip-sub {
+    margin: 9px 0 2px;
+    color: var(--color-text-3);
+  }
+  .dh-auth-tip-sub:first-child {
+    margin-top: 0;
+  }
   .dh-auth-tip li {
     margin-bottom: 3px;
   }

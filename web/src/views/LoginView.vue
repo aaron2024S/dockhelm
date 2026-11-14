@@ -411,11 +411,32 @@ async function submit() {
                 {{ showForgot ? '收起' : '忘记密码？' }}
               </button>
               <div v-if="showForgot" class="dh-auth-tip">
+                <!--
+                  两种兜底都给出来。以前只写了「删 auth.json」，其实还有更省事的
+                  DOCKHELM_PASSWORD（2026-11-14 实测有效：改完重启即换密），
+                  但它有三个坑必须一起写清楚 —— 密码长度/纯数字校验、只 restart
+                  读不到新环境变量、这行留着会每次启动都重置。
+                -->
+                <p class="dh-auth-tip-sub">① 临时设一个环境变量（不用进文件管理器）</p>
+                <ol>
+                  <li>
+                    compose 的 <code>environment</code> 加一行
+                    <code>DOCKHELM_PASSWORD:</code> 你的新密码（8 位以上、非纯数字）。
+                  </li>
+                  <li>
+                    保存后 <code>docker compose up -d</code> 重建容器。<br />
+                    <code>restart</code> 不会生效。
+                  </li>
+                  <li>改成你要的密码后把这行删掉再重启；留着的话每次启动都会重置成它。</li>
+                </ol>
+
+                <p class="dh-auth-tip-sub">② 或者删掉密码文件，回到「设置密码」</p>
                 <ol>
                   <li>在 NAS 的文件管理里找到 Dockhelm 的数据目录（compose 里挂载的那个）。</li>
                   <li>删掉目录里的 <code>auth.json</code>。</li>
                   <li>重启容器，再打开面板就会回到「设置密码」。</li>
                 </ol>
+
                 <p class="dh-auth-tip-warn">重置后，所有设备上已有的登录会一并失效。</p>
               </div>
             </div>
