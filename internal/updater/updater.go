@@ -957,7 +957,7 @@ const maxLogNames = 6
 // logBatch 把一整轮更新写成**一条**运行记录。
 //
 // 一次操作 = 一行：自动更新这一轮改了 3 个容器，总览里就是
-// 「更新 · 成功 · 更新了 ntfy、rsshub、dockge」一行，而不是每台一行。
+// 「更新 · 成功 · 共 3 个容器：更新了 ntfy、rsshub、dockge」一行，而不是每台一行。
 //
 // 2026-11-14 用户：「你这一个时间更新了 2 个镜像，为什么不写成一条记录」。
 // 之前是每台容器的 Update 各写一条（外加多容器时一条汇总），同一分钟里
@@ -1019,7 +1019,10 @@ func (u *Updater) logBatch(out []Result) {
 		message = "镜像已更新"
 	case len(updated) > 0:
 		status = "success"
-		message = "更新了 " + joinNameList(updated, maxLogNames)
+		// 多台统一「共 N 个容器：…」开头（用户 2026-11-14：
+		// 「2 台都成功，前面为什么不统一加上 共 2 个容器：」）——
+		// 成败两种结果的行读起来是同一个句式，不用先看有没有「共」再理解。
+		message = fmt.Sprintf("共 %d 个容器：更新了 %s", total, joinNameList(updated, maxLogNames))
 		if rest := total - len(updated); rest > 0 {
 			message += fmt.Sprintf("，另有 %d 个已是最新", rest)
 		}
@@ -1028,13 +1031,13 @@ func (u *Updater) logBatch(out []Result) {
 		message = out[0].Message
 	case upToDate == total:
 		status = "up_to_date"
-		message = fmt.Sprintf("共 %d 个容器，镜像均是最新", total)
+		message = fmt.Sprintf("共 %d 个容器：镜像均是最新", total)
 	case skipped == total:
 		status = "up_to_date"
-		message = fmt.Sprintf("共 %d 个容器，均已跳过", total)
+		message = fmt.Sprintf("共 %d 个容器：均已跳过", total)
 	default:
 		status = "up_to_date"
-		message = fmt.Sprintf("共 %d 个容器，均无需更新", total)
+		message = fmt.Sprintf("共 %d 个容器：均无需更新", total)
 	}
 
 	ref := "batch" // 名单在说明里，对象列留白（runRefShown 会隐藏 batch 占位）

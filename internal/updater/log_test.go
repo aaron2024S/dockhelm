@@ -38,7 +38,7 @@ func TestLogBatchMergesIntoOneRecord(t *testing.T) {
 	if r.ref != "batch" {
 		t.Errorf("多台记录的对象列应为 batch 占位，实际 %q", r.ref)
 	}
-	if r.message != "更新了 ntfy、rsshub" {
+	if r.message != "共 2 个容器：更新了 ntfy、rsshub" {
 		t.Errorf("message = %q", r.message)
 	}
 	// 逐台过程不能丢，排查时还要能看
@@ -86,7 +86,7 @@ func TestLogBatchAllUpToDate(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 record, got %d", len(got))
 	}
-	if got[0].status != "up_to_date" || got[0].message != "共 3 个容器，镜像均是最新" {
+	if got[0].status != "up_to_date" || got[0].message != "共 3 个容器：镜像均是最新" {
 		t.Errorf("记录 = %+v", got[0])
 	}
 }
@@ -101,7 +101,7 @@ func TestLogBatchMixedSkipped(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 record, got %d", len(got))
 	}
-	if got[0].message != "更新了 ntfy，另有 2 个已是最新" {
+	if got[0].message != "共 3 个容器：更新了 ntfy，另有 2 个已是最新" {
 		t.Errorf("message = %q", got[0].message)
 	}
 }
