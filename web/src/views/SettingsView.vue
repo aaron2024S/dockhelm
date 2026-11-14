@@ -697,8 +697,11 @@ onMounted(() => void load())
         <div v-if="!logs.length" class="dh-card-body flex-1 text-[12.5px] text-text-4">暂无记录</div>
         <!-- 与总览「最近执行记录」同一行组件、同一列（时间 / 类型 / 结果 / 对象名+说明一行）。
              以前这里是表格：说明一行、对象名又一行，跟总览对不上（2026-10-13 用户指出）。 -->
-        <div v-else class="dh-card-body relative min-h-0 py-1 xl:flex-1">
-          <div class="dh-scroll max-h-[560px] overflow-auto xl:absolute xl:inset-x-0 xl:inset-y-1 xl:max-h-none">
+        <div v-else class="dh-card-body relative min-h-0 py-1 xl:flex-1 xl:p-0">
+          <!-- xl 下 inset-0 会把「卡片 body 的 14px 内边距」一并吃掉（绝对定位的包含块是
+               padding box），所以内边距要搬到列表自己身上：px-3.5 = 14px，与卡头、账户卡左对齐。
+               只给 inset-x-0 而不补 px 的话，时间列会直接贴到卡片左边缘（2026-11-14 用户截图）。 -->
+          <div class="dh-scroll max-h-[560px] overflow-auto xl:absolute xl:inset-0 xl:max-h-none xl:px-3.5 xl:py-1">
             <RunLogRow v-for="l in logs" :key="l.id" :log="l" />
           </div>
         </div>
