@@ -45,6 +45,7 @@ async function load(opts: { silent?: boolean } = {}) {
     ])
     data.value = ov
     schedules.value = sch.schedules ?? []
+    stampUsage()
   } catch (e) {
     if (!opts.silent) errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -81,6 +82,21 @@ function scheduleReload(delay = 600) {
  * 页面切到后台时跳过，别在看不见的地方白白打接口。
  */
 let usageTimer: number | undefined
+
+/**
+ * 最近一次拿到资源占用的时刻（HH:mm:ss）。
+ *
+ * 卡片上挂着「实时」徽标，但 CPU 是个随负载抖动的整数百分比、内存和磁盘在空闲的
+ * NAS 上本来就不怎么变 —— 用户盯着看会怀疑「是不是根本没刷新」（2026-11-14）。
+ * 把采样时刻显示出来，值不动也能看出数据是新的。
+ */
+const usageAt = ref('')
+function stampUsage() {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  usageAt.value = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 async function pollUsage() {
   if (document.hidden) return
   try {
@@ -94,6 +110,7 @@ async function pollUsage() {
     if (!data.value) return
     data.value.usage = { cpuPercent: u.cpuPercent, memUsed: u.memUsed, memTotal: u.memTotal }
     if (u.diskTotal) data.value.disk = { free: u.diskFree, total: u.diskTotal }
+    stampUsage()
   } catch {
     /* 静默：一张卡的数字，不值得为它弹错误条，下一轮再试 */
   }
@@ -337,7 +354,11 @@ onUnmounted(() => {
       <div class="dh-card">
         <div class="dh-card-head">
           <span>容器状态</span>
-          <span class="ml-auto dh-badge dh-badge-plain">实时</span>
+          <!-- 采样时刻：数字不变时也能看出「确实在刷新」（见 usageAt 的注释） -->
+          <span v-if="usageAt" class="ml-auto mr-2 text-[11px] font-normal text-text-5">
+            采样 {{ usageAt }}
+          </span>
+          <span class="dh-badge dh-badge-plain" :class="usageAt ? '' : 'ml-auto'">实时</span>
         </div>
         <div class="dh-card-body flex items-center gap-[22px]">
           <!-- SVG 的呈现属性（stroke="..."）里不能写 var()，变量只在 style 属性/样式表里生效，
