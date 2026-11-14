@@ -1449,7 +1449,8 @@ html.light {
     border: 1px solid var(--color-line-2);
   }
   .dh-auth-tip ol {
-    margin: 5px 0 0;
+    /* 展开后列表就是第一行（上面那句说明已去掉），顶部不再留额外间距 */
+    margin: 0;
     padding-left: 17px;
     list-style: decimal;
   }

@@ -411,7 +411,6 @@ async function submit() {
                 {{ showForgot ? '收起' : '忘记密码？' }}
               </button>
               <div v-if="showForgot" class="dh-auth-tip">
-                <p>面板不联网、也不存明文密码，所以没有「找回」入口，只能重置：</p>
                 <ol>
                   <li>在 NAS 的文件管理里找到 Dockhelm 的数据目录（compose 里挂载的那个）。</li>
                   <li>删掉目录里的 <code>auth.json</code>。</li>
