@@ -164,7 +164,8 @@ const bannerText = computed(() => {
 
 const submitLabel = computed(() => {
   if (busy.value) return '请稍候…'
-  if (locked.value) return lockLeft.value > 0 ? `已锁定 ${mmss(lockLeft.value)}` : '已锁定'
+  // 上面提示条已经带着「剩余 3:07」，按钮上再挂一遍是重复的，这里只说明「为什么点不了」
+  if (locked.value) return '已锁定'
   return isSetup.value ? '设置并进入' : '登 录'
 })
 
@@ -389,7 +390,8 @@ async function submit() {
           >
             <Loader2 v-if="busy" class="h-[15px] w-[15px] dh-spin" />
             <span>{{ submitLabel }}</span>
-            <ArrowRight v-if="!busy" class="arrow" />
+            <!-- 锁定态点不了，箭头留着像「可以继续」 -->
+            <ArrowRight v-if="!busy && !locked" class="arrow" />
           </button>
 
           <p v-if="isSetup" class="dh-auth-note">
