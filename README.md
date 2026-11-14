@@ -260,7 +260,7 @@ environment:
 | `DOCKHELM_PORT` | 空 | 只写端口号；不填就用默认 `5923`。优先级高于通用的 `PORT` |
 | `PORT` | 空 | 只写端口号（通用约定，Railway / Zeabur / Render 这类平台会自动注入） |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker 守护进程地址（支持 `unix://` 与 `tcp://`） |
-| `DOCKHELM_PASSWORD` | 空 | 设置后每次启动都强制把密码重置为该值。**忘记密码的兜底手段，用完请删掉这行** |
+| `DOCKHELM_PASSWORD` | 空 | 设置后每次启动都强制把密码重置为该值。**忘记密码的兜底手段，用完请删掉这行**。注意两点：① 密码必须**至少 8 位且不能是纯数字**，不合规会被静默忽略（只在容器日志里留一行 ⚠），面板照旧用老密码；② 改了 compose 必须**重新创建容器**（`docker compose up -d`），只 `restart` 读不到新环境变量 |
 | `DOCKHELM_HOST_ROOTS` | 空 | 手动声明路径映射，写法 `宿主机路径=容器内路径`（逗号分隔可多组；只写一个路径表示两边一致）。默认自动识别，一般不用填 |
 | `DOCKHELM_SELF` | 空 | 显式指定 Dockhelm 自身容器名。默认靠 hostname 反查 |
 | `DOCKHELM_HOST_LABEL` | 空 | 通知里「主机」显示什么。默认自动取机器型号（读 DMI/设备树，如 dx4600），取不到用主机名；想自定义就填这个 |
